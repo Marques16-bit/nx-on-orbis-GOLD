@@ -1,0 +1,106 @@
+name: Apply update zip
+
+# How to use: put a file named update-<anything>.zip in the repository root (on github.com:
+# Add file > Upload files > Commit). This workflow unpacks it over the repository, commits the
+# result as github-actions[bot] and deletes the zip. Details: docs/UPDATING.md.
+#
+# Zip layout: the files exactly as they sit in the repository (README.md, frontend/main.cpp, ...).
+# Optional _delete.txt at the zip root: one repository path per line to remove.
+# Files under .github/workflows/ inside the zip are NOT applied (GitHub does not let this workflow's
+# token change workflow files): add those by hand.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'update-*.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-update
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack the zip(s) and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob dotglob
+
+          mapfile -t zips < <(printf '%s\n' update-*.zip | sort -V)
+          if [ "${#zips[@]}" -eq 0 ] || [ -z "${zips[0]}" ]; then
+            echo "No update-*.zip in the repository root; nothing to do."
+            exit 0
+          fi
+
+          for zip in "${zips[@]}"; do
+            echo "::group::$zip"
+
+            # Refuse anything that could write outside the repository.
+            if unzip -Z1 "$zip" | grep -Eq '(^/|(^|/)\.\.(/|$)|\\)'; then
+              echo "::error::$zip has an absolute path, a '..' segment or a backslash; not unpacking it."
+              exit 1
+            fi
+
+            work="$(mktemp -d)"
+            unzip -q "$zip" -d "$work"
+
+            # GitHub's "Download ZIP" wraps everything in one folder (nx-on-orbis-main/): step into it.
+            src="$work"
+            top=( "$work"/* )
+            if [ "${#top[@]}" -eq 1 ] && [ -d "${top[0]}" ]; then
+              case "$(basename "${top[0]}")" in
+                nx-on-orbis*|*-main|*-master) src="${top[0]}" ;;
+              esac
+            fi
+
+            # 1. Deletions listed by the zip.
+            if [ -f "$src/_delete.txt" ]; then
+              while IFS= read -r path || [ -n "$path" ]; do
+                path="${path%$'\r'}"
+                case "$path" in
+                  ''|'#'*) continue ;;
+                  /*|*..*|.git|.git/*|.github|.github/*)
+                    echo "::warning::skipped an unsafe _delete.txt entry: $path"; continue ;;
+                esac
+                git rm -r -q --ignore-unmatch -- "$path"
+              done < "$src/_delete.txt"
+            fi
+
+            # 2. Things that are never applied.
+            if [ -d "$src/.github/workflows" ]; then
+              echo "::warning::.github/workflows in $zip was not applied (add those files by hand)."
+            fi
+            rm -rf "$src/.git" "$src/.github/workflows" "$src/_delete.txt"
+
+            # 3. Copy everything else over the repository.
+            cp -a "$src"/. ./
+
+            git rm -q -- "$zip"
+            rm -rf "$work"
+            echo "::endgroup::"
+          done
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing changed."
+            exit 0
+          fi
+          {
+            echo "### Applied: ${zips[*]}"
+            echo
+            git diff --cached --name-status | sed 's/^/    /'
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "Apply ${zips[*]}" -m "$(git diff --cached --name-status)"
+          git push origin "HEAD:${GITHUB_REF_NAME:-main}"
