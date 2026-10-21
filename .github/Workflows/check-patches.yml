@@ -1,0 +1,51 @@
+name: Check patches and host tests
+
+# Cheap checks that need no PS4 toolchain:
+#   - the 27 patches in patches/eden/ still apply, in order, to the Eden commit this port is based on;
+#   - the host tests in tests/ build and pass.
+# The full PS4 build is not done here yet (see docs/ROADMAP.md, v0.3.0).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'patches/**'
+      - 'scripts/**'
+      - 'frontend/heap_census.cpp'
+      - 'tests/**'
+      - '.github/workflows/check-patches.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  patches:
+    name: Patches apply to Eden
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Git identity (git am needs one)
+        run: |
+          git config --global user.name  "ci"
+          git config --global user.email "ci@localhost"
+      - name: Fetch Eden at the pinned commit and apply the patches
+        run: bash scripts/fetch-eden.sh
+      - name: Summary
+        run: |
+          {
+            echo "### Patches applied on top of Eden"
+            echo '```'
+            git -C deps/eden log --oneline | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Heap census (frontend/heap_census.cpp)
+        run: |
+          W="-Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc -Wl,--wrap=free -Wl,--wrap=posix_memalign -Wl,--wrap=aligned_alloc"
+          g++ -O2 -std=c++20 -Wall -Wextra -fno-omit-frame-pointer -pthread \
+              tests/heap_census_test.cpp frontend/heap_census.cpp -o heap_census_test $W
+          ./heap_census_test
