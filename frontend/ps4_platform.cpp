@@ -240,6 +240,11 @@ struct ProfileTable {
 ProfileTable g_profile[ProfiledMax];
 std::atomic<int> g_profile_count{0};
 std::atomic<int> g_profile_request{-1};
+// True only while DumpAllThreads is running. A sampling signal that arrives late (its request has
+// already moved on) used to be treated as a stack dump request and called Log() from the signal
+// handler; if the interrupted thread already held the log mutex it blocked on itself and then
+// everything that logs froze (the test-22 hang). Now such a signal is simply dropped.
+std::atomic<bool> g_dump_active{false};
 
 void ProfileRecord(ProfileTable& t, std::uint64_t rip) {
     ++t.samples;
@@ -273,6 +278,9 @@ void DumpHandler(int, void* ucontext) {
             return;
         }
     }
+    if (!g_dump_active.load(std::memory_order_acquire)) {
+        return; // a late sampling signal, not a dump request: never log from here
+    }
     const std::uint64_t rsp = Read64(mc, McRsp);
     std::uint64_t rbp = Read64(mc, McRbp);
     char line[900];
@@ -296,6 +304,7 @@ void DumpHandler(int, void* ucontext) {
 
 void DumpAllThreads(const char* why) {
     Log("!! thread stacks (%s); offsets are eboot+0x..., newest frame first:", why);
+    g_dump_active.store(true, std::memory_order_release); // also pauses the profiler (see Profiler)
     const int n = g_named_count.load();
     for (int i = 0; i < n; ++i) {
         const int rc = sceKernelRaiseException(g_named[i].thread, SigDump);
@@ -304,6 +313,7 @@ void DumpAllThreads(const char* why) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
     }
+    g_dump_active.store(false, std::memory_order_release);
 }
 
 void Watchdog() {
@@ -386,8 +396,9 @@ void Profiler() {
     for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(4));
         const int n = g_profile_count.load();
-        if (n == 0 || !g_profiling.load(std::memory_order_relaxed)) {
-            continue;
+        if (n == 0 || !g_profiling.load(std::memory_order_relaxed) ||
+            g_dump_active.load(std::memory_order_acquire)) {
+            continue; // off, nothing to sample, or a stack dump is running
         }
         cursor = (cursor + 1) % n;
         if (g_profile_request.load() >= 0) {

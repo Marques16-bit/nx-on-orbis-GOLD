@@ -5,6 +5,12 @@
 // allocation of 1 MiB or more is recorded with the three return addresses above the allocator
 // (the first one inside Eden, past operator new and std:: containers), and Ps4HeapCensus() logs
 // the call sites holding the most live bytes. Small allocations pass straight through.
+//
+// v0.2: free() and realloc() used to take a global spin lock and scan the whole table on EVERY
+// call, from every thread, although nearly every pointer freed is a small one that was never
+// recorded. A small lock-free filter (one counter per hash slot of the recorded pointers) now lets
+// those calls return after a single atomic load; only a pointer whose slot is non-zero takes the
+// lock and searches. The census output is unchanged.
 
 #include <atomic>
 #include <cstddef>
@@ -40,6 +46,18 @@ Live g_live[MaxLive];
 int g_count = 0;
 std::atomic_flag g_lock = ATOMIC_FLAG_INIT;
 std::atomic<std::uint64_t> g_untracked{0};
+
+// Lock-free filter over the recorded pointers: slot = hash(ptr), value = how many recorded pointers
+// share the slot. A zero slot proves the pointer was never recorded (no lock, no search).
+constexpr unsigned FilterBits = 12;
+constexpr size_t FilterSize = size_t{1} << FilterBits;
+std::atomic<std::uint16_t> g_filter[FilterSize];
+
+inline size_t FilterSlot(const void* ptr) {
+    // Fibonacci hash of the pointer (allocations are 16-byte aligned: drop the low bits first).
+    const std::uint64_t x = (reinterpret_cast<std::uintptr_t>(ptr) >> 4) * 0x9E3779B97F4A7C15ull;
+    return static_cast<size_t>(x >> (64 - FilterBits));
+}
 
 struct Guard {
     Guard() {
@@ -77,6 +95,7 @@ __attribute__((noinline)) void Track(void* ptr, size_t size) {
     Guard g;
     if (g_count < MaxLive) {
         g_live[g_count++] = {ptr, size, {site[0], site[1], site[2]}};
+        g_filter[FilterSlot(ptr)].fetch_add(1, std::memory_order_release);
     } else {
         g_untracked.fetch_add(size);
     }
@@ -86,10 +105,16 @@ void Untrack(void* ptr) {
     if (ptr == nullptr) {
         return;
     }
+    // Fast path: nothing recorded hashes to this slot, so this pointer was never recorded. A
+    // pointer is recorded before malloc returns it, so its owner always sees the non-zero slot.
+    if (g_filter[FilterSlot(ptr)].load(std::memory_order_acquire) == 0) {
+        return;
+    }
     Guard g;
     for (int i = g_count - 1; i >= 0; --i) {
         if (g_live[i].ptr == ptr) {
             g_live[i] = g_live[--g_count];
+            g_filter[FilterSlot(ptr)].fetch_sub(1, std::memory_order_release);
             return;
         }
     }

@@ -198,7 +198,10 @@ void ApplyPs4Settings() {
     auto& v = Settings::values;
     v.renderer_backend.SetValue(Settings::RendererBackend::Vulkan);
     v.use_multi_core.SetValue(true);
-    v.cpu_accuracy.SetValue(Settings::CpuAccuracy::Auto);
+    // Unsafe (inaccurate NaNs, reduced-precision floating point): the speed setting of v0.1.0.
+    // Auto still splits fused multiply-adds, which costs time on a CPU-bound console. settings.txt:
+    // cpu_accuracy=auto|accurate brings the accuracy back for a game that misbehaves.
+    v.cpu_accuracy.SetValue(Settings::CpuAccuracy::Unsafe);
     // Handheld renders at 720p: less GPU work for a GPU that is much smaller than the PS5's.
     v.use_docked_mode.SetValue(Settings::ConsoleMode::Handheld);
     v.resolution_setup.SetValue(Settings::ResolutionSetup::Res1X);
@@ -239,6 +242,7 @@ void ApplyPs4Settings() {
 
 /// settings.txt: lines "key=value" ('#' starts a comment). Each recognized line is logged; any
 /// other line is logged as unknown and ignored.
+///   cpu_accuracy=unsafe|auto|accurate  dynarmic accuracy (default unsafe: faster floating point)
 ///   astc=gpu|cpu|async          ASTC texture decoding (default cpu)
 ///   bgra=auto|on|off            B8G8R8A8 red/blue workaround (default auto: startup self-test)
 ///   a2b10=auto|off              A2B10G10R10 workaround from the startup self-test (default auto)
@@ -270,7 +274,11 @@ void ApplySettingsFile() {
         const std::string key = line.substr(0, eq);
         const std::string value = line.substr(eq + 1);
         bool known = true;
-        if (key == "astc" && (value == "gpu" || value == "cpu" || value == "async")) {
+        if (key == "cpu_accuracy" && (value == "unsafe" || value == "auto" || value == "accurate")) {
+            v.cpu_accuracy.SetValue(value == "unsafe"   ? Settings::CpuAccuracy::Unsafe
+                                    : value == "auto" ? Settings::CpuAccuracy::Auto
+                                                      : Settings::CpuAccuracy::Accurate);
+        } else if (key == "astc" && (value == "gpu" || value == "cpu" || value == "async")) {
             v.accelerate_astc.SetValue(value == "gpu"   ? Settings::AstcDecodeMode::Gpu
                                        : value == "cpu" ? Settings::AstcDecodeMode::Cpu
                                                         : Settings::AstcDecodeMode::CpuAsynchronous);
@@ -405,7 +413,7 @@ void CheckMutexes() {
 int main() {
     Ps4::OpenBootLog();
     Ps4::Log("eden-ps4 starting (Eden %s %s)", Common::g_scm_branch, Common::g_scm_desc);
-    Ps4::Log("PS4 build: %s; test 22: speed - btver2 build, gpu_accuracy low, no reactive flushing, texture audit off, profiler; defaults CPU ASTC, swizzle test off",
+    Ps4::Log("PS4 build: %s (btver2 build; defaults: cpu_accuracy unsafe, gpu_accuracy low, no reactive flushing, CPU ASTC, profiler on)",
              EDEN_PS4_BUILD_ID);
     Ps4::InstallCrashReporting();
     Ps4::StartWatchdog();
@@ -551,7 +559,7 @@ int main() {
             last_status = Ps4::NowUs();
             const auto perf = system.GetAndResetPerfStats();
             const auto mem = Common::Orbis::GetStats();
-            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), %lu MiB direct free",
+            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), largest free direct block %lu MiB",
                      perf.average_game_fps, perf.emulation_speed * 100.0, perf.frametime * 1000.0,
                      static_cast<unsigned long>(mem.committed_bytes >> 20),
                      static_cast<unsigned long>(mem.decommitted_bytes >> 20),

@@ -8,6 +8,11 @@ An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a
 > whole image. It is not a way to play Switch games on a PS4. Read [docs/STATUS.md](docs/STATUS.md)
 > for what was expected, what was reached, and the projected performance ceiling.
 
+> **Continuation:** the project is being picked up again, in small versions that each get one change
+> and one console test. See [docs/ROADMAP.md](docs/ROADMAP.md) for the plan up to 1.0.0 and
+> [CHANGELOG.md](CHANGELOG.md) for what changed. Until a release says otherwise, everything on this
+> page describes v0.1.0.
+
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
@@ -74,6 +79,9 @@ time to keep testing.
   homebrew port: the SDK's 16-bit `wmemchr`, the package layout that grants 4.4 GiB, the GPU
   driver's memory behaviour, fault handling, address-space limits).
 - [docs/dev-log-es.md](docs/dev-log-es.md): the full development log in Spanish, test by test.
+- [docs/ROADMAP.md](docs/ROADMAP.md): repository map, what not to touch, audit findings, the version plan and what 1.0.0 means.
+- [docs/UPDATING.md](docs/UPDATING.md): how a zip dropped in the repository root is applied by the `Apply update zip` workflow.
+- [CHANGELOG.md](CHANGELOG.md): what each version changed.
 
 ## Branches
 

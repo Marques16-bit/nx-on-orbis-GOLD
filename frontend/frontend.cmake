@@ -18,7 +18,10 @@ string(TIMESTAMP _ps4_build_stamp "%Y%m%dT%H%M%SZ" UTC)
 execute_process(COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --short=12 HEAD
     OUTPUT_VARIABLE _ps4_eden_revision OUTPUT_STRIP_TRAILING_WHITESPACE
     COMMAND_ERROR_IS_FATAL ANY)
-set(_ps4_build_id "test22-${_ps4_build_stamp}-${_ps4_eden_revision}")
+# The project version (bump it with every release; see CHANGELOG.md) leads the build id, which is
+# printed at the top of boot.log and in the release's ELF name.
+set(EDEN_PS4_VERSION "0.2.0" CACHE STRING "nx-on-orbis version")
+set(_ps4_build_id "v${EDEN_PS4_VERSION}-${_ps4_build_stamp}-${_ps4_eden_revision}")
 target_compile_definitions(eden-ps4 PRIVATE EDEN_PS4_BUILD_ID="${_ps4_build_id}")
 file(WRITE "${CMAKE_BINARY_DIR}/eden-ps4-build-id.txt" "${_ps4_build_id}\n")
 
