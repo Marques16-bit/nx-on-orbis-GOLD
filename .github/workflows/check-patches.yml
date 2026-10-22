@@ -2,8 +2,10 @@ name: Check patches and host tests
 
 # Cheap checks that need no PS4 toolchain:
 #   - the 27 patches in patches/eden/ still apply, in order, to the Eden commit this port is based on;
-#   - the host tests in tests/ build and pass.
-# The full PS4 build is not done here yet (see docs/ROADMAP.md, v0.3.0).
+#   - the host tests in tests/ build and pass;
+#   - the presentation sources of Eden (after the patches) are kept as the "eden-sources" artifact,
+#     which is what the colour fix is written against.
+# The PS4 build itself is the "Build PS4 package" workflow.
 
 on:
   push:
@@ -11,6 +13,7 @@ on:
     paths:
       - 'patches/**'
       - 'scripts/**'
+      - 'ci/**'
       - 'frontend/heap_census.cpp'
       - 'tests/**'
       - '.github/workflows/check-patches.yml'
@@ -37,6 +40,14 @@ jobs:
             git -C deps/eden log --oneline | head -40
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect the presentation sources of Eden
+        run: bash ci/collect-eden-sources.sh
+      - name: Upload them
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-sources
+          path: eden-sources/
+          retention-days: 30
 
   host-tests:
     name: Host tests
@@ -49,3 +60,19 @@ jobs:
           g++ -O2 -std=c++20 -Wall -Wextra -fno-omit-frame-pointer -pthread \
               tests/heap_census_test.cpp frontend/heap_census.cpp -o heap_census_test $W
           ./heap_census_test
+
+  ci-scripts:
+    name: CI scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax of every script
+        run: |
+          for f in ci/*.sh scripts/*.sh tools/*.sh configure-eden.sh package-eden.sh; do
+            bash -n "$f" && echo "ok  $f"
+          done
+      - name: Release notes can be cut from the CHANGELOG
+        run: |
+          v="$(sed -n 's/^set(EDEN_PS4_VERSION "\([^"]*\)".*/\1/p' frontend/frontend.cmake)"
+          echo "frontend version: $v"
+          bash ci/release-notes.sh "$v" | head -n 20

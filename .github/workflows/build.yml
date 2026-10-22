@@ -1,0 +1,146 @@
+name: Build PS4 package
+
+# Builds the .pkg and the ELF on GitHub, with no step done by hand (see docs/BUILDING.md).
+#   Run workflow (Actions tab): builds and keeps the .pkg/.elf as an artifact of the run.
+#   Push a tag vX.Y.Z:          the same, and publishes a GitHub release with the CHANGELOG.md notes
+#                               (a pre-release while the version is 0.x).
+# All the logic is in ci/*.sh, so fixes to the build arrive with an update zip; this file rarely changes.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  NXO_ROOT: ${{ github.workspace }}
+  NXO_LLVM_BIN: /usr/lib/llvm-18/bin
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_MAXSIZE: 3G
+  CCACHE_COMPRESS: '1'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-18 lld-18 llvm-18 ninja-build ccache \
+              glslang-tools python3-pil make perl
+          python3 -m pip install --user cmake
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          git config --global user.name  "ci"          # fetch-eden.sh applies patches with git am
+          git config --global user.email "ci@localhost"
+
+      - name: Key of the dependency cache
+        id: key
+        run: |
+          h="$(cat ci/env.sh ci/stage-sdk.sh ci/stage-libcxx.sh ci/stage-openssl.sh ci/stage-ffmpeg.sh \
+                   toolchain/runtimes-ps4.cmake tools/ps4-cc.sh tools/env-build.sh \
+                   toolchain/include-overlay/* | sha256sum | cut -c1-16)"
+          echo "h=$h" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the dependency cache (SDK, libc++ 18, OpenSSL, FFmpeg)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            sdk-dl
+            tools-dl
+            libcxx18
+            prefix
+            stamps
+          key: ps4-deps-${{ steps.key.outputs.h }}-${{ github.run_id }}
+          restore-keys: |
+            ps4-deps-${{ steps.key.outputs.h }}-
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: |
+            ccache-
+
+      - name: Stamps before
+        id: before
+        run: echo "s=$(ls stamps 2>/dev/null | sort | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+
+      - name: Dependencies (SDK, libc++ 18, OpenSSL, FFmpeg)
+        run: bash ci/run.sh sdk libcxx openssl ffmpeg
+
+      - name: Stamps after
+        id: after
+        if: always()
+        run: echo "s=$(ls stamps 2>/dev/null | sort | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+
+      - name: Save the dependency cache (also after a failure, so finished stages are not redone)
+        if: always() && steps.after.outputs.s != steps.before.outputs.s
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            sdk-dl
+            tools-dl
+            libcxx18
+            prefix
+            stamps
+          key: ps4-deps-${{ steps.key.outputs.h }}-${{ github.run_id }}
+
+      - name: Eden and package
+        env:
+          TAG_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          export NXO_VERSION="${TAG_VERSION#v}"
+          bash ci/run.sh eden package
+
+      - name: Save the compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ github.run_id }}
+
+      - name: Collect diagnostics
+        if: always()
+        run: bash ci/collect-diagnostics.sh
+
+      - name: Diagnostics (logs of every stage, CMake logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics
+          path: diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: The package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps4-package
+          path: |
+            out-eden/*.pkg
+            elf/*.elf
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v="$GITHUB_REF_NAME"
+          bash ci/release-notes.sh "$v" > release-notes.md
+          cp out-eden/*.pkg "nx-on-orbis-$v.pkg"
+          cp "$(ls -t elf/*.elf | head -n 1)" "nx-on-orbis-$v.elf"
+          pre=""; case "$v" in v0.*) pre="--prerelease" ;; esac
+          gh release create "$v" "nx-on-orbis-$v.pkg" "nx-on-orbis-$v.elf" \
+              --title "$v" --notes-file release-notes.md --verify-tag $pre
