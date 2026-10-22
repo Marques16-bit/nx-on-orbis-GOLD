@@ -14,3 +14,13 @@ out/
 out-eden/
 elf/
 *.log
+
+# CI build work folders (ci/run.sh)
+tools-dl/
+dl/
+logs/
+stamps/
+diagnostics/
+eden-sources/
+.ccache/
+release-notes.md

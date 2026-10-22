@@ -1,5 +1,32 @@
 # Building from source
 
+## The easy way: GitHub builds it
+
+The workflow **Build PS4 package** (`.github/workflows/build.yml`) builds everything on an Ubuntu
+24.04 runner, with no hand step. In the repository: *Actions → Build PS4 package → Run workflow*.
+When it finishes, the `.pkg` and the matching `.elf` are in the run's artifact `ps4-package` (kept
+30 days). Pushing a tag `vX.Y.Z` does the same and also publishes a release with that version's
+section of `CHANGELOG.md` as notes. The first run takes a couple of hours (Eden is big); the SDK,
+libc++, OpenSSL and FFmpeg are cached, and so are Eden's compiled objects, so later runs are much
+shorter.
+
+The work is done by `ci/run.sh`, stage by stage: `sdk`, `libcxx`, `openssl`, `ffmpeg`, `eden`,
+`package`. The same script runs anywhere with Ubuntu 24.04, clang 18, lld, Ninja, CMake, glslang,
+Perl, Python with Pillow, the `gh` CLI and `GH_TOKEN` set:
+
+```bash
+export NXO_ROOT=$PWD NXO_LLVM_BIN=/usr/lib/llvm-18/bin
+bash ci/run.sh                 # all stages
+bash ci/run.sh eden package    # only some
+```
+
+When a stage fails, its last lines are in the job summary and every stage log, the SDK layout report
+(`logs/sdk-layout.txt`) and the CMake logs are in the `build-diagnostics` artifact: that is what to
+look at first.
+
+The sections below describe each piece and how it was made by hand on Windows, which is still
+supported: without `NXO_ROOT` the scripts use the original machine's paths.
+
 Everything was built on **Windows 11 with Git Bash**. It has only ever been built on one machine, and
 the scripts use that machine's absolute paths. Expect to adjust things; this page lists every piece
 and how it was made, so the build can be reproduced.

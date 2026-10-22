@@ -2,7 +2,39 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.2.0] - in preparation
+## [0.3.0] - in preparation
+
+Includes everything of 0.2.0, which is not built on its own. The first version that can be built
+without the original author's machine.
+
+### Added
+- **Build on GitHub**: the workflow `Build PS4 package` (`.github/workflows/build.yml`) builds the
+  `.pkg` and the ELF on an Ubuntu 24.04 runner: PS4 SDK and OpenOrbis tools, LLVM 18 libc++, OpenSSL,
+  FFmpeg, Eden with the patches and the frontend, then the package. Run it from the Actions tab, or
+  push a tag `vX.Y.Z` to also publish a release whose notes are this file's section for that
+  version (a pre-release while the version is 0.x). The dependencies are cached; the compiler cache
+  is kept even after a failed run; every stage's log, the SDK layout report and the CMake logs are
+  uploaded as the `build-diagnostics` artifact.
+- All the logic lives in `ci/*.sh` (`run.sh`, one `stage-*.sh` per stage), so build fixes arrive
+  with an update zip and the workflow file almost never changes.
+- `check-patches.yml` also keeps Eden's presentation sources (swapchain, present, blit) as the
+  `eden-sources` artifact, and checks the syntax of every script and that `CHANGELOG.md` has the
+  section of the current version.
+
+### Changed
+- `toolchain/eden-ps4.cmake`, `toolchain/runtimes-ps4.cmake`, `tools/env-build.sh`,
+  `tools/ps4-cc.sh`, `configure-eden.sh` and `package-eden.sh` take the repository location from
+  `NXO_ROOT` (and clang from `NXO_LLVM_BIN`). Without them they use the original Windows paths, as
+  before. `package-eden.sh` now also runs on Linux.
+- `docs/BUILDING.md` starts with the GitHub build.
+- Version 0.3.0 (`EDEN_PS4_VERSION` in `frontend/frontend.cmake`).
+
+### Known
+- The build workflow has not run yet: its first runs are expected to need fixes, read from the
+  stage logs (the SDK's Linux layout and the exact asset names of the downloads were not verifiable
+  beforehand). Not verified on a console.
+
+## [0.2.0] - not released on its own (included in 0.3.0)
 
 First version after the original author closed the experiment. No change to the emulator core, the
 patches or the package layout: only the frontend, tests, docs and automation.

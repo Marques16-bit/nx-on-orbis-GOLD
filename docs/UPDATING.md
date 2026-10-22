@@ -11,6 +11,12 @@ can never come inside a zip). On github.com, in the repository:
    (typing the slashes creates the folders). Paste the file's content, *Commit changes*.
 2. Repeat for `.github/workflows/check-patches.yml`.
 
+## The build workflow
+
+Same way: *Add file → Create new file*, name `.github/workflows/build.yml`, paste, commit. (And
+replace the content of `.github/workflows/check-patches.yml` with the new version, with the pencil
+icon.) Then *Actions → Build PS4 package → Run workflow*; see docs/BUILDING.md.
+
 ## For every update
 
 1. *Add file → Upload files* and drop `update-<version>.zip` into the **root** of the repository

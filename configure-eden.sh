@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Configures Eden (deps/eden) for the PS4 into build-eden/.
 set -e
-source /c/Users/alejo/eden-ps4/tools/env-build.sh
+# NXO_ROOT set (CI / Linux): the repository root. Unset: the original Windows machine.
+if [ -n "${NXO_ROOT:-}" ]; then R="$NXO_ROOT"; W="$NXO_ROOT"; else R=/c/Users/alejo/eden-ps4; W=C:/Users/alejo/eden-ps4; fi
+source "$R/tools/env-build.sh"
 unset OO_PS4_TOOLCHAIN
-R=/c/Users/alejo/eden-ps4
 cmake -S $R/deps/eden -B $R/build-eden -G Ninja \
- -DCMAKE_TOOLCHAIN_FILE=C:/Users/alejo/eden-ps4/toolchain/eden-ps4.cmake -DPS4_BUILD_PKG=OFF \
+ -DCMAKE_TOOLCHAIN_FILE=$W/toolchain/eden-ps4.cmake -DPS4_BUILD_PKG=OFF \
  -DCMAKE_BUILD_TYPE=Release -DENABLE_LTO=OFF -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF \
  -DYUZU_ROOM_STANDALONE=OFF -DYUZU_TESTS=OFF -DBUILD_TESTING=OFF -DENABLE_OPENGL=OFF -DENABLE_CUBEB=OFF \
  -DENABLE_WEB_SERVICE=OFF -DENABLE_LIBUSB=OFF -DYUZU_CRASH_DUMPS=OFF -DENABLE_WERROR=OFF \
@@ -15,4 +16,4 @@ cmake -S $R/deps/eden -B $R/build-eden -G Ninja \
  -DOPENSSL_INCLUDE_DIR=$PS4_PREFIX/include -DOPENSSL_SSL_LIBRARY=$PS4_PREFIX/lib/libssl.a \
  -DOPENSSL_CRYPTO_LIBRARY=$PS4_PREFIX/lib/libcrypto.a \
  -U "FFmpeg_*" -DFFMPEG_DIR=$PS4_PREFIX \
- -DCMAKE_PROJECT_yuzu_INCLUDE=C:/Users/alejo/eden-ps4/frontend/inject.cmake "$@"
+ -DCMAKE_PROJECT_yuzu_INCLUDE=$W/frontend/inject.cmake "$@"
