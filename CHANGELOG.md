@@ -53,6 +53,10 @@ without the original author's machine.
   line ahead of the SDK. `toolchain/eden-ps4.cmake` now restricts package, library and header
   searches to the PS4 prefixes (non-Windows hosts only), and the stage checks `build.ninja` right
   after configure and stops within minutes if a host path is still there.
+- Package stage: "No usable version of libssl was found" from `PkgTool.Core` (OpenOrbis' packaging
+  tool, an old .NET program that cannot use the runner's OpenSSL 3). The stage now probes it and, if
+  it does not start, unpacks Ubuntu 20.04's libssl 1.1 privately and points .NET at it; it also
+  turns ICU off and records what the tool is (`logs/pkgtool-env.txt`).
 - The compiler-cache folder is always created, so saving the cache after an early failure no longer
   warns.
 
