@@ -3,11 +3,14 @@ set -euo pipefail
 cd "$NXO_ROOT"
 mkdir -p deps
 
-if [ ! -d deps/llvm-project ]; then
+if [ ! -d deps/llvm-project/.git ]; then
+    rm -rf deps/llvm-project
     git clone --depth 1 --filter=blob:none --sparse --branch llvmorg-18.1.8 \
         https://github.com/llvm/llvm-project.git deps/llvm-project
-    git -C deps/llvm-project sparse-checkout set runtimes libcxx libcxxabi libunwind cmake llvm/cmake
 fi
+# llvm/utils is needed too: runtimes/CMakeLists.txt adds llvm/utils/llvm-lit as a subdirectory.
+git -C deps/llvm-project sparse-checkout set runtimes libcxx libcxxabi libunwind cmake llvm/cmake \
+    llvm/utils third-party
 
 # OpenOrbis has FreeBSD's sendfile: keep libc++'s Linux sendfile path out. The condition that guards
 # the sendfile include gets "&& !defined(__ORBIS__)" (BUILDING.md: "line ~40").

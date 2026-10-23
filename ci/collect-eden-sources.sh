@@ -14,6 +14,6 @@ rm -rf "$out"; mkdir -p "$out"
     find src/video_core/host_shaders -type f \( -iname '*present*' -o -iname '*blit*' \) 2>/dev/null
     [ -f src/common/settings.h ] && echo src/common/settings.h
 } | sort -u | while IFS= read -r f; do cp --parents "$f" "$out/"; done
-git log --oneline | head -n 40 > "$out/PATCH-STACK.txt"
+git log --oneline -n 40 > "$out/PATCH-STACK.txt"
 echo "collected $(find "$out" -type f | wc -l) files, $(du -sk "$out" | cut -f1) KiB:"
 (cd "$out" && find . -type f | sort)

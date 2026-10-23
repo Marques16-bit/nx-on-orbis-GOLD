@@ -42,10 +42,10 @@ if [ ! -f sdk-dl/orbis-sdk-v1/toolchain/orbis-sdk.cmake ]; then
     fetch_release orbis-ports/orbis-porting-kit dl/sdk orbis-sdk-v1
     rm -rf sdk-dl/_x sdk-dl/orbis-sdk-v1
     extract sdk-dl/_x dl/sdk/*
-    cmake_file="$(find sdk-dl/_x -path '*/toolchain/orbis-sdk.cmake' | head -n 1)"
+    cmake_file="$(find sdk-dl/_x -path '*/toolchain/orbis-sdk.cmake' -print -quit)"
     if [ -z "$cmake_file" ]; then
         echo "::error::toolchain/orbis-sdk.cmake is not in the downloaded SDK; what is there:"
-        find sdk-dl/_x -maxdepth 4 | sort | head -n 80
+        find sdk-dl/_x -maxdepth 4 | sort | sed -n '1,80p'
         exit 1
     fi
     mv "$(dirname "$(dirname "$cmake_file")")" sdk-dl/orbis-sdk-v1
@@ -60,10 +60,10 @@ if [ ! -d tools-dl/OpenOrbis/samples/piglet ]; then
     mapfile -t linux_assets < <(ls dl/oo/* | grep -i linux || true)
     [ "${#linux_assets[@]}" -gt 0 ] || mapfile -t linux_assets < <(ls dl/oo/*)
     extract tools-dl/_x "${linux_assets[@]}"
-    piglet="$(find tools-dl/_x -type d -path '*/samples/piglet' | head -n 1)"
+    piglet="$(find tools-dl/_x -type d -path '*/samples/piglet' -print -quit)"
     if [ -z "$piglet" ]; then
         echo "::error::samples/piglet is not in the OpenOrbis download; what is there:"
-        find tools-dl/_x -maxdepth 4 | sort | head -n 80
+        find tools-dl/_x -maxdepth 4 | sort | sed -n '1,80p'
         exit 1
     fi
     mv "$(dirname "$(dirname "$piglet")")" tools-dl/OpenOrbis
@@ -72,7 +72,7 @@ fi
 
 # ---- 3. the packaging tools into the SDK's own bin/linux (where the SDK's CMake looks for them)
 mkdir -p "$SDKROOT/sdk/bin/linux"
-oo_bin="$(find tools-dl/OpenOrbis -type d -path '*/bin/linux' | head -n 1)"
+oo_bin="$(find tools-dl/OpenOrbis -type d -path '*/bin/linux' -print -quit)"
 if [ -n "$oo_bin" ]; then
     cp -n "$oo_bin"/* "$SDKROOT/sdk/bin/linux/" 2>/dev/null || true
 fi

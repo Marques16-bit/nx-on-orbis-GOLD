@@ -29,10 +29,18 @@ without the original author's machine.
 - `docs/BUILDING.md` starts with the GitHub build.
 - Version 0.3.0 (`EDEN_PS4_VERSION` in `frontend/frontend.cmake`).
 
+### Fixed (found by the first runs on GitHub)
+- `scripts/fetch-eden.sh` ended with `git log | head -3`: on Eden's long history `head` closed the
+  pipe early and, with `set -o pipefail`, the script exited with 141 (SIGPIPE) after the patches had
+  applied fine. Same pattern removed from `ci/`.
+- The libc++ stage's sparse checkout lacked `llvm/utils` (CMake: "llvm/utils/llvm-lit is not an
+  existing directory").
+- The compiler-cache folder is always created, so saving the cache after an early failure no longer
+  warns.
+
 ### Known
-- The build workflow has not run yet: its first runs are expected to need fixes, read from the
-  stage logs (the SDK's Linux layout and the exact asset names of the downloads were not verifiable
-  beforehand). Not verified on a console.
+- The build workflow is still being brought up stage by stage (the SDK stage and the libc++ configure
+  checks already run on GitHub). Not verified on a console.
 
 ## [0.2.0] - not released on its own (included in 0.3.0)
 
