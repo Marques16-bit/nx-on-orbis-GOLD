@@ -44,6 +44,10 @@ without the original author's machine.
   was true. `-nostdlibinc` (non-Windows hosts only) now keeps the compiler's own headers and the
   SDK's, in the libc++, OpenSSL/FFmpeg and Eden flags; the same leak would have hit their configure
   checks.
+- Eden stage: `CMake Error: The source directory "/deps/eden" does not exist`. `tools/env-build.sh`
+  (rewritten in this version) used a variable named `R` and unset it, which erased the `R` of
+  `configure-eden.sh`, the script that sources it. It now uses a private name. The Eden build also
+  runs with `ninja -k 0`.
 - The compiler-cache folder is always created, so saving the cache after an early failure no longer
   warns.
 

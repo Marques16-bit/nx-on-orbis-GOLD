@@ -44,7 +44,7 @@ for s in "${stages[@]}"; do
         summary '```'
         summary "- the first errors of stage **$s**:"
         summary '```'
-        grep -m 25 -E "error:|Error |FAILED:|fatal:" "logs/$s.log" | cut -c1-300 >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        grep -m 25 -E "error:|Error:|Error |FAILED:|fatal:" "logs/$s.log" | cut -c1-300 >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
         summary '```'
         exit 1
     fi

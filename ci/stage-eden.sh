@@ -15,7 +15,9 @@ if [ -n "${NXO_VERSION:-}" ]; then
     extra+=(-DEDEN_PS4_VERSION="$NXO_VERSION")
 fi
 bash configure-eden.sh "${extra[@]}"
-cmake --build build-eden --target eden-ps4 -j"$JOBS"
+# -k 0: keep going after a failure; with the compiler cache every object that did build is kept, so a
+# run that fails still pays for the next one, and one run lists all the errors.
+cmake --build build-eden --target eden-ps4 -j"$JOBS" -- -k 0
 ls -la build-eden/bin/eden-ps4
 cat build-eden/eden-ps4-build-id.txt 2>/dev/null || true
 if command -v ccache >/dev/null 2>&1; then ccache -s | head -n 12 || true; fi
