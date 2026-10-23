@@ -31,6 +31,14 @@ set(CMAKE_C_COMPILER_TARGET x86_64-pc-freebsd12-elf)
 set(CMAKE_CXX_COMPILER_TARGET x86_64-pc-freebsd12-elf)
 set(CMAKE_ASM_COMPILER_TARGET x86_64-pc-freebsd12-elf)
 set(_common "-fPIC -funwind-tables -D__PS4__ -DPS4 -D__ORBIS__ -D_BSD_SOURCE=1 -U__FreeBSD__ -isysroot ${SDK}")
+# On a Linux host clang's FreeBSD driver, given no --sysroot, also searches the host's /usr/include:
+# __has_include(<linux/random.h>) and configure checks then see Linux headers that do not exist on
+# the PS4 (libc++'s random.cpp: "'asm/types.h' file not found"). -nostdlibinc drops the system
+# directories and keeps the compiler's own headers plus the -isystem paths below. On Windows there is
+# no /usr/include, so the flags stay exactly as they were.
+if(NOT CMAKE_HOST_WIN32)
+  string(APPEND _common " -nostdlibinc")
+endif()
 set(OVERLAY "${NXO_ROOT}/toolchain/include-overlay")
 set(CMAKE_C_FLAGS_INIT "${_common} -isystem ${OVERLAY} -isystem ${COMPAT}/include -isystem ${SDK}/include -include orbis_prefix.h")
 set(CMAKE_CXX_FLAGS_INIT "${_common} -nostdinc++ -isystem ${OVERLAY} -isystem ${COMPAT}/include -isystem ${SDK}/include -include orbis_prefix.h")

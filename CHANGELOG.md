@@ -39,6 +39,11 @@ without the original author's machine.
   libc++'s automatic thread-API choice; `LIBCXX_HAS_PTHREAD_API=ON` now says it explicitly (and puts
   it in `__config_site`, which Eden's build reads later). The stage also builds with `ninja -k 0`, and
   a failed stage lists its first 25 error lines in the job summary, so one run shows every error.
+- libc++ stage: "'asm/types.h' file not found" in `random.cpp`. Given no `--sysroot`, clang's FreeBSD
+  driver also searched the Linux runner's own `/usr/include`, so `__has_include(<linux/random.h>)`
+  was true. `-nostdlibinc` (non-Windows hosts only) now keeps the compiler's own headers and the
+  SDK's, in the libc++, OpenSSL/FFmpeg and Eden flags; the same leak would have hit their configure
+  checks.
 - The compiler-cache folder is always created, so saving the cache after an early failure no longer
   warns.
 

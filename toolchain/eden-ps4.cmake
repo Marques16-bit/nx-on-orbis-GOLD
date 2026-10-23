@@ -39,3 +39,12 @@ set(CMAKE_CXX_FLAGS_INIT "${CMAKE_CXX_FLAGS_INIT} -femulated-tls")
 # units. Without it the compiler targets baseline x86-64 (SSE2), and races were CPU-bound (test 22).
 set(CMAKE_C_FLAGS_INIT "${CMAKE_C_FLAGS_INIT} -march=btver2")
 set(CMAKE_CXX_FLAGS_INIT "${CMAKE_CXX_FLAGS_INIT} -march=btver2")
+# On a Linux host clang's FreeBSD driver, given no --sysroot, also searches the host's /usr/include:
+# __has_include(<linux/random.h>) and configure checks then see Linux headers that do not exist on
+# the PS4 (libc++'s random.cpp: "'asm/types.h' file not found"). -nostdlibinc drops the system
+# directories and keeps the compiler's own headers plus the -isystem paths. On Windows there is
+# no /usr/include, so the flags stay exactly as they were.
+if(NOT CMAKE_HOST_WIN32)
+  set(CMAKE_C_FLAGS_INIT "${CMAKE_C_FLAGS_INIT} -nostdlibinc")
+  set(CMAKE_CXX_FLAGS_INIT "${CMAKE_CXX_FLAGS_INIT} -nostdlibinc")
+endif()

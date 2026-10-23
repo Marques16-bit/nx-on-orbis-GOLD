@@ -15,4 +15,7 @@ export PS4_COMPAT=$R/sdk-dl/orbis-sdk-v1/orbis-compat
 export PS4_OVERLAY=$R/toolchain/include-overlay
 export PS4_PREFIX=$R/prefix
 export PS4_CFLAGS="--target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -D__PS4__ -D__ORBIS__ -D_BSD_SOURCE=1 -U__FreeBSD__ -isysroot $PS4_SDK -isystem $PS4_OVERLAY -isystem $PS4_COMPAT/include -isystem $PS4_SDK/include -include orbis_prefix.h"
+# Linux host: clang's FreeBSD driver would also search the host's /usr/include (see
+# toolchain/runtimes-ps4.cmake); on Windows there is none and the flags are unchanged.
+if [ -n "${NXO_ROOT:-}" ]; then export PS4_CFLAGS="$PS4_CFLAGS -nostdlibinc"; fi
 unset R
