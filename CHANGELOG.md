@@ -48,6 +48,11 @@ without the original author's machine.
   (rewritten in this version) used a variable named `R` and unset it, which erased the `R` of
   `configure-eden.sh`, the script that sources it. It now uses a private name. The Eden build also
   runs with `ninja -k 0`.
+- Eden stage: every file of `src/common` failed with "`/usr/include/stdint.h`: 'bits/libc-header-start.h'
+  file not found". Eden's CMake found host (Linux) libraries and put `/usr/include` on the compile
+  line ahead of the SDK. `toolchain/eden-ps4.cmake` now restricts package, library and header
+  searches to the PS4 prefixes (non-Windows hosts only), and the stage checks `build.ninja` right
+  after configure and stops within minutes if a host path is still there.
 - The compiler-cache folder is always created, so saving the cache after an early failure no longer
   warns.
 

@@ -48,3 +48,18 @@ if(NOT CMAKE_HOST_WIN32)
   set(CMAKE_C_FLAGS_INIT "${CMAKE_C_FLAGS_INIT} -nostdlibinc")
   set(CMAKE_CXX_FLAGS_INIT "${CMAKE_CXX_FLAGS_INIT} -nostdlibinc")
 endif()
+# A Linux host also has its own libraries and headers (zlib, lz4, OpenSSL, opus...). Left alone,
+# find_package() picks them up and puts /usr/include on the compile line ahead of the SDK's headers
+# ("/usr/include/stdint.h: 'bits/libc-header-start.h' file not found"), or worse, links host
+# libraries into the PS4 executable. Only the PS4 prefixes may be searched for packages, libraries
+# and headers; programs (glslang, python, git...) still come from the host. On Windows there is
+# nothing of the kind to find, and none of this is applied.
+if(NOT CMAKE_HOST_WIN32)
+  list(APPEND CMAKE_FIND_ROOT_PATH "${NXO_ROOT}/prefix" "${EDEN_PS4_LIBCXX}" "${OO_PS4_TOOLCHAIN}")
+  set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+  set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+  set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+  set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+  set(ENV{PKG_CONFIG_PATH} "")
+  set(ENV{PKG_CONFIG_LIBDIR} "${NXO_ROOT}/prefix/lib/pkgconfig")
+endif()
