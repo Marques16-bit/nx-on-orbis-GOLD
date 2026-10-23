@@ -12,6 +12,10 @@ fi
 git -C deps/llvm-project sparse-checkout set runtimes libcxx libcxxabi libunwind cmake llvm/cmake \
     llvm/utils third-party
 
+# LIBCXX_HAS_PTHREAD_API=ON writes _LIBCPP_HAS_THREAD_API_PTHREAD into __config_site. libc++ would
+# otherwise pick its thread API from __FreeBSD__ / __linux__ / ..., and the PS4 flags pass
+# -U__FreeBSD__ ("error: No thread API"). Eden's own build then reads the same __config_site.
+
 # OpenOrbis has FreeBSD's sendfile: keep libc++'s Linux sendfile path out. The condition that guards
 # the sendfile include gets "&& !defined(__ORBIS__)" (BUILDING.md: "line ~40").
 python3 - <<'PY'
@@ -51,12 +55,14 @@ cmake -S deps/llvm-project/runtimes -B build-libcxx -G Ninja \
     -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
     -DLIBCXX_ENABLE_SHARED=OFF -DLIBCXXABI_ENABLE_SHARED=OFF \
     -DLIBCXX_HAS_MUSL_LIBC=ON -DLIBCXX_CXX_ABI=libcxxabi \
+    -DLIBCXX_HAS_PTHREAD_API=ON \
     -DLIBCXX_ENABLE_NEW_DELETE_DEFINITIONS=OFF \
     -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
     -DLIBCXX_ENABLE_TIME_ZONE_DATABASE=OFF \
     -DLIBCXX_INCLUDE_BENCHMARKS=OFF -DLIBCXX_INCLUDE_TESTS=OFF -DLIBCXXABI_INCLUDE_TESTS=OFF \
     -DCMAKE_INSTALL_PREFIX="$NXO_ROOT/libcxx18"
-cmake --build build-libcxx -j"$JOBS"
+# -k 0: keep going after a failure, so one run reports every error instead of the first one.
+cmake --build build-libcxx -j"$JOBS" -- -k 0
 cmake --install build-libcxx
 
 # As the SDK's own libc++ 11 does.

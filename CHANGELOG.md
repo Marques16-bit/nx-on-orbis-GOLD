@@ -35,6 +35,10 @@ without the original author's machine.
   applied fine. Same pattern removed from `ci/`.
 - The libc++ stage's sparse checkout lacked `llvm/utils` (CMake: "llvm/utils/llvm-lit is not an
   existing directory").
+- libc++ stage: "error: No thread API". The PS4 flags pass `-U__FreeBSD__`, which switches off
+  libc++'s automatic thread-API choice; `LIBCXX_HAS_PTHREAD_API=ON` now says it explicitly (and puts
+  it in `__config_site`, which Eden's build reads later). The stage also builds with `ninja -k 0`, and
+  a failed stage lists its first 25 error lines in the job summary, so one run shows every error.
 - The compiler-cache folder is always created, so saving the cache after an early failure no longer
   warns.
 
