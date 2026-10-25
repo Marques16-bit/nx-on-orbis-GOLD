@@ -2,7 +2,50 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.3.0] - in preparation
+## [0.4.0] - in preparation
+
+First version with a menu. Includes everything of 0.3.0, the first one built by GitHub (the package
+installed and started on a PS4 Pro).
+
+### Added
+- **A menu that opens at start**, in tabs (L1/R1 switch them): **Games** (the list, with sizes, and
+  the built-in Homebrew Menu as a last entry), **Video**, **CPU and memory**, **Advanced** and
+  **System** (language, restore defaults, and the facts that explain a game that does not start:
+  keys, firmware, free memory, where the logs are). Left/Right change a value, Cross goes to the
+  next one, Triangle restores the default, Circle goes back, OPTIONS plays the last game
+  highlighted. Every change is saved to `settings.txt` as it is made (the lines of options left at
+  their default are removed; comments and hand-written lines are kept), so it applies to the game
+  that starts next.
+- The menu is in **Portuguese and English** (System tab), with accents (`menu_font_latin.h`).
+- New `settings.txt` keys, all in the menu: `mode` (handheld/docked), `resolution`
+  (0.5, 0.75, 1, 1.5, 2), `speed_limit`, `multicore`, `vram` (conservative/aggressive) and
+  `language`.
+- **A new icon and home-screen background** (`assets/icon0.png`, `assets/pic1.png`, drawn by
+  `tools/make-icons.py`), used by the package instead of the old probe icon.
+- `tests/menu_test.cpp`: 72 host checks (settings.txt reading and writing, navigation, every tab
+  drawn in both languages); `Check patches and host tests` runs it.
+- `ci/prune-caches.sh`: the workflow deletes the old caches, keeping the newest of each kind.
+
+### Changed
+- The built-in Homebrew Menu **no longer starts by itself** when there are no games: the menu opens
+  and offers it as an entry. (On the first package built by GitHub it ended in
+  "Error: launchInit() failed"; see Known.)
+- **The build workflow keeps one file: the `.pkg`** (artifact `NX-on-Orbis-pkg`). The ELF is kept
+  only when "keep_elf" is ticked on a manual run; the diagnostics only after a failure; the release
+  has the `.pkg` only. The Eden sources for the colour work are kept only on a manual run of
+  `Check patches`.
+- Version 0.4.0.
+
+### Known
+- Not verified on a console. The menu was checked on a PC (layout, text, navigation, settings.txt);
+  the video-out and pad code that shows it on the PS4 is the same technique as the old game list.
+- `resolution` assumes Eden numbers its scales 0.5x..2x as 0..4 (`Res1X` is 2); the line is ignored
+  and logged if it does not.
+- "launchInit() failed" in the Homebrew Menu: to be diagnosed from `boot.log` and
+  `log/eden_log.txt` of that run.
+- Colours (red and blue swapped) are still open: they move to 0.5.0.
+
+## [0.3.0] - built by GitHub, not tagged
 
 Includes everything of 0.2.0, which is not built on its own. The first version that can be built
 without the original author's machine.

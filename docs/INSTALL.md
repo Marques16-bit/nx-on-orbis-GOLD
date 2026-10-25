@@ -42,8 +42,19 @@ Installing a newer package over it keeps everything in `/data/edenps4/`.
 
 1. Start **NX on Orbis**. The first start copies the firmware into its emulated system memory,
    which takes a moment.
-2. Pick a game with Up/Down and press Cross.
+2. The menu opens (below). Pick a game with Up/Down and press Cross.
 3. The first runs of a game stutter while shaders compile; they are cached for later runs.
+
+### The menu
+
+L1/R1 switch tabs: **Games**, **Video**, **CPU and memory**, **Advanced**, **System**. In the
+settings tabs Up/Down choose an option, Left/Right (or Cross) change its value, Triangle restores
+its default, Circle goes back to the games. OPTIONS plays the last game highlighted, from any tab.
+A value shown in teal with a dot is not the default. Changes are saved at once in `settings.txt` and
+apply to the game that starts next. The System tab changes the menu's language (Portuguese or
+English), restores every default, and shows whether `prod.keys` and the firmware were found, which
+is the first thing to look at when a game does not start. The last entry of the Games tab is the
+built-in Homebrew Menu, a test that needs no game.
 
 Controls (Switch layout by position): Circle = A, Cross = B, Triangle = X, Square = Y, L1/R1 = L/R,
 L2/R2 = ZL/ZR, Options = +, touch pad click = -, L3/R3 = sticks. Hold **Options + touch pad for 2
@@ -55,7 +66,7 @@ seconds** to quit.
 | --- | --- |
 | `updates/` | update and DLC `.nsp` files, applied when the game starts |
 | `game.txt` | full path of a game to start directly |
-| `nomenu.txt` (empty) | skip the game menu and start the last game played |
+| `nomenu.txt` (empty) | skip the menu and start the last game played |
 | `settings.txt` | overrides, one `key=value` per line (below) |
 
 | Key | Values (default first) | What |
@@ -69,6 +80,11 @@ seconds** to quit.
 | `dyna_state` | `0`-`3` (2) | Vulkan extended dynamic state level |
 | `vertex_input_dynamic` | `on`, `off` | |
 | `bgra`, `rg`, `a2b10`, `swizzle` | see `frontend/main.cpp` | color self-tests and workarounds (diagnostics) |
+| `mode` | `handheld`, `docked` | 720p or 1080p rendering |
+| `resolution` | `1`, `0.5`, `0.75`, `1.5`, `2` | internal resolution scale |
+| `speed_limit`, `multicore` | `on`, `off` | |
+| `vram` | `conservative`, `aggressive` | video memory use |
+| `language` | `pt`, `en` | the menu's language |
 | `env` | `NAME=VALUE` | environment for the GPU driver, e.g. `env=ORBIS_ARENA_MIB=1280` |
 
 ## Troubleshooting

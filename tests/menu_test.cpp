@@ -1,0 +1,318 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Host test for the menu (frontend/menu/): settings.txt reading and writing, the navigation, and
+// screenshots of every tab. Runs on a PC / in CI, not on the console.
+//
+//   g++ -O2 -std=c++20 -Wall -Wextra -Ifrontend tests/menu_test.cpp frontend/menu/menu_ui.cpp frontend/menu/settings_model.cpp frontend/menu/menu_canvas.cpp -o menu_test
+//   ./menu_test                 # exit code 0 = all good
+//   ./menu_test --render DIR    # also writes DIR/*.ppm, one screenshot per tab and language
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "menu/menu_ui.h"
+
+namespace {
+
+int g_failures = 0;
+int g_checks = 0;
+
+void Check(bool ok, const char* what) {
+    ++g_checks;
+    if (!ok) {
+        ++g_failures;
+        std::printf("  FAIL  %s\n", what);
+    }
+}
+
+using namespace Menu;
+
+/// A test rig: a menu with a few games, and the settings.txt it last saved.
+struct Rig {
+    std::string saved;
+    int saves = 0;
+    std::uint64_t now = 1000000;
+    std::uint32_t held = 0;
+    MenuUi ui;
+
+    explicit Rig(const std::string& settings, int games = 3, int initial = 0)
+        : ui(MakeGames(games), initial, MakeInfo(games), settings,
+             [this](const std::string& text) {
+                 saved = text;
+                 ++saves;
+             }) {}
+
+    static std::vector<GameEntry> MakeGames(int n) {
+        std::vector<GameEntry> games;
+        const char* names[] = {"Super Mario Odyssey [0100000000010000].nsp",
+                               "The Legend of Zelda - Tears of the Kingdom.xci", "Celeste.nsp",
+                               "Hollow Knight [0100633007D48000].nsp"};
+        const std::uint64_t sizes[] = {5800ull << 20, 16ull << 30, 1200ull << 20, 3ull << 30};
+        for (int i = 0; i < n; ++i) {
+            games.push_back({names[i % 4], sizes[i % 4]});
+        }
+        return games;
+    }
+    static SystemInfo MakeInfo(int games) {
+        (void)games;
+        SystemInfo info;
+        info.build_id = "v0.4.0-20261024T120000Z-5f142c79a1b2";
+        info.data_dir = "/data/edenps4";
+        info.keys_found = true;
+        info.firmware_files = 227;
+        info.free_memory_mib = 3120;
+        return info;
+    }
+    /// Press and release one button.
+    void Tap(std::uint32_t button) {
+        held = button;
+        ui.Update(held, now);
+        now += 50000;
+        held = 0;
+        ui.Update(held, now);
+        now += 50000;
+    }
+};
+
+void TestSettingsFile() {
+    std::printf("settings file\n");
+    {
+        SettingsFile f("");
+        Check(f.Language() == Lang::Pt, "default language is Portuguese");
+        const Option* mode = FindOption("mode");
+        Check(mode != nullptr && f.IsDefault(*mode), "empty file: every option at its default");
+        f.SetChoice(*mode, 1);
+        Check(f.Get("mode") == "docked", "a choice is written as key=value");
+        Check(f.Text().find("mode=docked") != std::string::npos, "...and is in the text");
+        f.SetChoice(*mode, 0);
+        Check(f.Get("mode").empty(), "back to the default: the line is removed");
+        Check(f.Text().find("mode=") == std::string::npos, "...from the text too");
+    }
+    {
+        // What a person may have written by hand: comments, spaces, CRLF, unknown keys, an env line.
+        const std::string hand = "# my notes\r\ncpu_accuracy = accurate  # slower\r\n\nfoo=bar\nenv=RADV_DEBUG=info,nohiz\nastc=gpu\n";
+        SettingsFile f(hand);
+        Check(f.Get("cpu_accuracy") == "accurate", "key with spaces, comment and CRLF is read");
+        Check(f.ChoiceIndex(*FindOption("cpu_accuracy")) == 2, "choice index follows");
+        f.SetChoice(*FindOption("cpu_accuracy"), 0);
+        f.SetChoice(*FindOption("gpu_accuracy"), 1);
+        const std::string text = f.Text();
+        Check(text.find("# my notes") != std::string::npos, "comments are kept");
+        Check(text.find("foo=bar") != std::string::npos, "unknown lines are kept");
+        Check(text.find("env=RADV_DEBUG=info,nohiz") != std::string::npos, "hand-written env lines are kept");
+        Check(text.find("astc=gpu") != std::string::npos, "other options are not touched");
+        Check(text.find("cpu_accuracy") == std::string::npos, "default removes the line of cpu_accuracy");
+        Check(text.find("gpu_accuracy=high") != std::string::npos, "a new option is appended");
+    }
+    {
+        SettingsFile f("env=RADV_DEBUG=info\n");
+        const Option* arena = FindOption("env:ORBIS_ARENA_MIB");
+        Check(arena != nullptr, "the driver arena option exists");
+        Check(f.ChoiceIndex(*arena) == arena->default_index, "no line: default arena");
+        f.SetChoice(*arena, 2);
+        Check(f.Text().find("env=ORBIS_ARENA_MIB=1536") != std::string::npos, "env option is written as env=NAME=value");
+        Check(f.Get("env:ORBIS_ARENA_MIB") == "1536" && f.Get("env:RADV_DEBUG") == "info", "env lines are told apart by name");
+        f.SetChoice(*arena, arena->default_index);
+        Check(f.Text().find("ORBIS_ARENA_MIB") == std::string::npos, "default arena removes its line");
+        Check(f.Text().find("env=RADV_DEBUG=info") != std::string::npos, "the other env line stays");
+    }
+    {
+        SettingsFile f("astc=bogus\nmode=docked\nlanguage=en\n");
+        Check(f.ChoiceIndex(*FindOption("astc")) == FindOption("astc")->default_index, "an invalid value reads as the default");
+        Check(f.Language() == Lang::En, "language=en");
+        f.ResetAll();
+        Check(f.Get("mode").empty() && f.Get("astc").empty(), "ResetAll removes the options");
+        Check(f.Get("language") == "en", "...but keeps the language");
+    }
+    {
+        // Every option: the default is one of its choices and the labels exist in both languages.
+        bool ok = true;
+        for (const Option& o : Catalog()) {
+            ok = ok && o.default_index >= 0 && o.default_index < int(o.choices.size()) && o.choices.size() >= 2 &&
+                 *o.label_pt && *o.label_en && *o.help_pt && *o.help_en;
+            for (const Choice& c : o.choices) {
+                ok = ok && *c.value && *c.pt && *c.en;
+            }
+        }
+        Check(ok, "the catalog is well formed");
+    }
+}
+
+void TestNavigation() {
+    std::printf("navigation\n");
+    {
+        Rig r("");
+        Check(r.ui.Update(0, r.now), "the first Update asks for a draw");
+        Check(!r.ui.Update(0, r.now), "nothing changed: no redraw");
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Cross);
+        Check(r.ui.Result().kind == MenuResult::Kind::Play && r.ui.Result().game == 2, "Down, Down, Cross plays game 3");
+    }
+    {
+        Rig r("", 3, 1);
+        r.Tap(Pad::Cross);
+        Check(r.ui.Result().game == 1, "the initial game is preselected");
+    }
+    {
+        Rig r("", 3, 0);
+        r.Tap(Pad::Up);
+        Check(true, "wrap up");
+        r.Tap(Pad::Cross);
+        Check(r.ui.Result().kind == MenuResult::Kind::Homebrew, "Up from the first game wraps to the Homebrew Menu");
+    }
+    {
+        Rig r("", 3, 1);
+        r.Tap(Pad::R1);
+        Check(r.ui.Tab() == 1, "R1: next tab");
+        r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1);
+        Check(r.ui.Tab() == 0, "R1 wraps around");
+        r.Tap(Pad::L1);
+        Check(r.ui.Tab() == 4, "L1 wraps backwards");
+        r.Tap(Pad::Circle);
+        Check(r.ui.Tab() == 0, "Circle goes back to the games");
+    }
+    {
+        Rig r("");
+        r.Tap(Pad::R1); // VIDEO: first option is the console mode
+        r.Tap(Pad::Right);
+        Check(r.saves == 1 && r.saved.find("mode=docked") != std::string::npos, "Right changes the value and saves");
+        r.Tap(Pad::Right);
+        Check(r.saved.find("mode=") == std::string::npos, "wrapping back to the default removes the line");
+        r.Tap(Pad::Left);
+        Check(r.saved.find("mode=docked") != std::string::npos, "Left goes the other way (wraps)");
+        r.Tap(Pad::Triangle);
+        Check(r.saved.find("mode=") == std::string::npos, "Triangle restores the default");
+        r.Tap(Pad::Cross);
+        Check(r.saved.find("mode=docked") != std::string::npos, "Cross cycles to the next value");
+    }
+    {
+        Rig r("");
+        r.Tap(Pad::L1); // SYSTEM
+        r.Tap(Pad::Cross); // language
+        Check(r.saved.find("language=en") != std::string::npos, "Cross on the language switches to English");
+        Check(r.ui.Result().kind == MenuResult::Kind::None, "...and does not start a game");
+        r.Tap(Pad::Down);
+        r.saves = 0;
+        r.Tap(Pad::Cross);
+        Check(r.saves == 0, "restore defaults asks for confirmation first");
+        r.Tap(Pad::Cross);
+        Check(r.saves == 1 && r.saved.find("language=en") != std::string::npos, "second press resets the options, not the language");
+    }
+    {
+        Rig r("mode=docked\nastc=gpu\n");
+        r.Tap(Pad::L1);
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Cross);
+        r.Tap(Pad::Up); // moving cancels the confirmation
+        r.Tap(Pad::Down);
+        r.saves = 0;
+        r.Tap(Pad::Cross);
+        Check(r.saves == 0, "moving away cancels a pending confirmation");
+    }
+    {
+        Rig r("");
+        r.Tap(Pad::R1);
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Options);
+        Check(r.ui.Result().kind == MenuResult::Kind::Play && r.ui.Result().game == 0, "OPTIONS plays the last highlighted game from any tab");
+    }
+    {
+        Rig r("", 0);
+        r.Tap(Pad::Options);
+        Check(r.ui.Result().kind == MenuResult::Kind::None, "OPTIONS with no games does nothing");
+        r.Tap(Pad::Cross);
+        Check(r.ui.Result().kind == MenuResult::Kind::Homebrew, "with no games the only row is the Homebrew Menu");
+    }
+    {
+        // Key repeat: held Down moves after 0.4 s, then every 0.11 s.
+        Rig r("", 4, 0);
+        r.ui.Update(Pad::Down, r.now);
+        r.ui.Update(Pad::Down, r.now + 300000);
+        r.ui.Update(Pad::Down, r.now + 450000);
+        r.ui.Update(Pad::Down, r.now + 500000);
+        r.ui.Update(Pad::Down, r.now + 570000);
+        r.ui.Update(0, r.now + 600000);
+        r.ui.Update(Pad::Cross, r.now + 650000);
+        Check(r.ui.Result().game == 3, "holding Down repeats (1 press + 2 repeats = row 3)");
+    }
+}
+
+struct Frame {
+    std::vector<std::uint32_t> pixels = std::vector<std::uint32_t>(1920 * 1080);
+    Canvas Canvas_() { return Canvas{pixels.data(), 1920, 1080}; }
+};
+
+void WritePpm(const std::string& path, const Frame& frame) {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        return;
+    }
+    std::fprintf(f, "P6\n1920 1080\n255\n");
+    for (std::uint32_t p : frame.pixels) {
+        const unsigned char rgb[3] = {static_cast<unsigned char>(p >> 16), static_cast<unsigned char>(p >> 8),
+                                      static_cast<unsigned char>(p)};
+        std::fwrite(rgb, 1, 3, f);
+    }
+    std::fclose(f);
+}
+
+void TestDrawing(const char* render_dir) {
+    std::printf("drawing\n");
+    for (int english = 0; english < 2; ++english) {
+        for (int games : {4, 0}) {
+            Rig r(english ? "language=en\nmode=docked\nresolution=1.5\ncpu_accuracy=accurate\n" : "mode=docked\nresolution=1.5\nenv=ORBIS_ARENA_MIB=1536\n", games);
+            for (int tab = 0; tab < MenuUi::TabCount; ++tab) {
+                r.ui.SetTab(tab);
+                if (tab > 0) {
+                    r.Tap(Pad::Down); // second row selected, to see a highlighted row that is not the first
+                }
+                Frame frame;
+                Canvas canvas = frame.Canvas_();
+                r.ui.Draw(canvas);
+                // Not blank, and pixels the font drew are in the content area.
+                std::uint32_t first = frame.pixels[0];
+                size_t different = 0;
+                for (std::uint32_t p : frame.pixels) {
+                    different += p != first;
+                }
+                char what[96];
+                std::snprintf(what, sizeof(what), "tab %d (%s, %d games) draws something", tab, english ? "en" : "pt", games);
+                Check(different > 20000, what);
+                if (render_dir != nullptr && (games == 4 || tab == 0)) {
+                    char name[256];
+                    std::snprintf(name, sizeof(name), "%s/menu-%s-%d-games%d.ppm", render_dir, english ? "en" : "pt", tab, games);
+                    WritePpm(name, frame);
+                }
+            }
+        }
+    }
+    // Text drawing: UTF-8 is decoded, an unknown character is a '?', nothing is drawn out of bounds.
+    {
+        Frame frame;
+        Canvas c = frame.Canvas_();
+        Check(TextCells("Configuração é ✓") == 16 - 0, "UTF-8 text length is counted in characters");
+        const int w = c.Print(1900, 1070, "ação", Color::Text); // runs off the right and bottom edges
+        Check(w == 4 * GlyphWidth, "Print returns the width even when clipped");
+        c.Print(-50, -50, "x", Color::Text);
+        Check(true, "drawing outside the canvas is clipped");
+    }
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    const char* render_dir = nullptr;
+    if (argc > 2 && std::strcmp(argv[1], "--render") == 0) {
+        render_dir = argv[2];
+    }
+    TestSettingsFile();
+    TestNavigation();
+    TestDrawing(render_dir);
+    std::printf("%d checks, %d failed\n", g_checks, g_failures);
+    std::printf(g_failures == 0 ? "menu test: PASSED\n" : "menu test: FAILED\n");
+    return g_failures == 0 ? 0 : 1;
+}

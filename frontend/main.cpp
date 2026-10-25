@@ -8,14 +8,15 @@
 //   keys/prod.keys (+ title.keys)     the console's keys, dumped from the user's Switch
 //   firmware/*.nca                    the firmware, dumped from the user's Switch (copied into
 //                                     nand/system/Contents/registered the first time)
-//   roms/*.nsp|*.xci                  listed in a menu at start (Up/Down, Cross), the last one
-//                                     played preselected, unless game.txt names one
-//                                     (with neither, the bundled Homebrew Menu starts)
+//   roms/*.nsp|*.xci                  listed in the menu that opens at start (menu/menu_ui.h: games
+//                                     and settings in tabs), the last one played preselected,
+//                                     unless game.txt names one
 //   game.txt                          optional: the full path of the game to start
 //   updates/                          update and DLC NSPs, applied when the game starts
-//   nomenu.txt                        optional: skip the game menu, start the last game played
-//   settings.txt                      optional, one "key=value" per line, to try graphics
-//                                     options without a new package (see ApplySettingsFile)
+//   nomenu.txt                        optional: skip the menu, start the last game played (or,
+//                                     with no games, the bundled Homebrew Menu)
+//   settings.txt                      "key=value" per line; written by the menu's settings tabs
+//                                     and still fine to edit by hand (see ApplySettingsFile)
 //   boot.log                         this frontend's log; log/eden_log.txt is Eden's
 //
 // Controls (Switch layout by position): Circle=A Cross=B Triangle=X Square=Y, L1/R1=L/R,
@@ -55,6 +56,7 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 
+#include "menu/menu_ui.h"
 #include "menu/rom_menu.h"
 #include "ps4_platform.h"
 
@@ -103,6 +105,23 @@ bool HasExtension(const fs::path& p, std::initializer_list<const char*> exts) {
     return std::any_of(exts.begin(), exts.end(), [&](const char* x) { return e == x; });
 }
 
+/// What the menu's SYSTEM tab shows: why a game may not start (keys, firmware) and where things are.
+Menu::SystemInfo CollectSystemInfo() {
+    Menu::SystemInfo info;
+    const fs::path data{Ps4::DataDir};
+    std::error_code ec;
+    info.build_id = EDEN_PS4_BUILD_ID;
+    info.data_dir = Ps4::DataDir;
+    info.keys_found = fs::exists(data / "keys/prod.keys", ec);
+    for (fs::directory_iterator it{data / "firmware", ec}, end; !ec && it != end; it.increment(ec)) {
+        if (it->is_regular_file(ec) && HasExtension(it->path(), {".nca"})) {
+            ++info.firmware_files;
+        }
+    }
+    info.free_memory_mib = Ps4::FreeDirectMemory() >> 20;
+    return info;
+}
+
 std::string FindGame() {
     const fs::path data{Ps4::DataDir};
     std::error_code ec;
@@ -124,10 +143,11 @@ std::string FindGame() {
         }
     }
     std::sort(games.begin(), games.end());
+
+    // The last game played is preselected in the menu (menu/menu_ui.h).
+    const fs::path last_file = data / "last_game.txt";
+    size_t index = 0;
     if (!games.empty()) {
-        // The last game played is preselected in the menu (menu/rom_menu.cpp).
-        const fs::path last_file = data / "last_game.txt";
-        size_t index = 0;
         if (std::ifstream in{last_file}; in) {
             std::string last;
             std::getline(in, last);
@@ -137,25 +157,39 @@ std::string FindGame() {
                 }
             }
         }
-        std::vector<std::string> names;
-        for (const auto& game : games) {
-            names.push_back(game.filename().string());
-        }
+    }
+    const fs::path bundled{"/app0/assets/misc/hbmenu.nro"};
+
+    // The menu opens whether or not there are games: its tabs hold the settings and the facts
+    // (keys, firmware) that explain why a game does not start. nomenu.txt skips it (in case Eden
+    // cannot open the display after it).
+    if (!fs::exists(data / "nomenu.txt", ec)) {
         Ps4::SetPadLight(255, 255, 255);
-        // nomenu.txt skips the menu (in case Eden cannot open the display after it).
-        if (const int chosen = fs::exists(data / "nomenu.txt", ec) ? -1 : RunRomMenu(names, int(index));
-            chosen >= 0) {
-            index = size_t(chosen);
+        std::vector<Menu::GameEntry> entries;
+        for (const auto& game : games) {
+            std::error_code size_ec;
+            entries.push_back({game.filename().string(), std::uint64_t(fs::file_size(game, size_ec))});
         }
+        const MenuOutcome outcome = RunMainMenu(entries, int(index), CollectSystemInfo());
+        if (outcome.choice == MenuChoice::Homebrew) {
+            // The Homebrew Menu (switchbrew/nx-hbmenu, ISC) that ships in the package: a test of
+            // CPU, GPU and presentation that needs no game.
+            Ps4::Log("the bundled Homebrew Menu was picked in the menu");
+            return fs::is_regular_file(bundled, ec) ? bundled.string() : std::string{};
+        }
+        if (outcome.choice == MenuChoice::Game && outcome.game >= 0 && size_t(outcome.game) < games.size()) {
+            index = size_t(outcome.game);
+        }
+        // MenuChoice::Failed: the display could not be opened; go on with the last game.
+    }
+    if (!games.empty()) {
         if (std::ofstream out{last_file}; out) {
             out << games[index].filename().string() << '\n';
         }
         Ps4::Log("game %zu of %zu in roms/", index + 1, games.size());
         return games[index].string();
     }
-    // Nothing of the user's: the Homebrew Menu (switchbrew/nx-hbmenu, ISC) that ships in the
-    // package, which needs no keys or firmware - a first test of CPU, GPU and presentation.
-    const fs::path bundled{"/app0/assets/misc/hbmenu.nro"};
+    // Nothing of the user's and no menu: the bundled Homebrew Menu.
     if (fs::is_regular_file(bundled, ec)) {
         Ps4::Log("no game of yours found; starting the bundled Homebrew Menu");
         return bundled.string();
@@ -254,6 +288,12 @@ void ApplyPs4Settings() {
 ///   reactive_flushing=on|off    (default off)
 ///   profile=on|off              sampling profiler in boot.log (default on)
 ///   async_shaders=on|off        (default on)
+///   mode=handheld|docked        console mode: 720p or 1080p rendering (default handheld)
+///   resolution=0.5|0.75|1|1.5|2 internal resolution scale (default 1)
+///   speed_limit=on|off          (default on)
+///   multicore=on|off            (default on)
+///   vram=conservative|aggressive  (default conservative)
+///   language=pt|en              the menu's language (read by the menu only)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
 void ApplySettingsFile() {
     std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt"};
@@ -303,6 +343,33 @@ void ApplySettingsFile() {
                                                    : Settings::GpuAccuracy::High);
         } else if (key == "async_shaders" && (value == "on" || value == "off")) {
             v.use_asynchronous_shaders.SetValue(value == "on");
+        } else if (key == "mode" && (value == "handheld" || value == "docked")) {
+            v.use_docked_mode.SetValue(value == "docked" ? Settings::ConsoleMode::Docked
+                                                         : Settings::ConsoleMode::Handheld);
+        } else if (key == "resolution") {
+            // ResolutionSetup counts 0.5x, 0.75x, 1x, 1.5x, 2x as 0..4 (Res1X is 2): checked, and
+            // the line is ignored if this Eden numbers them differently.
+            static const char* const scales[] = {"0.5", "0.75", "1", "1.5", "2"};
+            int scale = -1;
+            for (int i = 0; i < 5; ++i) {
+                if (value == scales[i]) {
+                    scale = i;
+                }
+            }
+            if (scale >= 0 && static_cast<int>(Settings::ResolutionSetup::Res1X) == 2) {
+                v.resolution_setup.SetValue(static_cast<Settings::ResolutionSetup>(scale));
+            } else {
+                known = false;
+            }
+        } else if (key == "speed_limit" && (value == "on" || value == "off")) {
+            v.use_speed_limit.SetValue(value == "on");
+        } else if (key == "multicore" && (value == "on" || value == "off")) {
+            v.use_multi_core.SetValue(value == "on");
+        } else if (key == "vram" && (value == "conservative" || value == "aggressive") &&
+                   static_cast<int>(Settings::VramUsageMode::Conservative) == 0) {
+            v.vram_usage_mode.SetValue(static_cast<Settings::VramUsageMode>(value == "aggressive" ? 1 : 0));
+        } else if (key == "language" && (value == "pt" || value == "en")) {
+            // Only the menu reads it.
         } else if (key == "env" && value.find('=') != std::string::npos && value.find('=') > 0) {
             // A driver switch, e.g. env=ORBIS_GS_RING_SCALE=4 (read when Vulkan starts).
             const auto split = value.find('=');

@@ -63,10 +63,11 @@ console test will bring a crash back.
 |---|---|---|
 | 0.2.0 | A1 and A2, this roadmap and the changelog, the update-zip workflow, the patch/host-test checks. Not built on its own: it is part of 0.3.0 | (with 0.3.0) |
 | **0.3.0** | The `.pkg` and ELF built by GitHub Actions: scripts take their paths from `NXO_ROOT`, the SDK and tools are fetched in the workflow, a release is published with the changelog as its notes. Expect a few rounds of fixing from the CI logs, then one console test of the first package | Yes (boots, MK8D race, `cpu_accuracy` key, `boot.log` banner) |
-| 0.4.0 | Colours (A7), written against the exact Eden sources from the `eden-sources` artifact and checked with `git apply --check` before it ships; then clean-up of the diagnostics (A5) | Yes |
-| 0.5.0 | Fastmem and memory headroom (A4): fewer redirects, Eden's 256 MiB stream buffer to 128 MiB, texture-cache budgets, then `ORBIS_VRAM_GARLIC` as a last resort | Yes (memory) |
-| 0.6.0 | Speed items: A3, A8, A9, thread placement experiments (a Jaguar module shares an L2 between four cores) | Yes |
-| 0.7.0 | Console profiles: pick the memory budget, GPU arena, JIT cache and settings from what the console reports (total direct memory, and whether it is a Pro) instead of constants measured on one Pro; `settings.txt` override | Yes, on each model |
+| **0.4.0** | The menu (games and settings in tabs, Portuguese and English), the new icon, a workflow that keeps only the `.pkg`. Needs no new engine work | Yes (the menu on the console, a game starts from it, settings reach the game) |
+| 0.5.0 | Colours (A7), written against the exact Eden sources from the `eden-sources` artifact and checked with `git apply --check` before it ships; then clean-up of the diagnostics (A5) | Yes |
+| 0.6.0 | Fastmem and memory headroom (A4): fewer redirects, Eden's 256 MiB stream buffer to 128 MiB, texture-cache budgets, then `ORBIS_VRAM_GARLIC` as a last resort | Yes (memory) |
+| 0.7.0 | Speed items: A3, A8, A9, thread placement experiments (a Jaguar module shares an L2 between four cores) | Yes |
+| 0.8.0 | Console profiles: pick the memory budget, GPU arena, JIT cache and settings from what the console reports (total direct memory, and whether it is a Pro) instead of constants measured on one Pro; `settings.txt` override | Yes, on each model |
 | **1.0.0** | See below | Yes, on each model |
 
 Rule for every version: change one area, keep a changelog entry, never mix a colour change with a

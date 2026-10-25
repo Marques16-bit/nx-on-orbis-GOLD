@@ -36,13 +36,24 @@ OUT="$ROOT/out-eden"
 
 [ -f "$ELF" ] || { echo "missing $ELF"; exit 1; }
 rm -rf "$ST"; mkdir -p "$ST/sce_sys/about" "$ST/sce_module" "$OUT"
-"$PY" "$ROOT/probe/make-icon.py" "$ST/sce_sys/icon0.png" "NX"
+# The package's icon (512x512) and the background of its page on the home screen (1920x1080),
+# drawn by tools/make-icons.py. Without them the old probe icon is made.
+if [ -f "$ROOT/assets/icon0.png" ]; then
+    cp "$ROOT/assets/icon0.png" "$ST/sce_sys/icon0.png"
+else
+    "$PY" "$ROOT/probe/make-icon.py" "$ST/sce_sys/icon0.png" "NX"
+fi
+EXTRA_FILES=""
+if [ -f "$ROOT/assets/pic1.png" ]; then
+    cp "$ROOT/assets/pic1.png" "$ST/sce_sys/pic1.png"
+    EXTRA_FILES=" sce_sys/pic1.png"
+fi
 "$BIN/create-fself$EXE" -in="$(winpath "$ELF")" -out="$(winpath "$ST/x.oelf")" \
     --eboot "$(winpath "$ST/eboot.bin")" --paid 0x3800000000000011 >/dev/null
 rm -f "$ST/x.oelf"
 cp "$OO/samples/piglet/sce_sys/about/right.sprx" "$ST/sce_sys/about/"
 cp "$OO/samples/piglet/sce_module/libc.prx" "$OO/samples/piglet/sce_module/libSceFios2.prx" "$ST/sce_module/"
-FILES="eboot.bin sce_sys/param.sfo sce_sys/icon0.png sce_sys/about/right.sprx sce_module/libc.prx sce_module/libSceFios2.prx"
+FILES="eboot.bin sce_sys/param.sfo sce_sys/icon0.png$EXTRA_FILES sce_sys/about/right.sprx sce_module/libc.prx sce_module/libSceFios2.prx"
 # The Homebrew Menu (switchbrew/nx-hbmenu v3.6.1, ISC licence) as the test program when the user
 # has no game in roms/: it needs no keys or firmware. create-gp4 only takes a few root folders.
 mkdir -p "$ST/assets/misc"
