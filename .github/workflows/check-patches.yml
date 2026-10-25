@@ -15,6 +15,7 @@ on:
       - 'scripts/**'
       - 'ci/**'
       - 'frontend/heap_census.cpp'
+      - 'frontend/menu/**'
       - 'tests/**'
       - '.github/workflows/check-patches.yml'
   pull_request:
@@ -40,14 +41,18 @@ jobs:
             git -C deps/eden log --oneline | head -40
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # The presentation sources of Eden (for the colour fix) are kept only when the workflow is run
+      # by hand ("Run workflow"), so ordinary pushes leave no extra files behind.
       - name: Collect the presentation sources of Eden
+        if: github.event_name == 'workflow_dispatch'
         run: bash ci/collect-eden-sources.sh
       - name: Upload them
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: eden-sources
           path: eden-sources/
-          retention-days: 30
+          retention-days: 14
 
   host-tests:
     name: Host tests
@@ -60,6 +65,11 @@ jobs:
           g++ -O2 -std=c++20 -Wall -Wextra -fno-omit-frame-pointer -pthread \
               tests/heap_census_test.cpp frontend/heap_census.cpp -o heap_census_test $W
           ./heap_census_test
+      - name: "Menu (frontend/menu/) - settings.txt, navigation, every screen drawn"
+        run: |
+          g++ -O2 -std=c++20 -Wall -Wextra -Ifrontend tests/menu_test.cpp frontend/menu/menu_ui.cpp \
+              frontend/menu/settings_model.cpp frontend/menu/menu_canvas.cpp -o menu_test
+          ./menu_test
 
   ci-scripts:
     name: CI scripts
