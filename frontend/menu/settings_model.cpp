@@ -45,6 +45,10 @@ const std::vector<Option>& Catalog() {
          "CPU é o modo mais estável no PS4. GPU e CPU assíncrona são experimentais.",
          "CPU is the most stable mode on the PS4. GPU and async CPU are experimental.",
          {{"cpu", "CPU (estável)", "CPU (stable)"}, {"gpu", "GPU", "GPU"}, {"async", "CPU assíncrona", "Async CPU"}}, 0},
+        {"shader_cache", Group::Video, "Cache de shaders no disco", "Shader cache on disk",
+         "Guarda os shaders compilados para as próximas partidas. Desligue só se suspeitar de um cache corrompido.",
+         "Keeps compiled shaders for the next runs. Turn it off only if you suspect a corrupt cache.",
+         {{"on", "Ligado", "On"}, {"off", "Desligado", "Off"}}, 0},
         {"dyna_state", Group::Video, "Estado dinâmico do Vulkan", "Vulkan dynamic state",
          "Nível das extensões de estado dinâmico (0 a 3). Se o driver falhar, tente um valor menor.",
          "Level of the dynamic-state extensions (0 to 3). If the driver fails, try a lower value.",
@@ -70,6 +74,10 @@ const std::vector<Option>& Catalog() {
          "Memória reservada ao driver (MiB). Mais evita erros de memória de vídeo, mas sobra menos para o jogo.",
          "Memory reserved for the driver (MiB). More avoids video-memory errors but leaves less for the game.",
          {{"1024", "1024 MiB", "1024 MiB"}, {"1280", "1280 MiB", "1280 MiB"}, {"1536", "1536 MiB", "1536 MiB"}, {"1792", "1792 MiB", "1792 MiB"}}, 1},
+        {"env:ORBIS_VRAM_GARLIC", Group::Cpu, "Texturas dentro da arena", "Textures inside the arena",
+         "Experimental, último recurso: mantém imagens na arena do driver em vez de memória extra. Gasta menos memória direta, mas o driver avisa que custa velocidade de GPU.",
+         "Experimental, last resort: keeps images in the driver's arena instead of extra memory. Uses less direct memory, but the driver warns it costs GPU speed.",
+         {{"1", "Desligado (padrão)", "Off (default)"}, {"0", "Ligado (experimental)", "On (experimental)"}}, 0},
         // ---------------------------------------------------------------- Advanced
         {"bgra", Group::Advanced, "Correção de cor B8G8R8A8", "B8G8R8A8 colour fix",
          "Corrige vermelho e azul trocados nas texturas. Automático decide por um teste ao iniciar.",
@@ -97,6 +105,28 @@ const std::vector<Option>& Catalog() {
          {{"pt", "Português", "Português"}, {"en", "English", "English"}}, 0},
     };
     return catalog;
+}
+
+const std::vector<Preset>& Presets() {
+    // These name only what each option means (more speed, or more fidelity). They are ways to try a
+    // game quickly, not a promise that it will open.
+    static const std::vector<Preset> presets = {
+        {"Padrão", "Default",
+         "Todas as opções de vídeo e CPU nos valores desta versão.",
+         "Every video and CPU option at this version's values.",
+         {}},
+        {"Leve (mais velocidade)", "Light (more speed)",
+         "Resolução 0,75x, GPU de precisão baixa, sem flush reativo, shaders assíncronos, ASTC pela CPU e VRAM conservadora. Menos qualidade, mais velocidade.",
+         "0.75x resolution, low GPU accuracy, no reactive flushing, async shaders, ASTC on the CPU and conservative VRAM. Less quality, more speed.",
+         {{"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"async_shaders", "on"},
+          {"astc", "cpu"}, {"vram", "conservative"}}},
+        {"Compatibilidade (mais fiel)", "Compatibility (more faithful)",
+         "GPU de precisão alta, flush reativo, CPU automática, sem estado dinâmico nem entrada de vértices dinâmica, shaders síncronos. Mais lento, usa menos extensões arriscadas do driver.",
+         "High GPU accuracy, reactive flushing, auto CPU accuracy, no dynamic state or dynamic vertex input, synchronous shaders. Slower, uses fewer risky driver extensions.",
+         {{"gpu_accuracy", "high"}, {"reactive_flushing", "on"}, {"cpu_accuracy", "auto"}, {"dyna_state", "0"},
+          {"vertex_input_dynamic", "off"}, {"async_shaders", "off"}}},
+    };
+    return presets;
 }
 
 const Option* FindOption(std::string_view key) {
@@ -219,6 +249,59 @@ void SettingsFile::ResetAll() {
         if (option.group != Group::System) {
             Erase(option.key);
         }
+    }
+}
+
+namespace {
+
+/// Index of `value` among the option's choices; the default when it is not one of them.
+int ChoiceOf(const Option& option, std::string_view value) {
+    for (size_t i = 0; i < option.choices.size(); ++i) {
+        if (value == option.choices[i].value) {
+            return int(i);
+        }
+    }
+    return option.default_index;
+}
+
+} // Anonymous namespace
+
+int SettingsFile::MatchPreset() const {
+    // Every option any profile touches must be what the profile says, or its default.
+    const auto& presets = Presets();
+    for (size_t p = 0; p < presets.size(); ++p) {
+        bool matches = true;
+        for (const Preset& any : presets) {
+            for (const auto& [key, ignored] : any.values) {
+                (void)ignored;
+                const Option* option = FindOption(key);
+                int expected = option->default_index;
+                for (const auto& [pk, pv] : presets[p].values) {
+                    if (std::string_view(pk) == key) {
+                        expected = ChoiceOf(*option, pv);
+                    }
+                }
+                matches = matches && ChoiceIndex(*option) == expected;
+            }
+        }
+        if (matches) {
+            return int(p);
+        }
+    }
+    return -1;
+}
+
+void SettingsFile::ApplyPreset(int index) {
+    const auto& presets = Presets();
+    for (const Preset& any : presets) {
+        for (const auto& [key, ignored] : any.values) {
+            (void)ignored;
+            Erase(key);
+        }
+    }
+    for (const auto& [key, value] : presets[size_t(index)].values) {
+        const Option* option = FindOption(key);
+        SetChoice(*option, ChoiceOf(*option, value));
     }
 }
 

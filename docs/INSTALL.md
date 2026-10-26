@@ -47,7 +47,7 @@ Installing a newer package over it keeps everything in `/data/edenps4/`.
 
 ### The menu
 
-L1/R1 switch tabs: **Games**, **Video**, **CPU and memory**, **Advanced**, **System**. In the
+L1/R1 switch tabs: **Games**, **Video**, **CPU and memory**, **Advanced**, **System**, **Log**. In the
 settings tabs Up/Down choose an option, Left/Right (or Cross) change its value, Triangle restores
 its default, Circle goes back to the games. OPTIONS plays the last game highlighted, from any tab.
 A value shown in teal with a dot is not the default. Changes are saved at once in `settings.txt` and
@@ -86,6 +86,18 @@ seconds** to quit.
 | `vram` | `conservative`, `aggressive` | video memory use |
 | `language` | `pt`, `en` | the menu's language |
 | `env` | `NAME=VALUE` | environment for the GPU driver, e.g. `env=ORBIS_ARENA_MIB=1280` |
+
+## The data folder, FTP and the Homebrew Menu
+
+- The app makes every folder it needs the first time it opens (`keys`, `firmware`, `roms`,
+  `updates`, `nand`, `sdmc`, ...) and a `LEIA-ME.txt`. Fill `keys`, `firmware` and `roms` with the
+  files dumped from **your own** Switch. If FTP or a file manager still cannot write or delete in
+  `/data/edenps4`, open the app once more (it opens the permissions of what is there) and see the
+  SYSTEM tab: the "Writing" line says whether the app itself can write.
+- The menu's **LOG** tab shows the end of the last session's log on the TV; after a crash, open the
+  app again and photograph it.
+- "Emulator test (Homebrew Menu)" ends in `Error: launchInit() failed`. That is **expected**: the
+  Homebrew Menu needs the Switch's own loader. If you see it, the emulator started and draws.
 
 ## Troubleshooting
 

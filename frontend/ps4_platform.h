@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace Ps4 {
 
@@ -15,6 +16,9 @@ inline constexpr const char* DataDir = "/data/edenps4";
 /// Opens /data/edenps4/boot.log (the previous one becomes boot.old.log). Runs from a static
 /// constructor before main; calling it again does nothing.
 void OpenBootLog();
+/// The last `max_lines` lines logged in this session (kept in memory, so they can be shown even
+/// when boot.log cannot be written).
+std::vector<std::string> RecentLog(size_t max_lines);
 /// Starts the frame watchdog thread (see ArmHangWatch).
 void StartWatchdog();
 /// The sampling profiler (on by default): busy share and hottest code of the GPU, Vulkan and

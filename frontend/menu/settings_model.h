@@ -10,6 +10,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Menu {
@@ -45,6 +46,21 @@ struct Option {
 const std::vector<Option>& Catalog();
 const Option* FindOption(std::string_view key);
 
+/// A quick profile: several options set at once, for trying combinations when a game will not open.
+struct Preset {
+    const char* pt;
+    const char* en;
+    const char* help_pt;
+    const char* help_en;
+    /// The options it sets (the others of the profiles' common set go back to their defaults).
+    std::vector<std::pair<const char*, const char*>> values;
+    const char* Name(Lang lang) const { return lang == Lang::Pt ? pt : en; }
+    const char* Help(Lang lang) const { return lang == Lang::Pt ? help_pt : help_en; }
+};
+
+/// The profiles, "Default" first.
+const std::vector<Preset>& Presets();
+
 class SettingsFile {
 public:
     explicit SettingsFile(const std::string& text = {});
@@ -64,6 +80,11 @@ public:
     /// Removes the lines of every option of the catalog (not the language).
     void ResetAll();
     Lang Language() const;
+
+    /// Index of the profile the options match exactly, or -1 when they are a custom mix.
+    int MatchPreset() const;
+    /// Sets every option a profile touches: the ones it names to its values, the rest to default.
+    void ApplyPreset(int index);
 
 private:
     struct Line {

@@ -19,7 +19,7 @@ constexpr int HelpTop = 868;
 constexpr int FooterTop = 992;
 constexpr int FooterCells = (1920 - 2 * Margin) / 20;
 
-constexpr int TabGames = 0, TabVideo = 1, TabCpu = 2, TabAdvanced = 3, TabSystem = 4;
+constexpr int TabGames = 0, TabVideo = 1, TabCpu = 2, TabAdvanced = 3, TabSystem = 4, TabLog = 5;
 
 /// File name without its extension.
 std::string DisplayName(const std::string& file) {
@@ -152,12 +152,17 @@ int MenuUi::RowCount(int tab) const {
         return int(games_.size()) + 1; // the games, then the Homebrew Menu
     case TabSystem:
         return 2;
+    case TabVideo:
+        return int(options_[tab].size()) + 1; // the quick profile, then the options
     default:
         return int(options_[tab].size());
     }
 }
 
 const Option* MenuUi::OptionAt(int tab, int row) const {
+    if (tab == TabVideo) {
+        --row; // row 0 is the quick profile
+    }
     if (tab == TabGames || row < 0 || row >= int(options_[tab].size())) {
         return nullptr;
     }
@@ -166,7 +171,7 @@ const Option* MenuUi::OptionAt(int tab, int row) const {
 
 void MenuUi::Save() {
     if (save_) {
-        save_(file_.Text());
+        save_state_ = save_(file_.Text()) ? 1 : 2;
     }
 }
 
@@ -196,6 +201,22 @@ void MenuUi::ChangeValue(int delta) {
         if (selected < int(games_.size())) {
             last_game_ = selected;
         }
+        dirty_ = true;
+        return;
+    }
+    if (tab_ == TabLog) {
+        log_source_ ^= 1;
+        dirty_ = true;
+        return;
+    }
+    if (IsPresetRow(tab_, selected_[tab_])) {
+        const int n = int(Presets().size());
+        const int current = file_.MatchPreset();
+        // From a custom mix, Right goes to the first profile and Left to the last.
+        const int next = current < 0 ? (delta > 0 ? 0 : n - 1) : (current + delta + n) % n;
+        file_.ApplyPreset(next);
+        Save();
+        confirm_reset_ = false;
         dirty_ = true;
         return;
     }
@@ -267,7 +288,11 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
         }
     }
     if (pressed & Pad::Triangle) {
-        if (const Option* option = OptionAt(tab_, selected_[tab_])) {
+        if (IsPresetRow(tab_, selected_[tab_])) {
+            file_.ApplyPreset(0);
+            Save();
+            dirty_ = true;
+        } else if (const Option* option = OptionAt(tab_, selected_[tab_])) {
             file_.SetChoice(*option, option->default_index);
             Save();
             dirty_ = true;
@@ -310,13 +335,18 @@ void MenuUi::DrawHeader(Canvas& c) const {
     c.Disc(cx + 31.0f, cy - 31.0f, 8.5f, Color::Text);
     c.Print(Margin + 130, 28, "NX on Orbis", Color::Text, 2);
     const std::string version = info_.build_id;
-    c.Print(1920 - Margin - TextWidth(version), 52, version, Color::Dim);
+    c.Print(1920 - Margin - TextWidth(version), 40, version, Color::Dim);
+    if (save_state_ != 0) {
+        const std::string status = save_state_ == 1 ? std::string("✓ ") + T("opções salvas", "options saved")
+                                                     : std::string("✗ ") + T("NÃO consegui salvar as opções (aba SISTEMA)", "could NOT save the options (SYSTEM tab)");
+        c.Print(1920 - Margin - TextWidth(status), 84, status, save_state_ == 1 ? Color::Good : Color::Bad);
+    }
     c.Fill(Margin, 130, 1920 - 2 * Margin, 3, Color::Panel);
 }
 
 void MenuUi::DrawTabs(Canvas& c) const {
-    const char* names_pt[TabCount] = {"JOGOS", "VÍDEO", "CPU E MEMÓRIA", "AVANÇADO", "SISTEMA"};
-    const char* names_en[TabCount] = {"GAMES", "VIDEO", "CPU & MEMORY", "ADVANCED", "SYSTEM"};
+    const char* names_pt[TabCount] = {"JOGOS", "VÍDEO", "CPU E MEMÓRIA", "AVANÇADO", "SISTEMA", "LOG"};
+    const char* names_en[TabCount] = {"GAMES", "VIDEO", "CPU & MEMORY", "ADVANCED", "SYSTEM", "LOG"};
     int x = Margin;
     for (int i = 0; i < TabCount; ++i) {
         const std::string name = lang() == Lang::Pt ? names_pt[i] : names_en[i];
@@ -356,7 +386,7 @@ void MenuUi::DrawGames(Canvas& c) const {
         const std::string size = is_game ? FormatSize(games_[size_t(index)].bytes, l) : std::string();
         const int name_cells = (1920 - 2 * Margin - 46 - 30 - 40) / GlyphWidth - TextCells(size) - 1;
         const std::string name = is_game ? Clip(DisplayName(games_[size_t(index)].name), name_cells)
-                                         : std::string(T("Homebrew Menu (teste interno)", "Homebrew Menu (built-in test)"));
+                                         : std::string(T("Teste do emulador (Homebrew Menu)", "Emulator test (Homebrew Menu)"));
         const bool selected = index == selected_[TabGames];
         const int y = top + r * RowHeight;
         if (selected) {
@@ -378,15 +408,22 @@ void MenuUi::DrawGames(Canvas& c) const {
 
 void MenuUi::DrawOptions(Canvas& c) const {
     const Lang l = lang();
-    const auto& options = options_[tab_];
-    const int count = int(options.size());
+    const int count = RowCount(tab_);
     const int first = std::clamp(scroll_[tab_], 0, std::max(count - VisibleRows, 0));
     for (int r = 0; r < VisibleRows && first + r < count; ++r) {
-        const Option& option = *options[size_t(first + r)];
-        const bool selected = first + r == selected_[tab_];
+        const int row = first + r;
+        const bool selected = row == selected_[tab_];
+        const int y = ContentTop + r * RowHeight;
+        if (IsPresetRow(tab_, row)) {
+            const int match = file_.MatchPreset();
+            const std::string value = match >= 0 ? Presets()[size_t(match)].Name(l) : T("Personalizado", "Custom");
+            DrawRow(c, y, selected, match != 0, T("Perfil rápido", "Quick profile"), value,
+                    match != 0 ? Color::Teal : Color::Text, selected);
+            continue;
+        }
+        const Option& option = *OptionAt(tab_, row);
         const bool changed = !file_.IsDefault(option);
-        DrawRow(c, ContentTop + r * RowHeight, selected, changed, option.Label(l),
-                option.ChoiceLabel(file_.ChoiceIndex(option), l),
+        DrawRow(c, y, selected, changed, option.Label(l), option.ChoiceLabel(file_.ChoiceIndex(option), l),
                 changed ? Color::Teal : Color::Text, selected);
     }
     if (first > 0) {
@@ -394,6 +431,34 @@ void MenuUi::DrawOptions(Canvas& c) const {
     }
     if (first + VisibleRows < count) {
         c.Print(1920 - Margin - GlyphWidth, ContentTop + VisibleRows * RowHeight, "▼", Color::Dim);
+    }
+}
+
+void MenuUi::DrawLog(Canvas& c) const {
+    const bool previous = log_source_ == 0;
+    const std::vector<std::string>& lines = previous ? info_.log_previous : info_.log_current;
+    const std::string title = std::string("◀ ") +
+        (previous ? T("Sessão anterior (boot.old.log)", "Previous session (boot.old.log)")
+                  : T("Esta sessão, até agora (boot.log)", "This session, so far (boot.log)")) + " ▶";
+    c.Print(Margin + 46, ContentTop - 6, title, Color::Teal);
+    constexpr int LineHeight = 44;
+    constexpr int MaxLines = 13;
+    constexpr int Cells = (1920 - 2 * Margin - 60) / GlyphWidth;
+    if (lines.empty()) {
+        c.Print(Margin + 46, ContentTop + 60,
+                previous ? T("Nada ainda: é a primeira vez que o app abre, ou a pasta não aceita gravação.",
+                             "Nothing yet: first time the app opens, or the folder cannot be written.")
+                         : T("O log desta sessão ainda está vazio.", "This session's log is still empty."),
+                Color::Warn);
+        return;
+    }
+    const size_t from = lines.size() > size_t(MaxLines) ? lines.size() - size_t(MaxLines) : 0;
+    for (size_t i = from; i < lines.size(); ++i) {
+        const std::string& line = lines[i];
+        const bool bad = line.find("!!") != std::string::npos || line.find("BROKEN") != std::string::npos ||
+                         line.find("FAILED") != std::string::npos || line.find("failed") != std::string::npos;
+        c.Print(Margin + 46, ContentTop + 52 + int(i - from) * LineHeight, Clip(line, Cells),
+                bad ? Color::Bad : Color::Text);
     }
 }
 
@@ -426,6 +491,25 @@ void MenuUi::DrawSystem(Canvas& c) const {
         y += 50;
     };
     row(T("Versão", "Version"), info_.build_id, Color::Text);
+    {
+        // Can the app write in its data folder? Without it there is no boot.log and no settings.txt.
+        std::string value;
+        std::uint32_t color = Color::Good;
+        if (!info_.data_writable) {
+            value = std::string("✗ ") + T("sem permissão de gravação em ", "cannot write to ") + info_.data_dir;
+            color = Color::Bad;
+        } else if (info_.log_bytes >= 0) {
+            value = "✓ ok, boot.log " + std::to_string((info_.log_bytes + 1023) / 1024) + " KiB";
+        } else {
+            value = std::string("✓ ok, ") + T("mas o boot.log não existe", "but boot.log does not exist");
+            color = Color::Warn;
+        }
+        row(T("Gravação", "Writing"), value, color);
+    }
+    row("settings.txt",
+        info_.settings_bytes >= 0 ? std::string("✓ ") + std::to_string(info_.settings_bytes) + T(" bytes: as opções ficam salvas aqui", " bytes: your options are kept here")
+                                  : std::string(T("ainda não existe (nenhuma opção alterada)", "does not exist yet (no option changed)")),
+        info_.settings_bytes >= 0 ? Color::Good : Color::Dim);
     row(T("Chaves (prod.keys)", "Keys (prod.keys)"),
         info_.keys_found ? std::string("✓ ") + T("encontradas", "found")
                          : std::string("✗ ") + T("não encontradas: copie para ", "not found: copy to ") + info_.data_dir + "/keys",
@@ -455,6 +539,8 @@ void MenuUi::DrawFooter(Canvas& c) const {
     if (tab_ == TabGames) {
         text = T("▲▼ escolher   ◀▶ pular página   X jogar   L1/R1: abas   OPTIONS: jogar o último",
                  "▲▼ choose   ◀▶ page   X play   L1/R1: tabs   OPTIONS: play the last one");
+    } else if (tab_ == TabLog) {
+        text = T("◀▶ trocar de sessão   L1/R1: abas   O: voltar", "◀▶ switch session   L1/R1: tabs   O: back");
     }
     c.Print(Margin, FooterTop, Clip(text, FooterCells), Color::Dim);
 }
@@ -466,8 +552,17 @@ void MenuUi::Draw(Canvas& c) const {
     constexpr int HelpCells = (1920 - 2 * Margin - 52) / GlyphWidth;
     if (tab_ == TabGames) {
         DrawGames(c);
-        help = Wrap(T("Escolha um jogo e aperte X. As opções das outras abas valem na hora de iniciar.",
-                      "Pick a game and press X. The options in the other tabs apply when it starts."),
+        const bool on_homebrew = selected_[TabGames] >= int(games_.size());
+        help = Wrap(on_homebrew
+                        ? T("Teste interno. A mensagem \"launchInit() failed\" é ESPERADA (o Homebrew Menu precisa do nx-hbloader): se ela aparece, o emulador roda. OPTIONS sai.",
+                            "Built-in test. The message \"launchInit() failed\" is EXPECTED (the Homebrew Menu needs nx-hbloader): if it shows, the emulator runs. OPTIONS quits.")
+                        : T("Escolha um jogo e aperte X. As opções das outras abas valem na hora de iniciar.",
+                            "Pick a game and press X. The options in the other tabs apply when it starts."),
+                    HelpCells, 2);
+    } else if (tab_ == TabLog) {
+        DrawLog(c);
+        help = Wrap(T("◀▶ troca entre a sessão anterior e a atual. Depois de um travamento, abra o app de novo e fotografe esta tela para relatar o problema.",
+                      "◀▶ switches between the previous session and this one. After a crash, open the app again and photograph this screen to report it."),
                     HelpCells, 2);
     } else if (tab_ == TabSystem) {
         DrawSystem(c);
@@ -480,7 +575,13 @@ void MenuUi::Draw(Canvas& c) const {
         }
     } else {
         DrawOptions(c);
-        if (const Option* option = OptionAt(tab_, selected_[tab_])) {
+        if (IsPresetRow(tab_, selected_[tab_])) {
+            const int match = file_.MatchPreset();
+            help = Wrap(match >= 0 ? Presets()[size_t(match)].Help(lang())
+                                   : T("Mistura personalizada de opções. ◀▶ aplica um perfil pronto: Padrão, Leve ou Compatibilidade.",
+                                       "A custom mix of options. ◀▶ applies a ready profile: Default, Light or Compatibility."),
+                        HelpCells, 2);
+        } else if (const Option* option = OptionAt(tab_, selected_[tab_])) {
             help = Wrap(option->Help(lang()), HelpCells, 2);
         }
     }

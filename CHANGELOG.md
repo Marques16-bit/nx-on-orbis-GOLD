@@ -2,7 +2,52 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.4.0] - in preparation
+## [0.5.0] - in preparation
+
+The version to test Mario Kart 8 Deluxe and Super Mario Maker 2 with.
+
+### Fixed
+- **Folders and files that FTP and file managers could not use** (could not create `keys` /
+  `firmware` / `roms`, could not delete `edenps4`, an empty-looking folder). The app now runs with
+  no umask, so what it and Eden create is open to everyone; at start it opens every entry already
+  below `/data/edenps4` (`chmod` 0777 / 0666); and an empty `edenps4` that the app cannot write in is
+  moved aside (`edenps4.bak<time>`) and made again. The result is the first line of `boot.log`.
+- **Options that were lost on restart.** `settings.txt` is written to a temporary file and renamed,
+  or written in place if the rename fails; it is read back to be sure, and the menu shows
+  "options saved" or, in red, that it could not (details in the SYSTEM tab: writing test and the
+  size of `settings.txt`).
+
+### Added
+- **Folders made at the first start**: `keys`, `firmware`, `roms`, `updates`, `log`, `nand`, `sdmc`,
+  `play_time` (its absence was why the play-time file was never made), `shader`, `cache`,
+  `screenshots`, `dump`, `load`, and a `LEIA-ME.txt` that says what goes in each.
+- **A LOG tab**: the end of the previous session's log (`boot.old.log`) and of this one, on the TV.
+  After a crash or a hang, open the app again and photograph the tab: no FTP needed. The log of the
+  session is also kept in memory, so it shows even if the file cannot be written.
+- **Quick profiles** on the first row of the VIDEO tab: Default, Light (0.75x resolution, low GPU
+  accuracy, no reactive flushing, ...) and Compatibility (high GPU accuracy, reactive flushing, auto
+  CPU accuracy, no dynamic state, ...). They only set the options, to try combinations fast; they
+  do not promise a game will open.
+- New options: shader cache on disk (`shader_cache`) and textures inside the driver arena
+  (`env=ORBIS_VRAM_GARLIC=0`, experimental, last resort).
+- **A new icon and home-screen background**: a hybrid handheld (original drawing, own colours, no
+  logos) with the planet on its screen and the name.
+
+### Changed
+- The Homebrew Menu entry is now "Emulator test (Homebrew Menu)", and says that its
+  `launchInit() failed` message is **expected**: nx-hbmenu needs the Switch's nx-hbloader, which this
+  emulator does not provide (the original author noted it in test 2). If the message shows, the CPU,
+  GPU, text and pad of the emulator are working. A Homebrew Menu that lists programs needs the
+  loader's environment (`envHasNextLoad`) to be provided by Eden's NRO loader: planned.
+- `Check patches` (manual run) also keeps Eden's NRO loader and settings headers, for that work.
+- Version 0.5.0. Colours (red and blue swapped) are now 0.6.0.
+
+### Known
+- Not verified on a console. The permission repair was tested on a PC as an ordinary user (folder
+  made, tree opened, empty unwritable folder moved aside, populated one left alone); whether it is
+  what stops FTP from working on the console is to be seen in the next test.
+
+## [0.4.0] - built by GitHub, shown working on a PS4 Pro
 
 First version with a menu. Includes everything of 0.3.0, the first one built by GitHub (the package
 installed and started on a PS4 Pro).
@@ -25,6 +70,8 @@ installed and started on a PS4 Pro).
 - `tests/menu_test.cpp`: 72 host checks (settings.txt reading and writing, navigation, every tab
   drawn in both languages); `Check patches and host tests` runs it.
 - `ci/prune-caches.sh`: the workflow deletes the old caches, keeping the newest of each kind.
+- The SYSTEM tab tests whether the app can write in `/data/edenps4` and says whether `boot.log` exists
+  there ("Gravação / Writing"), so an empty folder over FTP can be told apart from a write problem.
 
 ### Changed
 - The built-in Homebrew Menu **no longer starts by itself** when there are no games: the menu opens

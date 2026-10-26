@@ -79,23 +79,44 @@ std::string ReadSettings() {
     return text.str();
 }
 
-/// Writes the whole file to a temporary name and renames it over settings.txt, so a power cut
-/// cannot leave half a file.
-void WriteSettings(const std::string& text) {
+/// Writes settings.txt: the whole file to a temporary name and a rename over it, so a power cut cannot
+/// leave half a file; if the rename fails, plainly over it. Then reads it back and opens its
+/// permissions to everyone (FTP and file managers run as another user). True when it is there.
+bool WriteSettings(const std::string& text) {
     const fs::path path = SettingsPath();
     fs::path temporary = path;
     temporary += ".tmp";
+    std::error_code ec;
+    bool ok = false;
     {
         std::ofstream out{temporary, std::ios::binary | std::ios::trunc};
         out << text;
-        if (!out) {
-            Ps4::Log("menu: could not write %s", temporary.string().c_str());
-            return;
-        }
+        out.flush();
+        ok = static_cast<bool>(out);
     }
-    std::error_code ec;
-    fs::rename(temporary, path, ec);
-    Ps4::Log("menu: settings.txt saved%s", ec ? " (rename failed)" : "");
+    if (ok) {
+        fs::rename(temporary, path, ec);
+        ok = !ec;
+    }
+    if (!ok) {
+        std::ofstream out{path, std::ios::binary | std::ios::trunc};
+        out << text;
+        out.flush();
+        ok = static_cast<bool>(out);
+        fs::remove(temporary, ec);
+    }
+    if (ok) {
+        std::ifstream in{path, std::ios::binary};
+        std::ostringstream back;
+        back << in.rdbuf();
+        ok = back.str() == text;
+    }
+    if (ok) {
+        fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
+                                  fs::perms::group_write | fs::perms::others_read | fs::perms::others_write, ec);
+    }
+    Ps4::Log("menu: settings.txt %s (%zu bytes)", ok ? "saved" : "NOT SAVED", text.size());
+    return ok;
 }
 
 } // Anonymous namespace

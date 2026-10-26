@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include <orbis/Pad.h>
 #include <orbis_boot.h>
@@ -78,6 +79,23 @@ std::uint64_t Read64(const void* base, std::size_t offset) {
     return value;
 }
 
+// The last lines logged, in fixed buffers (no allocation: Log() is also called from signal handlers).
+constexpr int RecentLines = 64;
+constexpr int RecentChars = 200;
+char g_recent[RecentLines][RecentChars];
+unsigned g_recent_count = 0;
+
+void RememberLine(const char* line, int length) {
+    char* slot = g_recent[g_recent_count % RecentLines];
+    int n = length < RecentChars - 1 ? length : RecentChars - 1;
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) {
+        --n;
+    }
+    std::memcpy(slot, line, static_cast<size_t>(n));
+    slot[n] = 0;
+    ++g_recent_count;
+}
+
 void LogV(const char* fmt, va_list ap) {
     char line[1024];
     const double t = static_cast<double>(NowUs()) / 1e6;
@@ -93,6 +111,7 @@ void LogV(const char* fmt, va_list ap) {
     line[n] = 0;
     sceKernelDebugOutText(0, line);
     std::lock_guard lock{g_log_mutex};
+    RememberLine(line, n);
     if (g_log != nullptr) {
         std::fwrite(line, 1, static_cast<size_t>(n), g_log);
         std::fflush(g_log);
@@ -433,13 +452,112 @@ std::uint64_t NowUs() {
     return sceKernelGetProcessTime();
 }
 
+namespace {
+
+bool CanWriteIn(const std::string& dir) {
+    const std::string probe = dir + "/.write-test";
+    std::FILE* f = std::fopen(probe.c_str(), "w");
+    if (f == nullptr) {
+        return false;
+    }
+    const bool ok = std::fputc('x', f) != EOF;
+    std::fclose(f);
+    std::remove(probe.c_str());
+    return ok;
+}
+
+bool IsEmptyDir(const std::string& dir) {
+    DIR* d = opendir(dir.c_str());
+    if (d == nullptr) {
+        return false;
+    }
+    bool empty = true;
+    while (const dirent* entry = readdir(d)) {
+        const char* name = entry->d_name;
+        if (!(name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))) {
+            empty = false;
+            break;
+        }
+    }
+    closedir(d);
+    return empty;
+}
+
+/// chmod 0777 on folders and 0666 on files below `path` (up to `budget` entries): what FTP and file
+/// managers, which run as another user, need to be able to list, copy into and delete them.
+int ChmodTree(const std::string& path, int depth, int& budget) {
+    DIR* d = opendir(path.c_str());
+    if (d == nullptr) {
+        return 0;
+    }
+    int changed = 0;
+    while (const dirent* entry = readdir(d)) {
+        const char* name = entry->d_name;
+        if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) {
+            continue;
+        }
+        if (--budget < 0) {
+            break;
+        }
+        const std::string child = path + "/" + name;
+        struct stat st;
+        if (lstat(child.c_str(), &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            chmod(child.c_str(), 0777);
+            ++changed;
+            if (depth < 10) {
+                changed += ChmodTree(child, depth + 1, budget);
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            chmod(child.c_str(), 0666);
+            ++changed;
+        }
+    }
+    closedir(d);
+    return changed;
+}
+
+} // Anonymous namespace
+
+std::string PrepareDataDir() {
+    // No umask: everything this process makes (and Eden, below it) is readable and writable by the
+    // other user FTP and file managers run as. With the console's default a folder came out 0700
+    // or 0755 and could not be listed, written to or deleted from FTP.
+    umask(0);
+    mkdir(DataDir, 0777);
+    chmod(DataDir, 0777);
+    std::string report;
+    bool writable = CanWriteIn(DataDir);
+    if (!writable && IsEmptyDir(DataDir)) {
+        // A folder this process cannot write in and that holds nothing: put it aside and start a new one.
+        const std::string aside = std::string(DataDir) + ".bak" + std::to_string(static_cast<long>(std::time(nullptr)));
+        if (std::rename(DataDir, aside.c_str()) == 0) {
+            mkdir(DataDir, 0777);
+            chmod(DataDir, 0777);
+            writable = CanWriteIn(DataDir);
+            report = "the old folder could not be written; moved to " + aside + "; ";
+        }
+    }
+    int budget = 30000;
+    const int changed = ChmodTree(DataDir, 0, budget);
+    report += std::string(writable ? "writable" : "NOT WRITABLE (no boot.log, no settings)") + ", " +
+              std::to_string(changed) + " entries opened to everyone";
+    return report;
+}
+
+} // namespace Ps4
+
+namespace Ps4 {
+
 void OpenBootLog() {
     static bool done = false;
     if (done) {
         return;
     }
     done = true;
-    mkdir(DataDir, 0777);
+    const std::string report = PrepareDataDir();
     const std::string path = std::string(DataDir) + "/boot.log";
     // Keep the previous session's log next to the new one.
     const std::string old = std::string(DataDir) + "/boot.old.log";
@@ -448,7 +566,26 @@ void OpenBootLog() {
     g_log = std::fopen(path.c_str(), "w");
     if (g_log != nullptr) {
         std::setvbuf(g_log, nullptr, _IONBF, 0);
+        chmod(path.c_str(), 0666);
     }
+    Log("data folder %s: %s", DataDir, report.c_str());
+}
+
+std::vector<std::string> RecentLog(size_t max_lines) {
+    char copy[RecentLines][RecentChars];
+    unsigned count = 0;
+    {
+        std::lock_guard lock{g_log_mutex};
+        count = g_recent_count;
+        std::memcpy(copy, g_recent, sizeof(copy));
+    }
+    const unsigned available = count < RecentLines ? count : RecentLines;
+    const unsigned take = available < max_lines ? available : static_cast<unsigned>(max_lines);
+    std::vector<std::string> lines;
+    for (unsigned i = count - take; i < count; ++i) {
+        lines.emplace_back(copy[i % RecentLines]);
+    }
+    return lines;
 }
 
 void SetProfiling(bool enabled) {

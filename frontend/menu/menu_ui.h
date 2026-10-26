@@ -42,6 +42,13 @@ struct SystemInfo {
     std::string data_dir;
     bool keys_found = false;
     int firmware_files = 0;
+    bool data_writable = true;       // a test file could be written in data_dir
+    std::int64_t log_bytes = -1;     // size of boot.log, or -1 when there is none
+    std::int64_t settings_bytes = -1; // size of settings.txt, or -1 when there is none
+    /// The last lines of the previous session's log (boot.old.log) and of this session's so far,
+    /// for the LOG tab: they can be read on the TV when the files cannot be reached over FTP.
+    std::vector<std::string> log_previous;
+    std::vector<std::string> log_current;
     std::uint64_t free_memory_mib = 0;
 };
 
@@ -53,8 +60,9 @@ struct MenuResult {
 
 class MenuUi {
 public:
-    /// Called with the whole new text of settings.txt each time an option changes.
-    using SaveFn = std::function<void(const std::string&)>;
+    /// Called with the whole new text of settings.txt each time an option changes; true when it
+    /// was saved (and read back).
+    using SaveFn = std::function<bool(const std::string&)>;
 
     MenuUi(std::vector<GameEntry> games, int initial_game, SystemInfo info,
            const std::string& settings_text, SaveFn save);
@@ -68,7 +76,7 @@ public:
     int Tab() const { return tab_; }
     void SetTab(int tab);
 
-    static constexpr int TabCount = 5;
+    static constexpr int TabCount = 6;
 
 private:
     Lang lang() const { return file_.Language(); }
@@ -86,6 +94,8 @@ private:
     void DrawGames(Canvas& c) const;
     void DrawOptions(Canvas& c) const;
     void DrawSystem(Canvas& c) const;
+    void DrawLog(Canvas& c) const;
+    bool IsPresetRow(int tab, int row) const { return tab == 1 && row == 0; }
     void DrawHelp(Canvas& c, const std::vector<std::string>& lines) const;
     void DrawFooter(Canvas& c) const;
 
@@ -100,6 +110,8 @@ private:
     int scroll_[TabCount] = {};
     int last_game_ = 0;
     bool confirm_reset_ = false;
+    int log_source_ = 0; // LOG tab: 0 the previous session, 1 this one
+    int save_state_ = 0; // 0 nothing saved yet, 1 the last save worked, 2 it failed
     bool started_ = false;
 
     std::uint32_t previous_ = 0;

@@ -119,6 +119,34 @@ Menu::SystemInfo CollectSystemInfo() {
         }
     }
     info.free_memory_mib = Ps4::FreeDirectMemory() >> 20;
+    // Can the app write here? (No boot.log and no settings.txt otherwise.)
+    {
+        const fs::path probe = data / ".write-test";
+        {
+            std::ofstream out{probe, std::ios::binary | std::ios::trunc};
+            out << 'x';
+            out.flush();
+            info.data_writable = static_cast<bool>(out);
+        }
+        fs::remove(probe, ec);
+    }
+    const auto log_size = fs::file_size(data / "boot.log", ec);
+    info.log_bytes = ec ? -1 : std::int64_t(log_size);
+    const auto settings_size = fs::file_size(data / "settings.txt", ec);
+    info.settings_bytes = ec ? -1 : std::int64_t(settings_size);
+    // The LOG tab: the end of the previous session's log and of this one so far.
+    {
+        std::ifstream in{data / "boot.old.log"};
+        std::vector<std::string> lines;
+        for (std::string line; std::getline(in, line);) {
+            lines.push_back(line);
+            if (lines.size() > 40) {
+                lines.erase(lines.begin());
+            }
+        }
+        info.log_previous = std::move(lines);
+        info.log_current = Ps4::RecentLog(40);
+    }
     return info;
 }
 
@@ -293,6 +321,7 @@ void ApplyPs4Settings() {
 ///   speed_limit=on|off          (default on)
 ///   multicore=on|off            (default on)
 ///   vram=conservative|aggressive  (default conservative)
+///   shader_cache=on|off         shaders kept on disk (default on)
 ///   language=pt|en              the menu's language (read by the menu only)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
 void ApplySettingsFile() {
@@ -361,6 +390,8 @@ void ApplySettingsFile() {
             } else {
                 known = false;
             }
+        } else if (key == "shader_cache" && (value == "on" || value == "off")) {
+            v.use_disk_shader_cache.SetValue(value == "on");
         } else if (key == "speed_limit" && (value == "on" || value == "off")) {
             v.use_speed_limit.SetValue(value == "on");
         } else if (key == "multicore" && (value == "on" || value == "off")) {
@@ -507,8 +538,34 @@ int main() {
     }
 
     std::error_code ec;
-    for (const char* sub : {"keys", "firmware", "roms", "updates"}) {
+    // The folders the user fills (keys, firmware, roms, updates) and the ones Eden writes in: all
+    // made now, so they are there to see over FTP from the first run. (The process has no umask,
+    // see Ps4::PrepareDataDir: they open to everyone.)
+    for (const char* sub : {"keys", "firmware", "roms", "updates", "log", "nand", "sdmc", "play_time",
+                            "shader", "cache", "screenshots", "dump", "load"}) {
         fs::create_directories(fs::path{Ps4::DataDir} / sub, ec);
+        if (ec) {
+            Ps4::Log("could not create %s/%s: %s", Ps4::DataDir, sub, ec.message().c_str());
+        }
+    }
+    if (const fs::path readme = fs::path{Ps4::DataDir} / "LEIA-ME.txt"; !fs::exists(readme, ec)) {
+        if (std::ofstream out{readme}; out) {
+            out << "NX on Orbis - pasta de dados / data folder\n\n"
+                   "keys/       coloque aqui prod.keys (e title.keys), tirados do SEU Switch\n"
+                   "            put prod.keys (and title.keys) here, dumped from YOUR Switch\n"
+                   "firmware/   os arquivos .nca do firmware do SEU Switch\n"
+                   "            the .nca files of YOUR Switch's firmware\n"
+                   "roms/       seus jogos .nsp ou .xci / your .nsp or .xci games\n"
+                   "updates/    atualizacoes e DLC (.nsp) / updates and DLC (.nsp)\n"
+                   "nand/ sdmc/ saves e dados do emulador / saves and the emulator's data\n"
+                   "settings.txt  as opcoes do menu / the menu's options\n"
+                   "boot.log, mesa.log, log/eden_log.txt  registros / logs\n";
+        }
+    }
+    {
+        std::error_code size_ec;
+        const auto bytes = fs::file_size(fs::path{Ps4::DataDir} / "settings.txt", size_ec);
+        Ps4::Log("settings.txt: %s", size_ec ? "none yet" : (std::to_string(bytes) + " bytes").c_str());
     }
 
     Ps4::SetPhase("logging");

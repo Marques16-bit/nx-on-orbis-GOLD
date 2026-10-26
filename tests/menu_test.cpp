@@ -32,6 +32,7 @@ using namespace Menu;
 struct Rig {
     std::string saved;
     int saves = 0;
+    bool save_works = true;
     std::uint64_t now = 1000000;
     std::uint32_t held = 0;
     MenuUi ui;
@@ -41,6 +42,7 @@ struct Rig {
              [this](const std::string& text) {
                  saved = text;
                  ++saves;
+                 return save_works;
              }) {}
 
     static std::vector<GameEntry> MakeGames(int n) {
@@ -62,6 +64,9 @@ struct Rig {
         info.keys_found = true;
         info.firmware_files = 227;
         info.free_memory_mib = 3120;
+        info.settings_bytes = 142;
+        info.log_previous = {"[    0.512] controller open", "[   12.300] game 1 of 3 in roms/", "[   41.002] !! thread stacks (hang)"};
+        info.log_current = {"[    0.100] data folder /data/edenps4: writable, 0 entries opened to everyone"};
         return info;
     }
     /// Press and release one button.
@@ -166,16 +171,17 @@ void TestNavigation() {
         Rig r("", 3, 1);
         r.Tap(Pad::R1);
         Check(r.ui.Tab() == 1, "R1: next tab");
-        r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1);
-        Check(r.ui.Tab() == 0, "R1 wraps around");
+        r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1);
+        Check(r.ui.Tab() == 0, "R1 wraps around (6 tabs)");
         r.Tap(Pad::L1);
-        Check(r.ui.Tab() == 4, "L1 wraps backwards");
+        Check(r.ui.Tab() == 5, "L1 wraps backwards (to the LOG tab)");
         r.Tap(Pad::Circle);
         Check(r.ui.Tab() == 0, "Circle goes back to the games");
     }
     {
         Rig r("");
-        r.Tap(Pad::R1); // VIDEO: first option is the console mode
+        r.Tap(Pad::R1); // VIDEO: row 0 is the quick profile, row 1 the console mode
+        r.Tap(Pad::Down);
         r.Tap(Pad::Right);
         Check(r.saves == 1 && r.saved.find("mode=docked") != std::string::npos, "Right changes the value and saves");
         r.Tap(Pad::Right);
@@ -188,8 +194,27 @@ void TestNavigation() {
         Check(r.saved.find("mode=docked") != std::string::npos, "Cross cycles to the next value");
     }
     {
+        // The SYSTEM tab in each state of the write test: it must draw, and look different.
+        auto sum = [](bool writable, std::int64_t log) {
+            SystemInfo info = Rig::MakeInfo(1);
+            info.data_writable = writable;
+            info.log_bytes = log;
+            MenuUi ui(Rig::MakeGames(1), 0, info, "", nullptr);
+            ui.SetTab(4);
+            std::vector<std::uint32_t> pixels(1920 * 1080);
+            Canvas canvas{pixels.data(), 1920, 1080};
+            ui.Draw(canvas);
+            std::uint64_t total = 0;
+            for (std::uint32_t p : pixels) {
+                total = total * 31 + p;
+            }
+            return total;
+        };
+        Check(sum(true, 18000) != sum(false, -1) && sum(true, 18000) != sum(true, -1), "SYSTEM tab shows the write test: ok / no boot.log / cannot write");
+    }
+    {
         Rig r("");
-        r.Tap(Pad::L1); // SYSTEM
+        r.ui.SetTab(4); // SYSTEM
         r.Tap(Pad::Cross); // language
         Check(r.saved.find("language=en") != std::string::npos, "Cross on the language switches to English");
         Check(r.ui.Result().kind == MenuResult::Kind::None, "...and does not start a game");
@@ -202,7 +227,7 @@ void TestNavigation() {
     }
     {
         Rig r("mode=docked\nastc=gpu\n");
-        r.Tap(Pad::L1);
+        r.ui.SetTab(4);
         r.Tap(Pad::Down);
         r.Tap(Pad::Cross);
         r.Tap(Pad::Up); // moving cancels the confirmation
@@ -226,6 +251,73 @@ void TestNavigation() {
         Check(r.ui.Result().kind == MenuResult::Kind::None, "OPTIONS with no games does nothing");
         r.Tap(Pad::Cross);
         Check(r.ui.Result().kind == MenuResult::Kind::Homebrew, "with no games the only row is the Homebrew Menu");
+    }
+    {
+        // The quick profiles, from the VIDEO tab's first row.
+        Rig r("");
+        r.Tap(Pad::R1);
+        Check(r.ui.Tab() == 1, "VIDEO tab");
+        r.Tap(Pad::Right);
+        Check(r.saved.find("resolution=0.75") != std::string::npos && r.saved.find("gpu_accuracy") == std::string::npos,
+              "profile Light: 0.75x written, the options at their default are not");
+        SettingsFile f(r.saved);
+        Check(f.MatchPreset() == 1, "the file matches profile 1 (Light)");
+        r.Tap(Pad::Right);
+        Check(r.saved.find("gpu_accuracy=high") != std::string::npos && r.saved.find("cpu_accuracy=auto") != std::string::npos &&
+                  r.saved.find("resolution") == std::string::npos,
+              "profile Compatibility replaces the Light one");
+        r.Tap(Pad::Right);
+        Check(r.saved.find("gpu_accuracy") == std::string::npos && SettingsFile(r.saved).MatchPreset() == 0, "wraps to Default: nothing written");
+        r.Tap(Pad::Left);
+        Check(SettingsFile(r.saved).MatchPreset() == 2, "Left goes back to Compatibility");
+        r.Tap(Pad::Triangle);
+        Check(SettingsFile(r.saved).MatchPreset() == 0, "Triangle on the profile row: Default");
+    }
+    {
+        // Settings that match no profile are a custom mix; a profile does not touch the others.
+        Rig r("resolution=2\nlanguage=en\nmode=docked\n");
+        r.Tap(Pad::R1);
+        Check(SettingsFile("resolution=2\n").MatchPreset() == -1, "resolution=2 is a custom mix");
+        r.Tap(Pad::Right);
+        Check(SettingsFile(r.saved).MatchPreset() == 0, "Right from a custom mix: the first profile");
+        Check(r.saved.find("mode=docked") != std::string::npos && r.saved.find("language=en") != std::string::npos,
+              "a profile leaves the console mode and the language alone");
+        Rig q("resolution=2\n");
+        q.Tap(Pad::R1);
+        q.Tap(Pad::Left);
+        Check(SettingsFile(q.saved).MatchPreset() == 2, "Left from a custom mix: the last profile");
+    }
+    {
+        // A save that fails is shown, and a save that works is too.
+        Rig r("");
+        r.save_works = false;
+        r.ui.SetTab(2);
+        r.Tap(Pad::Cross);
+        Check(r.saves == 1, "the failing save was tried");
+        auto draw = [&](Rig& rig) {
+            std::vector<std::uint32_t> pixels(1920 * 1080);
+            Canvas canvas{pixels.data(), 1920, 1080};
+            rig.ui.Draw(canvas);
+            std::uint64_t total = 0;
+            for (std::uint32_t p : pixels) {
+                total = total * 31 + p;
+            }
+            return total;
+        };
+        const std::uint64_t failed = draw(r);
+        r.save_works = true;
+        r.Tap(Pad::Cross);
+        Check(draw(r) != failed, "the screen tells a failed save from a good one");
+    }
+    {
+        // The LOG tab: Left/Right switch the session, and it draws for both, empty or not.
+        Rig r("");
+        r.ui.SetTab(5);
+        Check(r.ui.Tab() == 5, "LOG tab");
+        r.Tap(Pad::Right);
+        r.Tap(Pad::Left);
+        r.Tap(Pad::Cross);
+        Check(r.ui.Result().kind == MenuResult::Kind::None, "Cross on the LOG tab starts nothing");
     }
     {
         // Key repeat: held Down moves after 0.4 s, then every 0.11 s.
