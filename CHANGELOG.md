@@ -2,7 +2,46 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.5.0] - in preparation
+## [0.6.0] - in preparation
+
+First version after Super Mario Maker 2 opened. Not everything asked for is here: see "Not yet".
+
+### Added
+- **Firmware straight from the .zip.** Put `Firmware 20.5.0.zip` (or the .nca files) in `firmware/`;
+  when a game starts, its .nca files are taken out into the registered folder (any folder inside the
+  zip, checked against each file's CRC, written through a temporary name, files already there are
+  left alone). Own inflate, no new library; tested byte for byte against zips made by Python
+  (stored, deflated at levels 1 and 9, nested folders, corrupt, not a zip, no .nca).
+- The SYSTEM tab says whether the firmware is installed, is in `firmware/` as .nca files or as a
+  .zip, or is missing.
+- **Clean game titles** in the list: "Super Mario Maker 2 [01009B90006DC000][v0].nsp" shows as
+  "Super Mario Maker 2".
+- The app logs when the system asks it to close (SIGTERM / SIGHUP / SIGINT) and leaves at once.
+
+### Changed
+- The "Default" quick profile now also puts the B8G8R8A8 colour fix back to Automatic.
+- The help of the B8G8R8A8 fix says what swapped colours look like (pink sky, blue ground).
+
+### Found in the Super Mario Maker 2 log and video
+- The colours are swapped in **part** of the image (the sky pink, the ground blocks cyan, the "2" of
+  the logo right). The log says `PS4 BGRA workaround ON (mode 1)` while the self-test of the same
+  run says sampling B8G8R8A8 is already correct: the fix was forced to On, which swaps the textures
+  that did not need it. **Set "B8G8R8A8 colour fix" (ADVANCED tab) to Automatic or Off**, or pick the
+  Default quick profile, and look again.
+- About 480 `Unmapped Read8 @ 0x38` lines: the game reads a null pointer's field; harmless for the
+  run but it fills the log.
+
+### Not yet (needs Eden's own code, which this repository does not hold)
+- **Game covers**, an **in-game menu on L3+R3**, and an **FPS / memory / temperature HUD** all have to
+  be drawn over the frames Eden presents; **save states** do not exist in Eden. They need the
+  `eden-sources` artifact (Actions > Check patches and host tests > Run workflow).
+- A clean return to the PS4 home screen: the app still stays on the green light when a game ends
+  (returning from `main()` is reported as CE-34878-0); what the system sends on "Close Application"
+  is now logged, to see it in the next test.
+- 30 fps in Super Mario Maker 2 and 60 fps are goals, not results: the emulated CPU is the limit.
+- Why SpongeBob: Titans of the Tide crashes: needs the LOG tab of that run.
+
+## [0.5.0] - built by GitHub, shown to fix the data folder
 
 The version to test Mario Kart 8 Deluxe and Super Mario Maker 2 with.
 

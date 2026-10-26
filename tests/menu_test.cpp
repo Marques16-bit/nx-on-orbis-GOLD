@@ -310,6 +310,26 @@ void TestNavigation() {
         Check(draw(r) != failed, "the screen tells a failed save from a good one");
     }
     {
+        // A dump's file name carries tags; the list shows the title only (two names that differ only
+        // in their tags draw the same screen).
+        auto frame = [](const char* file) {
+            std::vector<GameEntry> games = {{file, 1ull << 30}};
+            MenuUi ui(games, 0, Rig::MakeInfo(1), "", nullptr);
+            std::vector<std::uint32_t> pixels(1920 * 1080);
+            Canvas canvas{pixels.data(), 1920, 1080};
+            ui.Draw(canvas);
+            std::uint64_t total = 0;
+            for (std::uint32_t p : pixels) {
+                total = total * 31 + p;
+            }
+            return total;
+        };
+        Check(frame("Super Mario Maker 2 [01009B90006DC000][v0] (US).nsp") == frame("Super Mario Maker 2.xci"),
+              "the title in the list has no [tags], (tags) or extension");
+        Check(frame("Super_Mario_Maker_2.nsp") == frame("Super Mario Maker 2.nsp"), "underscores read as spaces");
+        Check(frame("Celeste.nsp") != frame("Super Mario Maker 2.nsp"), "different titles draw differently");
+    }
+    {
         // The LOG tab: Left/Right switch the session, and it draws for both, empty or not.
         Rig r("");
         r.ui.SetTab(5);

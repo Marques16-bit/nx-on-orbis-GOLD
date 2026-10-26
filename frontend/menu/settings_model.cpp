@@ -80,8 +80,8 @@ const std::vector<Option>& Catalog() {
          {{"1", "Desligado (padrão)", "Off (default)"}, {"0", "Ligado (experimental)", "On (experimental)"}}, 0},
         // ---------------------------------------------------------------- Advanced
         {"bgra", Group::Advanced, "Correção de cor B8G8R8A8", "B8G8R8A8 colour fix",
-         "Corrige vermelho e azul trocados nas texturas. Automático decide por um teste ao iniciar.",
-         "Fixes swapped red and blue in textures. Auto decides from a test at startup.",
+         "Corrige vermelho e azul trocados nas texturas. Se as cores do jogo estiverem trocadas (céu rosa, chão azul), use Automático ou Desligado.",
+         "Fixes swapped red and blue in textures. If a game's colours are swapped (pink sky, blue ground), use Auto or Off.",
          {{"auto", "Automático", "Auto"}, {"on", "Ligado", "On"}, {"off", "Desligado", "Off"}}, 0},
         {"a2b10", Group::Advanced, "Correção A2B10G10R10", "A2B10G10R10 fix",
          "Correção de texturas de 10 bits, decidida por um teste ao iniciar.",
@@ -118,12 +118,12 @@ const std::vector<Preset>& Presets() {
         {"Leve (mais velocidade)", "Light (more speed)",
          "Resolução 0,75x, GPU de precisão baixa, sem flush reativo, shaders assíncronos, ASTC pela CPU e VRAM conservadora. Menos qualidade, mais velocidade.",
          "0.75x resolution, low GPU accuracy, no reactive flushing, async shaders, ASTC on the CPU and conservative VRAM. Less quality, more speed.",
-         {{"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"async_shaders", "on"},
+         {{"bgra", "auto"}, {"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"async_shaders", "on"},
           {"astc", "cpu"}, {"vram", "conservative"}}},
         {"Compatibilidade (mais fiel)", "Compatibility (more faithful)",
          "GPU de precisão alta, flush reativo, CPU automática, sem estado dinâmico nem entrada de vértices dinâmica, shaders síncronos. Mais lento, usa menos extensões arriscadas do driver.",
          "High GPU accuracy, reactive flushing, auto CPU accuracy, no dynamic state or dynamic vertex input, synchronous shaders. Slower, uses fewer risky driver extensions.",
-         {{"gpu_accuracy", "high"}, {"reactive_flushing", "on"}, {"cpu_accuracy", "auto"}, {"dyna_state", "0"},
+         {{"bgra", "auto"}, {"gpu_accuracy", "high"}, {"reactive_flushing", "on"}, {"cpu_accuracy", "auto"}, {"dyna_state", "0"},
           {"vertex_input_dynamic", "off"}, {"async_shaders", "off"}}},
     };
     return presets;

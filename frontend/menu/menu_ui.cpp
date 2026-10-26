@@ -21,13 +21,34 @@ constexpr int FooterCells = (1920 - 2 * Margin) / 20;
 
 constexpr int TabGames = 0, TabVideo = 1, TabCpu = 2, TabAdvanced = 3, TabSystem = 4, TabLog = 5;
 
-/// File name without its extension.
+/// The title in a dump's file name: no extension, no [tags] or (tags) ("Super Mario Maker 2
+/// [01009B90006DC000][v0] (US).nsp" -> "Super Mario Maker 2"), '_' as spaces, spaces tidied.
 std::string DisplayName(const std::string& file) {
     std::string name = file;
     if (const auto dot = name.find_last_of('.'); dot != std::string::npos && dot > 0) {
         name.erase(dot);
     }
-    return name;
+    std::string title;
+    int depth = 0;
+    for (const char ch : name) {
+        if (ch == '[' || ch == '(') {
+            ++depth;
+        } else if ((ch == ']' || ch == ')') && depth > 0) {
+            --depth;
+        } else if (depth == 0) {
+            title += ch == '_' ? ' ' : ch;
+        }
+    }
+    std::string tidy;
+    for (const char ch : title) {
+        if (!(ch == ' ' && (tidy.empty() || tidy.back() == ' '))) {
+            tidy += ch;
+        }
+    }
+    while (!tidy.empty() && (tidy.back() == ' ' || tidy.back() == '-')) {
+        tidy.pop_back();
+    }
+    return tidy.empty() ? name : tidy;
 }
 
 std::string FormatSize(std::uint64_t bytes, Lang lang) {
@@ -514,12 +535,19 @@ void MenuUi::DrawSystem(Canvas& c) const {
         info_.keys_found ? std::string("✓ ") + T("encontradas", "found")
                          : std::string("✗ ") + T("não encontradas: copie para ", "not found: copy to ") + info_.data_dir + "/keys",
         info_.keys_found ? Color::Good : Color::Bad);
-    char firmware[64];
-    std::snprintf(firmware, sizeof(firmware), "✓ %d %s", info_.firmware_files, T("arquivos .nca", ".nca files"));
-    row("Firmware",
-        info_.firmware_files > 0 ? std::string(firmware)
-                                 : std::string("✗ ") + T("nenhum arquivo: copie para ", "no files: copy to ") + info_.data_dir + "/firmware",
-        info_.firmware_files > 0 ? Color::Good : Color::Warn);
+    std::string firmware;
+    std::uint32_t firmware_color = Color::Good;
+    if (info_.firmware_installed > 0) {
+        firmware = "✓ " + std::to_string(info_.firmware_installed) + T(" arquivos .nca instalados", " .nca files installed");
+    } else if (info_.firmware_files > 0) {
+        firmware = "✓ " + std::to_string(info_.firmware_files) + T(" arquivos .nca (instalados ao iniciar um jogo)", " .nca files (installed when a game starts)");
+    } else if (info_.firmware_zips > 0) {
+        firmware = std::string("✓ ") + T("firmware em .zip (instalado ao iniciar um jogo)", "firmware as a .zip (installed when a game starts)");
+    } else {
+        firmware = std::string("✗ ") + T("nenhum arquivo: copie o .zip ou os .nca para ", "no files: copy the .zip or the .nca files to ") + info_.data_dir + "/firmware";
+        firmware_color = Color::Warn;
+    }
+    row("Firmware", firmware, firmware_color);
     row(T("Jogos", "Games"), std::to_string(games_.size()) + T(" em ", " in ") + info_.data_dir + "/roms", Color::Text);
     row(T("Memória direta livre", "Free direct memory"), std::to_string(info_.free_memory_mib) + " MiB", Color::Text);
     row(T("Pasta de dados", "Data folder"), info_.data_dir, Color::Text);

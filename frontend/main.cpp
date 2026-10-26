@@ -56,6 +56,10 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 
+#include <csignal>
+#include <unistd.h>
+
+#include "firmware_zip.h"
 #include "menu/menu_ui.h"
 #include "menu/rom_menu.h"
 #include "ps4_platform.h"
@@ -116,6 +120,14 @@ Menu::SystemInfo CollectSystemInfo() {
     for (fs::directory_iterator it{data / "firmware", ec}, end; !ec && it != end; it.increment(ec)) {
         if (it->is_regular_file(ec) && HasExtension(it->path(), {".nca"})) {
             ++info.firmware_files;
+        } else if (it->is_regular_file(ec) && HasExtension(it->path(), {".zip"})) {
+            ++info.firmware_zips;
+        }
+    }
+    // Already installed (from an earlier run)?
+    for (fs::directory_iterator it{data / "nand/system/Contents/registered", ec}, end; !ec && it != end; it.increment(ec)) {
+        if (it->is_regular_file(ec) && HasExtension(it->path(), {".nca"})) {
+            ++info.firmware_installed;
         }
     }
     info.free_memory_mib = Ps4::FreeDirectMemory() >> 20;
@@ -238,7 +250,22 @@ void InstallFirmware() {
     fs::create_directories(target, ec);
     size_t copied = 0, present = 0, failed = 0;
     for (fs::directory_iterator it{source, ec}, end; !ec && it != end; it.increment(ec)) {
-        if (!it->is_regular_file(ec) || !HasExtension(it->path(), {".nca"})) {
+        if (!it->is_regular_file(ec)) {
+            continue;
+        }
+        if (HasExtension(it->path(), {".zip"})) {
+            // The firmware as it is found: "Firmware 20.5.0.zip". Its .nca files are taken out straight
+            // into the registered folder (a file already there with the same size is left alone).
+            const Ps4Zip::Result zip = Ps4Zip::ExtractNcas(it->path(), target);
+            Ps4::Log("firmware zip %s: %zu extracted, %zu already there, %zu failed%s%s",
+                     it->path().filename().string().c_str(), zip.extracted, zip.skipped, zip.failed,
+                     zip.first_error.empty() ? "" : ": ", zip.first_error.c_str());
+            copied += zip.extracted;
+            present += zip.skipped;
+            failed += zip.failed;
+            continue;
+        }
+        if (!HasExtension(it->path(), {".nca"})) {
             continue;
         }
         const fs::path to = target / it->path().filename();
@@ -508,7 +535,18 @@ void CheckMutexes() {
 
 } // Anonymous namespace
 
+/// The system asks the app to close (the PS button's "Close Application"): say so in the log and leave
+/// at once, without running destructors (Eden's teardown crashes here, see the end of main()).
+extern "C" void OnCloseRequest(int signal_number) {
+    Ps4::Log("!! the system asked the app to close (signal %d); leaving now", signal_number);
+    _exit(0);
+}
+
 int main() {
+    for (const int sig : {SIGTERM, SIGHUP, SIGINT}) {
+        std::signal(sig, OnCloseRequest);
+    }
+
     Ps4::OpenBootLog();
     Ps4::Log("eden-ps4 starting (Eden %s %s)", Common::g_scm_branch, Common::g_scm_desc);
     Ps4::Log("PS4 build: %s (btver2 build; defaults: cpu_accuracy unsafe, gpu_accuracy low, no reactive flushing, CPU ASTC, profiler on)",

@@ -41,7 +41,9 @@ struct SystemInfo {
     std::string build_id;
     std::string data_dir;
     bool keys_found = false;
-    int firmware_files = 0;
+    int firmware_files = 0;     // .nca files in firmware/
+    int firmware_zips = 0;      // .zip files in firmware/ (installed when a game starts)
+    int firmware_installed = 0; // .nca files already in the registered folder
     bool data_writable = true;       // a test file could be written in data_dir
     std::int64_t log_bytes = -1;     // size of boot.log, or -1 when there is none
     std::int64_t settings_bytes = -1; // size of settings.txt, or -1 when there is none
