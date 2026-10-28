@@ -2,7 +2,39 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.6.0] - in preparation
+## [0.7.0] - in preparation
+
+### Added
+- **A hook on the video output** (`frontend/video_hook.cpp`, linked with `--wrap` on
+  `sceVideoOutRegisterBuffers` and `sceVideoOutSubmitFlip`): RADV's WSI registers its swapchain
+  images as the video-out buffers, so with their addresses known the app can draw over the game
+  without any change to Eden. Tested on a PC with recorders in place of the real calls.
+- **Colours: "swap red and blue on the screen"** (`colour_swap`, ADVANCED tab, **on** by default):
+  the registered pixel format is turned into its red/blue mirror. This is the fix for the Super Mario
+  Maker 2 colours (sky pink, ground blue); it is also what the original author suspected for the whole
+  image. The format Eden registered and the one used are in `boot.log` ("video hook: ...").
+- **Performance HUD** (`hud`, `hud_size`, `hud_position`): FPS and frame time (flips per second, the
+  real display rate), CPU cores in use (CPU time over wall time, out of 8), free direct memory and
+  the CPU / SoC temperatures. Off by default; also toggled from the pause menu.
+- **Pause menu on L3 + R3**, in Portuguese or English: Continue, HUD on/off, speed limit on/off,
+  Exit game. The game is paused (`Core::System::Pause()`), the panel is drawn into the frame on the
+  screen and the game resumes with `Run()`. Save states are not in the menu: Eden has none.
+- The SYSTEM tab shows the **shader cache** (games with one, MiB): Eden already keeps one cache per
+  game in `cache/shader/<title id>/` and loads it when the game starts (the log of the Mario Maker 2
+  run shows `LoadDiskResources` and "Vulkan driver pipelines cached at ..."); nothing had to be built.
+- `ci/stage-eden.sh` retries the build without the HUD temperatures if the SDK's stub library lacks
+  the two system functions they call.
+
+### Not yet
+- **Game covers.** Reading a game's icon needs Eden's loader, which needs a `Core::System`, and the
+  menu opens before the system exists. Moving the menu after the system is created changes a boot
+  path that works; it is the first item of 0.8.0, with the boot log as the check.
+- More Eden settings from the PC and Android versions: the names have to be checked against Eden's
+  settings headers (`Check patches`, manual run, artifact `eden-sources`) before they are used.
+- 30 to 60 fps: not changed here. The HUD is to measure it: CPU cores in use against the display
+  rate says whether the emulated CPU, the GPU or the pacing is the limit.
+
+## [0.6.0] - built by GitHub
 
 First version after Super Mario Maker 2 opened. Not everything asked for is here: see "Not yet".
 

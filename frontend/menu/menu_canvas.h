@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -47,6 +48,11 @@ struct Canvas {
 
 inline constexpr int GlyphWidth = 20;
 inline constexpr int GlyphHeight = 40;
+
+/// The next code point of a UTF-8 string, advancing `i` (an invalid byte comes out as '?').
+std::uint32_t NextCodePoint(std::string_view text, size_t& i);
+/// The 20x40 coverage bitmap (8 bit) of a character; '?' for one the font lacks.
+const std::uint8_t* GlyphFor(std::uint32_t code_point);
 
 /// Number of characters (code points) in a UTF-8 string.
 int TextCells(std::string_view utf8);

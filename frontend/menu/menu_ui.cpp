@@ -509,7 +509,7 @@ void MenuUi::DrawSystem(Canvas& c) const {
     const auto row = [&](const char* label, const std::string& value, std::uint32_t color) {
         c.Print(label_x, y, label, Color::Dim);
         c.Print(value_x, y, Clip(value, max_cells), color);
-        y += 50;
+        y += 44;
     };
     row(T("Versão", "Version"), info_.build_id, Color::Text);
     {
@@ -550,6 +550,11 @@ void MenuUi::DrawSystem(Canvas& c) const {
     row("Firmware", firmware, firmware_color);
     row(T("Jogos", "Games"), std::to_string(games_.size()) + T(" em ", " in ") + info_.data_dir + "/roms", Color::Text);
     row(T("Memória direta livre", "Free direct memory"), std::to_string(info_.free_memory_mib) + " MiB", Color::Text);
+    row(T("Cache de shaders", "Shader cache"),
+        info_.shader_cache_games > 0 ? std::string("✓ ") + std::to_string(info_.shader_cache_games) + T(" jogos, ", " games, ") +
+                                           std::to_string(info_.shader_cache_mib) + T(" MiB: um por jogo, ao jogar", " MiB: one per game, filled as you play")
+                                     : std::string(T("vazio: é criado e preenchido enquanto você joga (um por jogo)", "empty: made and filled as you play (one per game)")),
+        info_.shader_cache_games > 0 ? Color::Good : Color::Dim);
     row(T("Pasta de dados", "Data folder"), info_.data_dir, Color::Text);
     row("Logs", "boot.log, mesa.log, log/eden_log.txt", Color::Text);
 }

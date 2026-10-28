@@ -31,6 +31,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -61,6 +62,7 @@
 
 #include "firmware_zip.h"
 #include "menu/menu_ui.h"
+#include "video_hook.h"
 #include "menu/rom_menu.h"
 #include "ps4_platform.h"
 
@@ -131,6 +133,24 @@ Menu::SystemInfo CollectSystemInfo() {
         }
     }
     info.free_memory_mib = Ps4::FreeDirectMemory() >> 20;
+    // The per-game shader caches Eden keeps in cache/shader/<title id>/.
+    for (fs::directory_iterator game{data / "cache/shader", ec}, end; !ec && game != end; game.increment(ec)) {
+        if (!game->is_directory(ec)) {
+            continue;
+        }
+        std::uint64_t bytes = 0;
+        std::error_code walk_ec;
+        for (fs::recursive_directory_iterator f{game->path(), walk_ec}, stop; !walk_ec && f != stop; f.increment(walk_ec)) {
+            std::error_code size_ec;
+            if (f->is_regular_file(size_ec)) {
+                bytes += fs::file_size(f->path(), size_ec);
+            }
+        }
+        if (bytes > 0) {
+            ++info.shader_cache_games;
+            info.shader_cache_mib += bytes >> 20;
+        }
+    }
     // Can the app write here? (No boot.log and no settings.txt otherwise.)
     {
         const fs::path probe = data / ".write-test";
@@ -349,6 +369,9 @@ void ApplyPs4Settings() {
 ///   multicore=on|off            (default on)
 ///   vram=conservative|aggressive  (default conservative)
 ///   shader_cache=on|off         shaders kept on disk (default on)
+///   hud=on|off                  performance HUD over the game (default off)
+///   hud_size=normal|small, hud_position=left|right
+///   colour_swap=on|off          swap red and blue on the screen (default on)
 ///   language=pt|en              the menu's language (read by the menu only)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
 void ApplySettingsFile() {
@@ -417,6 +440,14 @@ void ApplySettingsFile() {
             } else {
                 known = false;
             }
+        } else if (key == "hud" && (value == "on" || value == "off")) {
+            Ps4Hook::Pending().hud = value == "on";
+        } else if (key == "hud_size" && (value == "normal" || value == "small")) {
+            Ps4Hook::Pending().hud_small = value == "small";
+        } else if (key == "hud_position" && (value == "left" || value == "right")) {
+            Ps4Hook::Pending().hud_right = value == "right";
+        } else if (key == "colour_swap" && (value == "on" || value == "off")) {
+            Ps4Hook::Pending().swap_colours = value == "on";
         } else if (key == "shader_cache" && (value == "on" || value == "off")) {
             v.use_disk_shader_cache.SetValue(value == "on");
         } else if (key == "speed_limit" && (value == "on" || value == "off")) {
@@ -662,6 +693,8 @@ int main() {
 
     Ps4::SetPhase("loading game");
     Service::AM::FrontendAppletParameters params{.applet_id = Service::AM::AppletId::Application};
+    // From here the video buffers the game registers are known to the hook (HUD, pause menu, colours).
+    Ps4Hook::Arm(Ps4Hook::Pending());
     const Core::SystemResultStatus loaded = system.Load(window, game, params);
     if (loaded != Core::SystemResultStatus::Success) {
         const unsigned code = static_cast<unsigned>(loaded);
@@ -694,6 +727,27 @@ int main() {
     // Controller in, status out, until the game exits or Options + touch pad is held 2 s.
     auto* gamepad = input.GetVirtualGamepad();
     std::uint64_t quit_since = 0;
+    // The pause menu (L3 + R3), drawn over the frozen game by the video hook.
+    bool in_menu = false, combo_before = false, overlay_warned = false;
+    int menu_sel = 0;
+    std::uint32_t menu_buttons_before = 0;
+    const auto show_menu = [&] {
+        bool pt = true;
+        {
+            std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt", std::ios::binary};
+            std::ostringstream text;
+            text << in.rdbuf();
+            pt = Menu::SettingsFile(text.str()).Language() == Menu::Lang::Pt;
+        }
+        const auto state = [&](bool on) { return std::string(on ? (pt ? "ligado" : "on") : (pt ? "desligado" : "off")); };
+        const std::vector<std::string> lines = {
+            pt ? "Continuar" : "Continue",
+            std::string(pt ? "HUD de desempenho: " : "Performance HUD: ") + state(Ps4Hook::HudOn()),
+            std::string(pt ? "Limite de velocidade: " : "Speed limit: ") + state(Settings::values.use_speed_limit.GetValue()),
+            pt ? "Sair do jogo" : "Exit game"};
+        Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu", lines, menu_sel,
+                           pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
+    };
     std::uint64_t last_status = Ps4::NowUs();
     unsigned status_count = 0;
     for (;;) {
@@ -705,6 +759,60 @@ int main() {
             }
         }
         const Ps4::PadState pad = Ps4::ReadPad();
+        const bool menu_combo = (pad.buttons & Ps4::Button::L3) && (pad.buttons & Ps4::Button::R3);
+        if (in_menu) {
+            const std::uint32_t pressed = pad.buttons & ~menu_buttons_before;
+            menu_buttons_before = pad.buttons;
+            bool redraw = false, close = (pressed & Ps4::Button::Circle) != 0 || (menu_combo && !combo_before), leave = false;
+            combo_before = menu_combo;
+            if (pressed & Ps4::Button::Down) {
+                menu_sel = (menu_sel + 1) % 4;
+                redraw = true;
+            }
+            if (pressed & Ps4::Button::Up) {
+                menu_sel = (menu_sel + 3) % 4;
+                redraw = true;
+            }
+            if (pressed & Ps4::Button::Cross) {
+                if (menu_sel == 0) {
+                    close = true;
+                } else if (menu_sel == 1) {
+                    Ps4Hook::SetHud(!Ps4Hook::HudOn());
+                    redraw = true;
+                } else if (menu_sel == 2) {
+                    Settings::values.use_speed_limit.SetValue(!Settings::values.use_speed_limit.GetValue());
+                    redraw = true;
+                } else {
+                    leave = true;
+                }
+            }
+            if (leave) {
+                Ps4::Log("exit chosen in the pause menu");
+                break;
+            }
+            if (close) {
+                in_menu = false;
+                system.Run();
+                Ps4::Log("pause menu closed, the game runs again");
+            } else if (redraw) {
+                show_menu();
+            }
+            continue;
+        }
+        if (menu_combo && !combo_before) {
+            if (Ps4Hook::Ready()) {
+                in_menu = true;
+                menu_sel = 0;
+                menu_buttons_before = pad.buttons;
+                system.Pause();
+                Ps4::Log("pause menu opened (L3 + R3)");
+                show_menu();
+            } else if (!overlay_warned) {
+                overlay_warned = true;
+                Ps4::Log("pause menu not available: %s", Ps4Hook::Describe().c_str());
+            }
+        }
+        combo_before = menu_combo;
         if (pad.connected && gamepad != nullptr) {
             PollPad(*gamepad, pad);
         }
@@ -728,6 +836,7 @@ int main() {
                      static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20));
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
+                Ps4::Log("%s", Ps4Hook::Describe().c_str());
             }
         }
     }

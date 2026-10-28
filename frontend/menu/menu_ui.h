@@ -44,6 +44,8 @@ struct SystemInfo {
     int firmware_files = 0;     // .nca files in firmware/
     int firmware_zips = 0;      // .zip files in firmware/ (installed when a game starts)
     int firmware_installed = 0; // .nca files already in the registered folder
+    int shader_cache_games = 0; // games with a shader cache (cache/shader/<title id>/)
+    std::uint64_t shader_cache_mib = 0;
     bool data_writable = true;       // a test file could be written in data_dir
     std::int64_t log_bytes = -1;     // size of boot.log, or -1 when there is none
     std::int64_t settings_bytes = -1; // size of settings.txt, or -1 when there is none

@@ -30,7 +30,17 @@ fi
 echo "configure ok: no host include/library paths in the build"
 # -k 0: keep going after a failure; with the compiler cache every object that did build is kept, so a
 # run that fails still pays for the next one, and one run lists all the errors.
-cmake --build build-eden --target eden-ps4 -j"$JOBS" -- -k 0
+set +e
+cmake --build build-eden --target eden-ps4 -j"$JOBS" -- -k 0 2>&1 | tee build-eden-last.log
+status=${PIPESTATUS[0]}
+set -e
+if [ "$status" != 0 ] && grep -q "sceKernelGet.*Temperature" build-eden-last.log; then
+    echo "::warning::the SDK has no temperature functions: building the HUD without temperatures"
+    cmake -S deps/eden -B build-eden -DEDEN_PS4_HUD_TEMPERATURE=OFF >/dev/null
+    cmake --build build-eden --target eden-ps4 -j"$JOBS"
+elif [ "$status" != 0 ]; then
+    exit "$status"
+fi
 ls -la build-eden/bin/eden-ps4
 cat build-eden/eden-ps4-build-id.txt 2>/dev/null || true
 if command -v ccache >/dev/null 2>&1; then ccache -s | head -n 12 || true; fi

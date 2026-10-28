@@ -10,9 +10,6 @@
 
 namespace Menu {
 
-namespace {
-
-/// The next code point of a UTF-8 string (invalid bytes come out as '?').
 std::uint32_t NextCodePoint(std::string_view s, size_t& i) {
     const auto byte = [&](size_t k) { return static_cast<unsigned char>(s[k]); };
     const unsigned char c = byte(i++);
@@ -53,6 +50,8 @@ const std::uint8_t* GlyphFor(std::uint32_t cp) {
     }
     return MenuFont::Glyphs['?' - 32];
 }
+
+namespace {
 
 float Clamp01(float v) {
     return std::min(std::max(v, 0.0f), 1.0f);
