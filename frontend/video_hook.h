@@ -23,6 +23,8 @@ struct Settings {
     bool hud_small = false;
     bool hud_right = false;
     bool swap_colours = true;
+    bool overlay = true;        // arm the hook at all (the HUD, the pause menu and the colour swap need it)
+    int shader_preload = 256;   // pipelines of the disk cache compiled at start: 0 none, -1 all
 };
 
 /// The settings read from settings.txt (hud, hud_size, hud_position, colour_swap), until Arm().

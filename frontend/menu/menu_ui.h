@@ -46,6 +46,7 @@ struct SystemInfo {
     int firmware_installed = 0; // .nca files already in the registered folder
     int shader_cache_games = 0; // games with a shader cache (cache/shader/<title id>/)
     std::uint64_t shader_cache_mib = 0;
+    std::function<bool()> clear_shader_cache; // empties cache/shader; true when it worked
     bool data_writable = true;       // a test file could be written in data_dir
     std::int64_t log_bytes = -1;     // size of boot.log, or -1 when there is none
     std::int64_t settings_bytes = -1; // size of settings.txt, or -1 when there is none
@@ -114,6 +115,8 @@ private:
     int scroll_[TabCount] = {};
     int last_game_ = 0;
     bool confirm_reset_ = false;
+    bool confirm_clear_ = false;
+    bool clear_ok_ = false;
     int log_source_ = 0; // LOG tab: 0 the previous session, 1 this one
     int save_state_ = 0; // 0 nothing saved yet, 1 the last save worked, 2 it failed
     bool started_ = false;

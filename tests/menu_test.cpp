@@ -310,6 +310,35 @@ void TestNavigation() {
         Check(draw(r) != failed, "the screen tells a failed save from a good one");
     }
     {
+        // Clearing the shader cache asks twice, from the SYSTEM tab's third row.
+        int cleared = 0;
+        SystemInfo info = Rig::MakeInfo(1);
+        info.shader_cache_games = 2;
+        info.clear_shader_cache = [&] {
+            ++cleared;
+            return true;
+        };
+        MenuUi ui(Rig::MakeGames(1), 0, info, "", nullptr);
+        ui.SetTab(4);
+        std::uint64_t now = 1000000;
+        auto tap = [&](std::uint32_t b) {
+            ui.Update(b, now);
+            now += 50000;
+            ui.Update(0, now);
+            now += 50000;
+        };
+        tap(Pad::Down);
+        tap(Pad::Down);
+        tap(Pad::Cross);
+        Check(cleared == 0, "clear shader cache: the first press only asks");
+        tap(Pad::Up);
+        tap(Pad::Down);
+        tap(Pad::Cross);
+        Check(cleared == 0, "...and moving away cancels the question");
+        tap(Pad::Cross);
+        Check(cleared == 1, "...the second press clears it");
+    }
+    {
         // A dump's file name carries tags; the list shows the title only (two names that differ only
         // in their tags draw the same screen).
         auto frame = [](const char* file) {

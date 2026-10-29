@@ -164,6 +164,7 @@ MenuUi::MenuUi(std::vector<GameEntry> games, int initial_game, SystemInfo info,
 void MenuUi::SetTab(int tab) {
     tab_ = (tab % TabCount + TabCount) % TabCount;
     confirm_reset_ = false;
+    confirm_clear_ = false;
     dirty_ = true;
 }
 
@@ -172,7 +173,7 @@ int MenuUi::RowCount(int tab) const {
     case TabGames:
         return int(games_.size()) + 1; // the games, then the Homebrew Menu
     case TabSystem:
-        return 2;
+        return 3; // language, restore defaults, clear the shader cache
     case TabVideo:
         return int(options_[tab].size()) + 1; // the quick profile, then the options
     default:
@@ -203,6 +204,7 @@ void MenuUi::MoveRow(int delta) {
     }
     int& selected = selected_[tab_];
     selected = (selected + delta + count) % count;
+    confirm_clear_ = false;
     int& scroll = scroll_[tab_];
     scroll = std::clamp(scroll, std::max(selected - VisibleRows + 1, 0), selected);
     if (tab_ == TabGames && selected < int(games_.size())) {
@@ -255,6 +257,20 @@ void MenuUi::Activate() {
         const int row = selected_[TabGames];
         result_.kind = row < int(games_.size()) ? MenuResult::Kind::Play : MenuResult::Kind::Homebrew;
         result_.game = row < int(games_.size()) ? row : -1;
+        return;
+    }
+    if (tab_ == TabSystem && selected_[TabSystem] == 2) {
+        if (!confirm_clear_) {
+            confirm_clear_ = true;
+        } else {
+            clear_ok_ = info_.clear_shader_cache ? info_.clear_shader_cache() : false;
+            if (clear_ok_) {
+                info_.shader_cache_games = 0;
+                info_.shader_cache_mib = 0;
+            }
+            confirm_clear_ = false;
+        }
+        dirty_ = true;
         return;
     }
     if (tab_ == TabSystem && selected_[TabSystem] == 1) {
@@ -501,10 +517,21 @@ void MenuUi::DrawSystem(Canvas& c) const {
         c.Print(Margin + 46, y, reset, confirm_reset_ ? Color::Warn : (selected ? 0xFFFFFFFF : Color::Text));
     }
 
+    {
+        const bool selected = selected_[TabSystem] == 2;
+        const int y = ContentTop + 2 * RowHeight;
+        const std::string text = confirm_clear_ ? T("Aperte X de novo: apagar o cache de shaders de todos os jogos", "Press X again: delete every game's shader cache")
+                                                : T("Limpar o cache de shaders (se um jogo não abre)", "Clear the shader cache (if a game will not open)");
+        if (selected) {
+            c.RoundRect(Margin, y - 4, 1920 - 2 * Margin, RowHeight - 4, 10, Color::Selected);
+            c.Fill(Margin, y + 6, 6, RowHeight - 24, Color::Teal);
+        }
+        c.Print(Margin + 46, y, text, confirm_clear_ ? Color::Warn : (selected ? 0xFFFFFFFF : Color::Text));
+    }
     // Read-only facts.
     const int label_x = Margin + 46, value_x = Margin + 46 + 24 * GlyphWidth;
     const int max_cells = (1920 - Margin - value_x) / GlyphWidth;
-    int y = ContentTop + 2 * RowHeight + 40;
+    int y = ContentTop + 3 * RowHeight + 30;
     c.Fill(Margin, y - 22, 1920 - 2 * Margin, 2, Color::Panel);
     const auto row = [&](const char* label, const std::string& value, std::uint32_t color) {
         c.Print(label_x, y, label, Color::Dim);

@@ -2,7 +2,31 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.7.0] - in preparation
+## [0.7.1] - in preparation
+
+### Fixed: games stopped opening (found in the log of a 0.7.0 run)
+- The log ends at 78 s with **2185 pipelines** compiled in about 7 s and the game itself not yet
+  started (the earlier working log had 9). Eden's `LoadDiskResources` compiles every pipeline of the
+  game's disk cache before the game starts, and each stays in the driver's memory; a cache grown over
+  many sessions used the whole arena (the log shows it at 1024 MiB, VRAM available 1.29 GiB) and the
+  app died in that queue.
+- The preload is now **limited** (`shader_preload`: none, 128, **256** (default), 1024, all, in the
+  VIDEO tab); the rest of the cache compiles when the game asks for it and is saved as before.
+- **It recovers by itself.** A marker file (`cache/shader/<title id>.loading`) exists while the cache
+  loads; if the app died in it, the next start finds it, moves that game's cache to
+  `<title id>.bad` and starts with an empty one (the log says so).
+- A new SYSTEM row, **Clear the shader cache** (asks twice), for a game that will not open.
+- `overlay` (ADVANCED tab): turns the video hook (HUD, L3 + R3 menu, colour swap) off in one step if
+  it is ever the suspect. In this log it was not: the renderer was up and the hook had nothing to do
+  with the compile queue.
+
+### Memory options
+Only two driver memory knobs exist in this port: the arena (`env=ORBIS_ARENA_MIB`, 1024 to 1792 MiB;
+**1280 is the default, the log showed 1024**) and the textures-in-the-arena switch
+(`ORBIS_VRAM_GARLIC`); with `vram` (conservative / aggressive) and now `shader_preload` they are the
+memory options in the menu. More need Eden's own settings names (artifact `eden-sources`).
+
+## [0.7.0] - built by GitHub, games stopped opening
 
 ### Added
 - **A hook on the video output** (`frontend/video_hook.cpp`, linked with `--wrap` on

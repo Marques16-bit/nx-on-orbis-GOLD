@@ -151,6 +151,12 @@ Menu::SystemInfo CollectSystemInfo() {
             info.shader_cache_mib += bytes >> 20;
         }
     }
+    info.clear_shader_cache = [data] {
+        std::error_code clear_ec;
+        fs::remove_all(data / "cache/shader", clear_ec);
+        fs::create_directories(data / "cache/shader", clear_ec);
+        return !clear_ec;
+    };
     // Can the app write here? (No boot.log and no settings.txt otherwise.)
     {
         const fs::path probe = data / ".write-test";
@@ -369,6 +375,8 @@ void ApplyPs4Settings() {
 ///   multicore=on|off            (default on)
 ///   vram=conservative|aggressive  (default conservative)
 ///   shader_cache=on|off         shaders kept on disk (default on)
+///   shader_preload=0|128|256|1024|all  pipelines of the disk cache compiled at start (default 256)
+///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
 ///   hud=on|off                  performance HUD over the game (default off)
 ///   hud_size=normal|small, hud_position=left|right
 ///   colour_swap=on|off          swap red and blue on the screen (default on)
@@ -440,6 +448,11 @@ void ApplySettingsFile() {
             } else {
                 known = false;
             }
+        } else if (key == "shader_preload" &&
+                   (value == "0" || value == "128" || value == "256" || value == "1024" || value == "all")) {
+            Ps4Hook::Pending().shader_preload = value == "all" ? -1 : std::atoi(value.c_str());
+        } else if (key == "overlay" && (value == "on" || value == "off")) {
+            Ps4Hook::Pending().overlay = value == "on";
         } else if (key == "hud" && (value == "on" || value == "off")) {
             Ps4Hook::Pending().hud = value == "on";
         } else if (key == "hud_size" && (value == "normal" || value == "small")) {
@@ -694,7 +707,11 @@ int main() {
     Ps4::SetPhase("loading game");
     Service::AM::FrontendAppletParameters params{.applet_id = Service::AM::AppletId::Application};
     // From here the video buffers the game registers are known to the hook (HUD, pause menu, colours).
-    Ps4Hook::Arm(Ps4Hook::Pending());
+    if (Ps4Hook::Pending().overlay) {
+        Ps4Hook::Arm(Ps4Hook::Pending());
+    } else {
+        Ps4::Log("overlay off: no HUD, no pause menu, no colour swap");
+    }
     const Core::SystemResultStatus loaded = system.Load(window, game, params);
     if (loaded != Core::SystemResultStatus::Success) {
         const unsigned code = static_cast<unsigned>(loaded);
@@ -714,9 +731,48 @@ int main() {
     system.GetCpuManager().OnGpuReady();
     if (Settings::values.use_disk_shader_cache.GetValue()) {
         Ps4::SetPhase("shader cache");
+        // Eden compiles EVERY pipeline of the game's disk cache before the game starts, and each one
+        // stays in the driver's memory. A cache grown over many sessions (2185 pipelines in one log)
+        // used the whole arena and the app died with the game not yet started. So: a limit (the
+        // "shader_preload" option); the rest compile when the game asks for them, and are saved as
+        // before. A marker file records that the load is under way: if the app dies in it, the next
+        // start finds the marker, puts that game's cache aside and starts with an empty one.
+        const std::uint64_t title_id = system.GetApplicationProcessProgramID();
+        char id[17];
+        std::snprintf(id, sizeof(id), "%016llx", static_cast<unsigned long long>(title_id));
+        const fs::path shader_root = fs::path{Ps4::DataDir} / "cache/shader";
+        const fs::path marker = shader_root / (std::string(id) + ".loading");
+        std::error_code cache_ec;
+        fs::create_directories(shader_root, cache_ec);
+        if (fs::exists(marker, cache_ec)) {
+            const fs::path aside = shader_root / (std::string(id) + ".bad");
+            fs::remove_all(aside, cache_ec);
+            fs::rename(shader_root / id, aside, cache_ec);
+            fs::remove(marker, cache_ec);
+            Ps4::Log("the last start died while loading the shader cache of %s: it was moved to %s.bad; this game starts with an empty cache",
+                     id, id);
+        }
+        const int cap = Ps4Hook::Pending().shader_preload;
+        {
+            std::ofstream out{marker};
+            out << "loading\n";
+        }
+        std::stop_source stop;
+        if (cap == 0) {
+            stop.request_stop(); // set the cache up for saving, compile nothing now
+        }
+        std::atomic<size_t> loaded{0};
+        Ps4::Log("shader cache: loading (limit %s)", cap < 0 ? "none" : std::to_string(cap).c_str());
         system.Renderer().ReadRasterizer()->LoadDiskResources(
-            system.GetApplicationProcessProgramID(), std::stop_token{},
-            [](VideoCore::LoadCallbackStage, size_t, size_t) {});
+            title_id, stop.get_token(), [&](VideoCore::LoadCallbackStage, size_t value, size_t) {
+                loaded = value;
+                if (cap > 0 && value >= static_cast<size_t>(cap) && !stop.stop_requested()) {
+                    Ps4::Log("shader cache: stopping the preload at %zu pipelines; the rest compile as the game asks", value);
+                    stop.request_stop();
+                }
+            });
+        fs::remove(marker, cache_ec);
+        Ps4::Log("shader cache: %zu pipelines loaded", loaded.load());
     }
 
     Ps4::SetPhase("running");
