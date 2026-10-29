@@ -81,7 +81,7 @@ public:
     int Tab() const { return tab_; }
     void SetTab(int tab);
 
-    static constexpr int TabCount = 6;
+    static constexpr int TabCount = 7;
 
 private:
     Lang lang() const { return file_.Language(); }

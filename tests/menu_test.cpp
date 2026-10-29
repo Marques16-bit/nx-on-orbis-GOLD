@@ -171,10 +171,10 @@ void TestNavigation() {
         Rig r("", 3, 1);
         r.Tap(Pad::R1);
         Check(r.ui.Tab() == 1, "R1: next tab");
-        r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1);
-        Check(r.ui.Tab() == 0, "R1 wraps around (6 tabs)");
+        r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1);
+        Check(r.ui.Tab() == 0, "R1 wraps around (7 tabs)");
         r.Tap(Pad::L1);
-        Check(r.ui.Tab() == 5, "L1 wraps backwards (to the LOG tab)");
+        Check(r.ui.Tab() == 6, "L1 wraps backwards (to the PERFORMANCE tab)");
         r.Tap(Pad::Circle);
         Check(r.ui.Tab() == 0, "Circle goes back to the games");
     }

@@ -5,12 +5,17 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <atomic>
+#include <chrono>
 #include <mutex>
+#include <thread>
 
 #include "menu/menu_canvas.h"
 #include "video_hook.h"
 
 #include "ps4_platform.h"
+
+extern "C" int32_t sceVideoOutIsFlipPending(int32_t handle);
 
 #ifdef EDEN_PS4_HUD_TEMPERATURE
 extern "C" {
@@ -39,8 +44,17 @@ struct State {
     int count = 0;
     std::uint32_t width = 0, height = 0, pitch = 0;
     std::uint32_t format_seen = 0, format_used = 0;
+    std::uint32_t tiling = 0;
+    bool linear = false;
     int last_index = -1;
-    std::uint64_t flips = 0;
+    std::uint64_t flips = 0, drawn_flips = 0;
+    // The pause menu's panel, drawn by the worker over each new frame while it is up.
+    bool panel_active = false, panel_dirty = false;
+    std::string panel_title, panel_footer;
+    std::vector<std::string> panel_lines;
+    int panel_selected = -1;
+    std::thread worker;
+    std::atomic<bool> stop_worker{false};
     // The HUD's numbers, refreshed once a second.
     double fps = 0, cores = 0;
     long cpu_temp = -1, soc_temp = -1;
@@ -131,25 +145,42 @@ void ReadTemperatures(State& s) {
 #endif
 }
 
-void RefreshStats(State& s) {
+/// Once a second: the HUD's numbers. The calls to the system happen without the lock, on the worker's
+/// thread, so the thread that presents frames never waits for them.
+void RefreshStats() {
+    State& s = S();
+    std::uint64_t flips;
+    {
+        std::lock_guard lock{s.mutex};
+        flips = s.flips;
+    }
     const double wall = Now(CLOCK_MONOTONIC);
-    if (s.window_start == 0) {
-        s.window_start = wall;
-        s.cpu_start = Now(CLOCK_PROCESS_CPUTIME_ID);
-        s.window_flips = s.flips;
-        return;
-    }
-    if (wall - s.window_start < 1.0) {
-        return;
-    }
     const double cpu = Now(CLOCK_PROCESS_CPUTIME_ID);
-    s.fps = double(s.flips - s.window_flips) / (wall - s.window_start);
-    s.cores = (cpu - s.cpu_start) / (wall - s.window_start);
-    s.window_start = wall;
-    s.cpu_start = cpu;
-    s.window_flips = s.flips;
-    ReadTemperatures(s);
-    s.free_mib = Ps4::FreeDirectMemory() >> 20;
+    static double window_start = 0, cpu_start = 0;
+    static std::uint64_t window_flips = 0;
+    if (window_start == 0) {
+        window_start = wall;
+        cpu_start = cpu;
+        window_flips = flips;
+        return;
+    }
+    if (wall - window_start < 1.0) {
+        return;
+    }
+    const double fps = double(flips - window_flips) / (wall - window_start);
+    const double cores = (cpu - cpu_start) / (wall - window_start);
+    window_start = wall;
+    cpu_start = cpu;
+    window_flips = flips;
+    State scratch;
+    ReadTemperatures(scratch);
+    const std::uint64_t free_mib = Ps4::FreeDirectMemory() >> 20;
+    std::lock_guard lock{s.mutex};
+    s.fps = fps;
+    s.cores = cores;
+    s.cpu_temp = scratch.cpu_temp;
+    s.soc_temp = scratch.soc_temp;
+    s.free_mib = free_mib;
 }
 
 void DrawHud(State& s, int buffer) {
@@ -175,49 +206,11 @@ void DrawHud(State& s, int buffer) {
     }
 }
 
-} // Anonymous namespace
-
-Settings& Pending() {
-    static Settings settings;
-    return settings;
-}
-
-void Arm(const Settings& settings) {
-    State& s = S();
-    std::lock_guard lock{s.mutex};
-    s.armed = true;
-    s.settings = settings;
-    s.hud = settings.hud;
-    s.count = 0;
-    s.handle = -1;
-}
-
-bool Ready() {
-    State& s = S();
-    std::lock_guard lock{s.mutex};
-    return s.armed && s.handle >= 0 && s.count > 0 && s.last_index >= 0;
-}
-
-void SetHud(bool on) {
-    State& s = S();
-    std::lock_guard lock{s.mutex};
-    s.hud = on;
-}
-
-bool HudOn() {
-    State& s = S();
-    std::lock_guard lock{s.mutex};
-    return s.hud;
-}
-
-void ShowPanel(const std::string& title, const std::vector<std::string>& lines, int selected,
-               const std::string& footer) {
-    State& s = S();
-    std::lock_guard lock{s.mutex};
-    if (!s.armed || s.last_index < 0 || s.address[s.last_index] == nullptr) {
-        return;
-    }
-    const int b = s.last_index;
+void DrawPanel(State& s, int b) {
+    const std::string& title = s.panel_title;
+    const std::vector<std::string>& lines = s.panel_lines;
+    const int selected = s.panel_selected;
+    const std::string& footer = s.panel_footer;
     int cells = Menu::TextCells(title);
     for (const std::string& l : lines) {
         cells = std::max(cells, Menu::TextCells(l) + 4);
@@ -239,12 +232,120 @@ void ShowPanel(const std::string& title, const std::vector<std::string>& lines, 
     DrawText(s, b, x + 40, y + h - 52, footer, Dim, Back, false);
 }
 
+} // Anonymous namespace
+
+Settings& Pending() {
+    static Settings settings;
+    return settings;
+}
+
+void Pump() {
+    State& s = S();
+    RefreshStats();
+    int index;
+    std::int32_t handle;
+    bool new_frame, panel;
+    {
+        std::lock_guard lock{s.mutex};
+        if (!s.armed || !s.settings.draw || !s.linear || s.handle < 0 || s.last_index < 0 ||
+            s.address[s.last_index] == nullptr) {
+            return;
+        }
+        index = s.last_index;
+        handle = s.handle;
+        new_frame = s.flips != s.drawn_flips;
+        panel = s.panel_active && (new_frame || s.panel_dirty);
+        if (!new_frame && !panel) {
+            return;
+        }
+    }
+    // The frame flipped last is only safe to draw in once the flip is over: until then the GPU may
+    // still be writing it, and what is drawn would be overwritten or half-drawn (the flicker).
+    if (sceVideoOutIsFlipPending(handle) > 0) {
+        return;
+    }
+    std::lock_guard lock{s.mutex};
+    if (index != s.last_index) {
+        return;
+    }
+    if (new_frame) {
+        if (s.hud && s.pitch != 0) {
+            DrawHud(s, index);
+        }
+        s.drawn_flips = s.flips;
+    }
+    if (panel && s.pitch != 0) {
+        DrawPanel(s, index);
+        s.panel_dirty = false;
+    }
+}
+
+void Arm(const Settings& settings, bool start_worker) {
+    State& s = S();
+    {
+        std::lock_guard lock{s.mutex};
+        s.armed = true;
+        s.settings = settings;
+        s.hud = settings.hud;
+        s.count = 0;
+        s.handle = -1;
+        s.last_index = -1;
+        s.panel_active = false;
+    }
+    if (start_worker && settings.draw && !s.worker.joinable()) {
+        s.stop_worker = false;
+        s.worker = std::thread([] {
+            while (!S().stop_worker) {
+                Pump();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        });
+        s.worker.detach();
+    }
+}
+
+bool Ready() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    return s.armed && s.settings.draw && s.linear && s.handle >= 0 && s.count > 0 && s.last_index >= 0;
+}
+
+void SetHud(bool on) {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    s.hud = on;
+}
+
+bool HudOn() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    return s.hud;
+}
+
+void ShowPanel(const std::string& title, const std::vector<std::string>& lines, int selected,
+               const std::string& footer) {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    s.panel_active = true;
+    s.panel_dirty = true;
+    s.panel_title = title;
+    s.panel_lines = lines;
+    s.panel_selected = selected;
+    s.panel_footer = footer;
+}
+
+void HidePanel() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    s.panel_active = false;
+}
+
 std::string Describe() {
     State& s = S();
     std::lock_guard lock{s.mutex};
     char text[200];
-    std::snprintf(text, sizeof(text), "video hook: armed=%d handle=%d buffers=%d %ux%u pitch %u, format seen 0x%08x used 0x%08x, %llu flips",
-                  s.armed, s.handle, s.count, s.width, s.height, s.pitch, s.format_seen, s.format_used,
+    std::snprintf(text, sizeof(text), "video hook: armed=%d handle=%d buffers=%d %ux%u pitch %u tiling %u (%s), format seen 0x%08x used 0x%08x, %llu flips",
+                  s.armed, s.handle, s.count, s.width, s.height, s.pitch, s.tiling, s.linear ? "linear: drawing on" : "NOT linear: drawing off", s.format_seen, s.format_used,
                   static_cast<unsigned long long>(s.flips));
     return text;
 }
@@ -257,14 +358,19 @@ extern "C" int32_t __wrap_sceVideoOutRegisterBuffers(int32_t handle, int32_t sta
     State& s = S();
     alignas(8) std::uint8_t attr[64];
     const void* use = attribute;
+    char note[200] = {};
     {
         std::lock_guard lock{s.mutex};
         if (s.armed && attribute != nullptr && addresses != nullptr && count > 0) {
             std::memcpy(attr, attribute, sizeof(attr));
-            std::uint32_t format = 0;
+            std::uint32_t format = 0, tiling = 0;
             std::memcpy(&format, attr, 4);
+            std::memcpy(&tiling, attr + 4, 4);
+            const bool again = s.handle == handle && s.count > 0;
             s.handle = handle;
             s.format_seen = format;
+            s.tiling = tiling;
+            s.linear = tiling == 1; // SCE_VIDEO_OUT_TILING_MODE_LINEAR
             if (s.settings.swap_colours && (format == FormatA8R8G8B8 || format == FormatA8B8G8R8)) {
                 format = format == FormatA8R8G8B8 ? FormatA8B8G8R8 : FormatA8R8G8B8;
                 std::memcpy(attr, &format, 4);
@@ -278,7 +384,14 @@ extern "C" int32_t __wrap_sceVideoOutRegisterBuffers(int32_t handle, int32_t sta
                 s.address[start + i] = static_cast<std::uint32_t*>(addresses[i]);
             }
             s.count = std::max(s.count, start + count);
+            s.last_index = -1; // a new set of buffers: nothing is on screen from it yet
+            std::snprintf(note, sizeof(note), "video hook: %s %d buffers at index %d, %ux%u pitch %u, tiling %u (%s), format 0x%08x -> 0x%08x",
+                          again ? "registered AGAIN:" : "registered:", count, start, s.width, s.height, s.pitch, tiling,
+                          s.linear ? "linear" : "NOT linear, so no drawing over the game", s.format_seen, s.format_used);
         }
+    }
+    if (note[0] != 0) {
+        Ps4::Log("%s", note);
     }
     return __real_sceVideoOutRegisterBuffers(handle, start, addresses, count, use);
 }
@@ -287,14 +400,11 @@ extern "C" int32_t __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t index, u
     using namespace Ps4Hook;
     State& s = S();
     {
+        // Only a note of which buffer went on screen: nothing here may slow the thread that presents.
         std::lock_guard lock{s.mutex};
         if (s.armed && handle == s.handle && index >= 0 && index < s.count && s.address[index] != nullptr) {
             s.last_index = index;
             ++s.flips;
-            RefreshStats(s);
-            if (s.hud && s.pitch != 0) {
-                DrawHud(s, index);
-            }
         }
     }
     return __real_sceVideoOutSubmitFlip(handle, index, mode, arg);

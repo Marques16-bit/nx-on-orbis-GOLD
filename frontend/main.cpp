@@ -377,6 +377,7 @@ void ApplyPs4Settings() {
 ///   shader_cache=on|off         shaders kept on disk (default on)
 ///   shader_preload=0|128|256|1024|all  pipelines of the disk cache compiled at start (default 256)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
+///   overlay_draw=on|off         draw the HUD and the pause menu over the game (default on)
 ///   hud=on|off                  performance HUD over the game (default off)
 ///   hud_size=normal|small, hud_position=left|right
 ///   colour_swap=on|off          swap red and blue on the screen (default on)
@@ -451,6 +452,8 @@ void ApplySettingsFile() {
         } else if (key == "shader_preload" &&
                    (value == "0" || value == "128" || value == "256" || value == "1024" || value == "all")) {
             Ps4Hook::Pending().shader_preload = value == "all" ? -1 : std::atoi(value.c_str());
+        } else if (key == "overlay_draw" && (value == "on" || value == "off")) {
+            Ps4Hook::Pending().draw = value == "on";
         } else if (key == "overlay" && (value == "on" || value == "off")) {
             Ps4Hook::Pending().overlay = value == "on";
         } else if (key == "hud" && (value == "on" || value == "off")) {
@@ -848,6 +851,7 @@ int main() {
             }
             if (close) {
                 in_menu = false;
+                Ps4Hook::HidePanel();
                 system.Run();
                 Ps4::Log("pause menu closed, the game runs again");
             } else if (redraw) {

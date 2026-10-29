@@ -16,7 +16,7 @@
 namespace Menu {
 
 enum class Lang { Pt, En };
-enum class Group { Video, Cpu, Advanced, System };
+enum class Group { Video, Cpu, Advanced, System, Perf };
 
 struct Choice {
     const char* value; // as written in settings.txt

@@ -94,6 +94,7 @@ seconds** to quit.
   files dumped from **your own** Switch. If FTP or a file manager still cannot write or delete in
   `/data/edenps4`, open the app once more (it opens the permissions of what is there) and see the
   SYSTEM tab: the "Writing" line says whether the app itself can write.
+- **PERFORMANCE tab:** the HUD, the shader preload, the video overlay and "draw over the game". If a game shows a black screen or glitches, turn "Draw the HUD and menu over the game" off first; then "Video overlay".
 - **In a game:** L3 + R3 together open the pause menu (Continue, HUD, speed limit, Exit game); the HUD (FPS, CPU cores, memory, temperature) is also an option in the ADVANCED tab. If the colours are swapped, "Swap red and blue on the screen" is in the same tab.
 - **Shader cache:** Eden keeps one per game in `cache/shader/<title id>/`; the SYSTEM tab shows its size and can clear it. At start only the first 256 cached shaders are compiled (VIDEO tab, "Preload shaders at start"); the rest compile while you play. If a game stops opening, clear the cache (SYSTEM tab) or delete `cache/shader/<title id>` over FTP.
 - **Firmware:** copy the `.zip` as it is found (or the `.nca` files) into `firmware/`; it is installed when a game starts, and the SYSTEM tab says whether it was found.

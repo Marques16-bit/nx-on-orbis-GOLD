@@ -2,7 +2,42 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.7.1] - in preparation
+## [0.7.2] - in preparation
+
+Colours, the HUD and the L3 + R3 menu worked in 0.7.1; the HUD and the menu glitched, and at the Super
+Mario Maker 2 menu the screen went black with sound. The log of that run (240 s, 476 pipelines, no
+error) shows Eden rendering the whole time: the fault is in what reaches the screen, and the only code
+of this port on that path is the video hook.
+
+### Changed: the video hook is much lighter and draws at a safe moment
+- **The thread that presents frames now only notes which buffer was flipped.** It used to draw the HUD
+  there, before the real flip, and to ask the system for memory and temperatures once a second.
+- **Drawing is done by a worker thread, only after the flip is over** (`sceVideoOutIsFlipPending`
+  is 0): until then the GPU may still be writing the frame, which overwrote or half-drew the HUD (the
+  glitch). The worker also takes the HUD's numbers, outside the lock.
+- **It checks that the buffers are linear.** The tiling mode in the registration is logged; if it is
+  not linear nothing is drawn (a linear write into a tiled surface is noise) and the menu says so.
+  The colour swap does not depend on it.
+- Every registration is logged at once in `boot.log` ("video hook: registered ... tiling ...",
+  "registered AGAIN" when the swapchain is recreated), so the next log shows whether the black screen
+  comes with a new swapchain.
+
+### Added
+- **PERFORMANCE tab** (DESEMPENHO): the shader preload limit, the HUD (on, size, corner), the
+  overlay switch and the new **"Draw the HUD and menu over the game"** (`overlay_draw`). With it off
+  only the colour swap stays, which separates "the drawing" from "the swap" if a black screen
+  returns.
+- 4 new host test cases (a flip still pending, a tiled buffer) in `tests/video_hook_test.cpp`.
+
+### Not done, and why
+- The other Eden video and performance settings (GPU and CPU overclock, VSync mode, anisotropic
+  filtering, extra dynamic-state levels...) need their exact names in Eden's settings headers; a
+  wrong name breaks the build. Only the ones this port already compiles with are in the menu. The
+  artifact `eden-sources` (Check patches, manual run) gives me the headers.
+- SpongeBob: Titans of the Tide: no log of it yet. After a try, the LOG tab (previous session) has
+  the end of its log.
+
+## [0.7.1] - built by GitHub, shader preload limited
 
 ### Fixed: games stopped opening (found in the log of a 0.7.0 run)
 - The log ends at 78 s with **2185 pipelines** compiled in about 7 s and the game itself not yet

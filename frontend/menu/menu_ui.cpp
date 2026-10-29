@@ -19,7 +19,7 @@ constexpr int HelpTop = 868;
 constexpr int FooterTop = 992;
 constexpr int FooterCells = (1920 - 2 * Margin) / 20;
 
-constexpr int TabGames = 0, TabVideo = 1, TabCpu = 2, TabAdvanced = 3, TabSystem = 4, TabLog = 5;
+constexpr int TabGames = 0, TabVideo = 1, TabCpu = 2, TabAdvanced = 3, TabSystem = 4, TabLog = 5, TabPerf = 6;
 
 /// The title in a dump's file name: no extension, no [tags] or (tags) ("Super Mario Maker 2
 /// [01009B90006DC000][v0] (US).nsp" -> "Super Mario Maker 2"), '_' as spaces, spaces tidied.
@@ -150,6 +150,9 @@ MenuUi::MenuUi(std::vector<GameEntry> games, int initial_game, SystemInfo info,
             break;
         case Group::Advanced:
             options_[TabAdvanced].push_back(&option);
+            break;
+        case Group::Perf:
+            options_[TabPerf].push_back(&option);
             break;
         case Group::System:
             options_[TabSystem].push_back(&option); // the language; row 1 is "restore defaults"
@@ -382,8 +385,8 @@ void MenuUi::DrawHeader(Canvas& c) const {
 }
 
 void MenuUi::DrawTabs(Canvas& c) const {
-    const char* names_pt[TabCount] = {"JOGOS", "VÍDEO", "CPU E MEMÓRIA", "AVANÇADO", "SISTEMA", "LOG"};
-    const char* names_en[TabCount] = {"GAMES", "VIDEO", "CPU & MEMORY", "ADVANCED", "SYSTEM", "LOG"};
+    const char* names_pt[TabCount] = {"JOGOS", "VÍDEO", "CPU E MEMÓRIA", "AVANÇADO", "SISTEMA", "LOG", "DESEMPENHO"};
+    const char* names_en[TabCount] = {"GAMES", "VIDEO", "CPU & MEMORY", "ADVANCED", "SYSTEM", "LOG", "PERFORMANCE"};
     int x = Margin;
     for (int i = 0; i < TabCount; ++i) {
         const std::string name = lang() == Lang::Pt ? names_pt[i] : names_en[i];

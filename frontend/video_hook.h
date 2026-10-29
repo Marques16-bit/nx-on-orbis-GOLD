@@ -24,14 +24,17 @@ struct Settings {
     bool hud_right = false;
     bool swap_colours = true;
     bool overlay = true;        // arm the hook at all (the HUD, the pause menu and the colour swap need it)
+    bool draw = true;           // draw the HUD and the pause menu (off: only the colour swap stays)
     int shader_preload = 256;   // pipelines of the disk cache compiled at start: 0 none, -1 all
 };
 
 /// The settings read from settings.txt (hud, hud_size, hud_position, colour_swap), until Arm().
 Settings& Pending();
 /// From now on the next buffers registered are the game's. Call before the game's video output opens.
-void Arm(const Settings& settings);
-/// The game's buffers are known, so drawing over it works.
+void Arm(const Settings& settings, bool start_worker = true);
+/// One step of what the worker thread does (the host test calls it by hand).
+void Pump();
+/// The game's buffers are known and linear, so drawing over it works.
 bool Ready();
 void SetHud(bool on);
 bool HudOn();
@@ -40,6 +43,8 @@ void ShowPanel(const std::string& title, const std::vector<std::string>& lines, 
                const std::string& footer);
 /// One line for the log: what the hook saw (format, size, how many buffers, flips).
 std::string Describe();
+/// The pause menu is closed: stop drawing its panel.
+void HidePanel();
 
 } // namespace Ps4Hook
 
