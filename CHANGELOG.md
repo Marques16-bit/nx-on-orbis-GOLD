@@ -2,6 +2,40 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.2-fix] - the video hook stays out of the boot
+
+In 0.7.2 the games stopped starting. The log of a Super Mario Maker 2 run ends at 53.7 s, while the
+shader cache is still compiling (183 of 2660 pipelines logged) and before the game starts, so the
+drawing code had no frame to draw yet. The only code new in 0.7.2 that is alive at that moment is the
+video hook's worker thread, which was started before the game loaded and, once a second, asked the
+system for the clocks, the CPU/SoC temperatures and the free direct memory, with the HUD on or off
+(the HUD is off by default). This log alone cannot prove the cause (Eden's log loses its last lines
+when the app dies; `boot.log` was not sent), so this fix takes every 0.7.2 addition out of the boot.
+
+### Fixed
+- **The worker thread is no longer started before the game.** It starts the first time the game
+  registers its video buffers (`boot.log`: "video hook: worker started"). Until then the hook does
+  nothing, so the boot is the same as in 0.7.1.
+- **With the HUD off the worker makes no call to the system at all** (no clocks, no temperatures, no
+  free-memory query). They run only while the HUD is on.
+- **If the worker thread cannot be created** (direct memory is tight on this console) the game now
+  keeps running without the HUD and the pause menu, and `boot.log` says so; before, the exception
+  would have ended the app.
+
+### Tests
+- 3 new cases in `tests/video_hook_test.cpp` (nothing runs before the buffers are registered, the
+  worker starts at the first registration, no memory or temperature calls with the HUD off). The last
+  one fails on the 0.7.2 code and passes now.
+
+### For the next log
+- Send `boot.log` (and `boot.old.log`) together with `log/eden_log.txt`: Eden's log loses its last
+  lines when the app dies, while `boot.log` is written line by line and has the phase and the crash
+  report (`!! CRASH ... eboot+0x...`).
+- In this `eden_log.txt` 13 lines are cut in pieces and 32 are out of order (the log writer of Eden,
+  two threads at once). Not changed here; it does not affect the game.
+- If a game still does not open, **Clear the shader cache** (SYSTEM tab) rules the cache out: this
+  log had one of 2660 pipelines.
+
 ## [0.7.2] - in preparation
 
 Colours, the HUD and the L3 + R3 menu worked in 0.7.1; the HUD and the menu glitched, and at the Super

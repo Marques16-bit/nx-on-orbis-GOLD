@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Host test for frontend/video_hook.cpp: the wrapped video-out calls, with the real ones replaced by
 // recorders. Checks the format swap, the HUD and the pause panel in fake frame buffers.
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "video_hook.h"
 
 static int g_pending = 0;
-extern "C" int32_t sceVideoOutIsFlipPending(int32_t) { return g_pending; }
+static std::atomic<int> g_flip_checks{0}, g_memory_calls{0};
+extern "C" int32_t sceVideoOutIsFlipPending(int32_t) { ++g_flip_checks; return g_pending; }
 namespace Ps4 { void Log(const char*, ...) {} }
 static std::uint32_t g_real_format = 0;
 static int g_real_registers = 0, g_real_flips = 0;
-namespace Ps4 { std::uint64_t FreeDirectMemory() { return 3ull << 30; } }
+namespace Ps4 { std::uint64_t FreeDirectMemory() { ++g_memory_calls; return 3ull << 30; } }
 extern "C" int32_t __real_sceVideoOutRegisterBuffers(int32_t, int32_t, void* const*, int32_t, const void* attribute) {
     std::memcpy(&g_real_format, attribute, 4);
     ++g_real_registers;
@@ -153,6 +157,27 @@ int main() {
         __wrap_sceVideoOutSubmitFlip(3, 0, 1, 0);
         Ps4Hook::Pump();
         Check(!tiled.Touched(tiled.a, 0, 0, 1920, 1080) && !Ps4Hook::Ready(), "tiled buffers: nothing is drawn and the menu is not offered");
+    }
+    {
+        // 0.7.2 fix: the worker thread does not exist while the game loads (before its buffers are
+        // registered) and, with the HUD off, it never asks the system for memory or temperatures.
+        // Static on purpose: the worker keeps running until the program ends.
+        static Frames w(ARGB);
+        Ps4Hook::Settings s;
+        s.hud = false;
+        s.swap_colours = false;
+        const int checks_before = g_flip_checks, memory_before = g_memory_calls;
+        Ps4Hook::Arm(s, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        Check(g_flip_checks == checks_before, "armed, buffers not registered: nothing is checked or drawn");
+        __wrap_sceVideoOutRegisterBuffers(11, 0, w.ptrs, 2, w.attr);
+        __wrap_sceVideoOutSubmitFlip(11, 0, 1, 0);
+        for (int i = 0; i < 100 && g_flip_checks == checks_before; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        Check(g_flip_checks > checks_before, "first registration of the buffers: the worker starts");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        Check(g_memory_calls == memory_before, "HUD off: no memory or temperature calls at all");
     }
     std::printf(g_failures == 0 ? "video hook test: PASSED\n" : "video hook test: FAILED\n");
     return g_failures == 0 ? 0 : 1;

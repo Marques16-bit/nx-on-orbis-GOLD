@@ -55,6 +55,9 @@ struct State {
     int panel_selected = -1;
     std::thread worker;
     std::atomic<bool> stop_worker{false};
+    // The worker is not started by Arm(): it starts when the game's buffers are first registered, so
+    // nothing of the hook runs while the game loads and the shader cache compiles.
+    bool worker_wanted = false, worker_started = false;
     // The HUD's numbers, refreshed once a second.
     double fps = 0, cores = 0;
     long cpu_temp = -1, soc_temp = -1;
@@ -149,15 +152,23 @@ void ReadTemperatures(State& s) {
 /// thread, so the thread that presents frames never waits for them.
 void RefreshStats() {
     State& s = S();
+    static double window_start = 0, cpu_start = 0;
+    static std::uint64_t window_flips = 0;
     std::uint64_t flips;
+    bool hud;
     {
         std::lock_guard lock{s.mutex};
         flips = s.flips;
+        hud = s.hud;
+    }
+    if (!hud) {
+        // HUD off: no call to the system at all (clocks, temperatures, memory). The window starts
+        // again when the HUD is turned on.
+        window_start = 0;
+        return;
     }
     const double wall = Now(CLOCK_MONOTONIC);
     const double cpu = Now(CLOCK_PROCESS_CPUTIME_ID);
-    static double window_start = 0, cpu_start = 0;
-    static std::uint64_t window_flips = 0;
     if (window_start == 0) {
         window_start = wall;
         cpu_start = cpu;
@@ -291,16 +302,7 @@ void Arm(const Settings& settings, bool start_worker) {
         s.handle = -1;
         s.last_index = -1;
         s.panel_active = false;
-    }
-    if (start_worker && settings.draw && !s.worker.joinable()) {
-        s.stop_worker = false;
-        s.worker = std::thread([] {
-            while (!S().stop_worker) {
-                Pump();
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            }
-        });
-        s.worker.detach();
+        s.worker_wanted = start_worker && settings.draw;
     }
 }
 
@@ -359,6 +361,7 @@ extern "C" int32_t __wrap_sceVideoOutRegisterBuffers(int32_t handle, int32_t sta
     alignas(8) std::uint8_t attr[64];
     const void* use = attribute;
     char note[200] = {};
+    bool start_worker = false;
     {
         std::lock_guard lock{s.mutex};
         if (s.armed && attribute != nullptr && addresses != nullptr && count > 0) {
@@ -388,10 +391,31 @@ extern "C" int32_t __wrap_sceVideoOutRegisterBuffers(int32_t handle, int32_t sta
             std::snprintf(note, sizeof(note), "video hook: %s %d buffers at index %d, %ux%u pitch %u, tiling %u (%s), format 0x%08x -> 0x%08x",
                           again ? "registered AGAIN:" : "registered:", count, start, s.width, s.height, s.pitch, tiling,
                           s.linear ? "linear" : "NOT linear, so no drawing over the game", s.format_seen, s.format_used);
+            if (s.worker_wanted && !s.worker_started) {
+                s.worker_started = true;
+                start_worker = true;
+            }
         }
     }
     if (note[0] != 0) {
         Ps4::Log("%s", note);
+    }
+    if (start_worker) {
+        // First registration of the game's buffers: only now does the worker thread exist. If the
+        // thread cannot be made the game still runs, just without the HUD and the menu.
+        try {
+            s.stop_worker = false;
+            s.worker = std::thread([] {
+                while (!S().stop_worker) {
+                    Pump();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            });
+            s.worker.detach();
+            Ps4::Log("video hook: worker started");
+        } catch (...) {
+            Ps4::Log("video hook: the worker thread could not be started (no HUD, no pause menu)");
+        }
     }
     return __real_sceVideoOutRegisterBuffers(handle, start, addresses, count, use);
 }
