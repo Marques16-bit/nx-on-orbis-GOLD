@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Host test for frontend/video_hook.cpp: the wrapped video-out calls, with the real ones replaced by
 // recorders. Checks the format swap, the HUD and the pause panel in fake frame buffers.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -135,20 +136,48 @@ int main() {
         Check(true, "redrawing the panel works");
     }
     {
-        // A flip still pending: the frame is not drawn in yet. Tiled buffers: never drawn in.
+        // 0.7.3: a frame is drawn in while its flip is still queued (not on screen yet), once the GPU
+        // has had its short moment; then once more after the flip, in case the GPU wrote over it.
         Ps4Hook::Settings s;
         s.hud = true;
         s.swap_colours = false;
+        s.draw_delay_ms = 20;
         Ps4Hook::Arm(s, false);
         Frames f(ARGB);
         __wrap_sceVideoOutRegisterBuffers(3, 0, f.ptrs, 2, f.attr);
         g_pending = 1;
         __wrap_sceVideoOutSubmitFlip(3, 0, 1, 0);
         Ps4Hook::Pump();
-        Check(!f.Touched(f.a, 40, 40, 400, 120), "a flip still pending: the frame is left alone");
+        Check(!f.Touched(f.a, 40, 40, 400, 120), "a flip just queued: the GPU gets its moment first, nothing drawn yet");
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        Ps4Hook::Pump();
+        Check(f.Touched(f.a, 40, 40, 400, 120), "...then the HUD is drawn while the flip is still pending (before it is on screen)");
+        std::uint64_t hidden = 0, late = 0;
+        Ps4Hook::DrawStats(&hidden, &late);
+        Check(hidden == 1 && late == 0, "that counts as a draw before the screen showed the frame");
+        // The GPU writes over the frame after the draw (the 0.7.2 flicker): the second pass restores it.
+        std::fill(f.a.begin(), f.a.end(), 0u);
+        Ps4Hook::Pump();
+        Check(!f.Touched(f.a, 40, 40, 400, 120), "flip still pending: no second draw yet");
         g_pending = 0;
         Ps4Hook::Pump();
-        Check(f.Touched(f.a, 40, 40, 400, 120), "...and drawn once the flip is over");
+        Check(f.Touched(f.a, 40, 40, 400, 120), "flip over: the frame is drawn in once more");
+        Ps4Hook::DrawStats(&hidden, &late);
+        Check(hidden == 1 && late == 1, "...counted as a late draw");
+        const std::uint64_t before = late;
+        Ps4Hook::Pump();
+        Ps4Hook::DrawStats(&hidden, &late);
+        Check(late == before, "nothing is redrawn while no new frame arrives");
+
+        // A flip that was already shown by the time the worker got to it is drawn at once (late).
+        Frames g(ARGB);
+        Ps4Hook::Arm(s, false);
+        __wrap_sceVideoOutRegisterBuffers(3, 0, g.ptrs, 2, g.attr);
+        g_pending = 0;
+        __wrap_sceVideoOutSubmitFlip(3, 1, 1, 0);
+        Ps4Hook::Pump();
+        Check(g.Touched(g.b, 40, 40, 400, 120), "a flip already over: drawn at once");
+
         Frames tiled(ARGB);
         const std::uint32_t tile = 0;
         std::memcpy(tiled.attr + 4, &tile, 4);
@@ -157,6 +186,55 @@ int main() {
         __wrap_sceVideoOutSubmitFlip(3, 0, 1, 0);
         Ps4Hook::Pump();
         Check(!tiled.Touched(tiled.a, 0, 0, 1920, 1080) && !Ps4Hook::Ready(), "tiled buffers: nothing is drawn and the menu is not offered");
+    }
+    {
+        // The shader notice: bottom left, on every new frame, removable, and drawn even with no new
+        // frame (the game is paused or still loading) when its text changes.
+        Ps4Hook::Settings s;
+        s.swap_colours = false;
+        s.draw_delay_ms = 0;
+        Ps4Hook::Arm(s, false);
+        Frames f(ARGB);
+        __wrap_sceVideoOutRegisterBuffers(4, 0, f.ptrs, 2, f.attr);
+        g_pending = 0;
+        __wrap_sceVideoOutSubmitFlip(4, 0, 1, 0);
+        Ps4Hook::Pump();
+        Check(!f.Touched(f.a, 0, 0, 1920, 1080), "no notice, no HUD: nothing is drawn");
+        Ps4Hook::SetNotice("Compilando shaders: 12");
+        Ps4Hook::Pump();
+        Check(f.Touched(f.a, 40, 1080 - 40 - 60, 400, 60) && !f.Touched(f.a, 40, 40, 400, 120),
+              "a notice changes with no new frame: drawn bottom left, not where the HUD goes");
+        std::fill(f.b.begin(), f.b.end(), 0u);
+        __wrap_sceVideoOutSubmitFlip(4, 1, 1, 0);
+        Ps4Hook::Pump();
+        Check(f.Touched(f.b, 40, 1080 - 40 - 60, 400, 60), "the next frame gets the notice too");
+        Ps4Hook::SetNotice("");
+        std::fill(f.a.begin(), f.a.end(), 0u);
+        __wrap_sceVideoOutSubmitFlip(4, 0, 1, 0);
+        Ps4Hook::Pump();
+        Check(!f.Touched(f.a, 0, 0, 1920, 1080), "an empty notice draws nothing");
+    }
+    {
+        // The pause panel stays on frames that keep flipping while the game is paused.
+        Ps4Hook::Settings s;
+        s.swap_colours = false;
+        s.draw_delay_ms = 0;
+        Ps4Hook::Arm(s, false);
+        Frames f(ARGB);
+        __wrap_sceVideoOutRegisterBuffers(6, 0, f.ptrs, 2, f.attr);
+        g_pending = 0;
+        __wrap_sceVideoOutSubmitFlip(6, 0, 1, 0);
+        Ps4Hook::Pump();
+        Ps4Hook::ShowPanel("Pause", {"Continue", "Exit"}, 0, "footer");
+        Ps4Hook::Pump();
+        __wrap_sceVideoOutSubmitFlip(6, 1, 1, 0);
+        Ps4Hook::Pump();
+        Check(f.Touched(f.b, 600, 400, 700, 200), "a frame flipped while the menu is up gets the panel too");
+        Ps4Hook::HidePanel();
+        std::fill(f.a.begin(), f.a.end(), 0u);
+        __wrap_sceVideoOutSubmitFlip(6, 0, 1, 0);
+        Ps4Hook::Pump();
+        Check(!f.Touched(f.a, 0, 0, 1920, 1080), "menu closed: new frames are left alone");
     }
     {
         // 0.7.2 fix: the worker thread does not exist while the game loads (before its buffers are

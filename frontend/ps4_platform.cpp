@@ -40,6 +40,9 @@ size_t sceKernelGetDirectMemorySize(void);
 int32_t sceUserServiceInitialize(void* params);
 int32_t sceUserServiceGetInitialUser(int32_t* user);
 int32_t sceSystemServiceHideSplashScreen(void);
+// Weak on purpose: if this SDK's stub library does not export it the link still works and the
+// pointer is null; RestartApp() then says so instead of the build failing.
+int32_t sceSystemServiceLoadExec(const char* path, char* const argv[]) __attribute__((weak));
 }
 
 namespace Ps4 {
@@ -666,6 +669,22 @@ void LoadSystemModules() {
 
 void HideSplashScreen() {
     sceSystemServiceHideSplashScreen();
+}
+
+bool RestartApp() {
+    if (&sceSystemServiceLoadExec == nullptr) {
+        Log("restart: this SDK's system service library has no sceSystemServiceLoadExec");
+        return false;
+    }
+    // The app starts again from its own executable and lands on the game list. On success the call
+    // does not return (the system replaces the process); a return value is the failure.
+    static const char* const paths[] = {"EBOOT.BIN", "/app0/eboot.bin"};
+    for (const char* path : paths) {
+        Log("restart: sceSystemServiceLoadExec(\"%s\")", path);
+        const int32_t rc = sceSystemServiceLoadExec(path, nullptr);
+        Log("restart: it returned 0x%08x (the app is still here)", static_cast<unsigned>(rc));
+    }
+    return false;
 }
 
 bool OpenPad() {

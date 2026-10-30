@@ -40,6 +40,11 @@ void RegisterThread(const char* name);
 /// Called by the presentation path for every frame shown.
 void NoteFrame();
 
+/// Starts the app again from its executable, so it opens on the game list (the way "Exit game" gets
+/// back to the menu: Eden cannot be torn down and rebuilt inside one run, a new process can). Returns
+/// only if the system refused or the SDK cannot do it; the caller then keeps the app idle.
+bool RestartApp();
+
 /// System modules the SDK does not load by itself (pad, user service, audio out...).
 void LoadSystemModules();
 void HideSplashScreen();

@@ -56,6 +56,7 @@
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
+#include "video_core/shader_notify.h"
 
 #include <csignal>
 #include <unistd.h>
@@ -65,6 +66,7 @@
 #include "video_hook.h"
 #include "menu/rom_menu.h"
 #include "ps4_platform.h"
+#include "shader_policy.h"
 
 namespace fs = std::filesystem;
 
@@ -375,7 +377,11 @@ void ApplyPs4Settings() {
 ///   multicore=on|off            (default on)
 ///   vram=conservative|aggressive  (default conservative)
 ///   shader_cache=on|off         shaders kept on disk (default on)
-///   shader_preload=0|128|256|1024|all  pipelines of the disk cache compiled at start (default 256)
+///   shader_preload=0|128|256|1024|all  how much of the disk cache is compiled at start (default 256): the
+///                               cache may weigh up to N x 32 KiB, a bigger one is set aside (see shader_policy.h)
+///   shader_notice=on|off        the shader counter and the low-memory warning over the game (default on)
+///   overlay_delay=0|1|2|4|8     ms the GPU gets to finish a frame before the HUD is drawn into it (default 2)
+///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
 ///   overlay_draw=on|off         draw the HUD and the pause menu over the game (default on)
 ///   hud=on|off                  performance HUD over the game (default off)
@@ -435,23 +441,31 @@ void ApplySettingsFile() {
             v.use_docked_mode.SetValue(value == "docked" ? Settings::ConsoleMode::Docked
                                                          : Settings::ConsoleMode::Handheld);
         } else if (key == "resolution") {
-            // ResolutionSetup counts 0.5x, 0.75x, 1x, 1.5x, 2x as 0..4 (Res1X is 2): checked, and
-            // the line is ignored if this Eden numbers them differently.
-            static const char* const scales[] = {"0.5", "0.75", "1", "1.5", "2"};
-            int scale = -1;
-            for (int i = 0; i < 5; ++i) {
-                if (value == scales[i]) {
-                    scale = i;
-                }
-            }
-            if (scale >= 0 && static_cast<int>(Settings::ResolutionSetup::Res1X) == 2) {
-                v.resolution_setup.SetValue(static_cast<Settings::ResolutionSetup>(scale));
+            // By name, not by number: this Eden counts 1/4x first, so the old "Res1X is 2" check
+            // never held and every log said "resolution=0.75 (unknown, ignored)".
+            using R = Settings::ResolutionSetup;
+            if (value == "0.5") {
+                v.resolution_setup.SetValue(R::Res1_2X);
+            } else if (value == "0.75") {
+                v.resolution_setup.SetValue(R::Res3_4X);
+            } else if (value == "1") {
+                v.resolution_setup.SetValue(R::Res1X);
+            } else if (value == "1.5") {
+                v.resolution_setup.SetValue(R::Res3_2X);
+            } else if (value == "2") {
+                v.resolution_setup.SetValue(R::Res2X);
             } else {
                 known = false;
             }
         } else if (key == "shader_preload" &&
                    (value == "0" || value == "128" || value == "256" || value == "1024" || value == "all")) {
             Ps4Hook::Pending().shader_preload = value == "all" ? -1 : std::atoi(value.c_str());
+        } else if (key == "shader_notice" && (value == "on" || value == "off")) {
+            Ps4Hook::Pending().shader_notice = value == "on";
+        } else if (key == "overlay_delay" && (value == "0" || value == "1" || value == "2" || value == "4" || value == "8")) {
+            Ps4Hook::Pending().draw_delay_ms = std::atoi(value.c_str());
+        } else if (key == "driver_cache" && (value == "on" || value == "off")) {
+            v.use_vulkan_driver_pipeline_cache.SetValue(value == "on");
         } else if (key == "overlay_draw" && (value == "on" || value == "off")) {
             Ps4Hook::Pending().draw = value == "on";
         } else if (key == "overlay" && (value == "on" || value == "off")) {
@@ -580,6 +594,26 @@ void CheckMutexes() {
              recursive_count == expected ? "ok" : "BROKEN");
 }
 
+/// Eden's log file is written through a buffer and the last lines die with the app (the eden_log.txt
+/// of a 253 s session ended at 158 s). With this setting every line is flushed. Detected at compile
+/// time: an Eden without the setting just keeps the old behaviour and says so in boot.log.
+template <class V>
+void KeepEdenLogComplete(V& values) {
+    if constexpr (requires { values.log_flush_line.SetValue(true); }) {
+        values.log_flush_line.SetValue(true);
+        Ps4::Log("eden_log.txt: every line is flushed (log_flush_line)");
+    } else {
+        Ps4::Log("eden_log.txt: this Eden has no log_flush_line, its last lines are lost if the app dies");
+    }
+}
+
+bool MenuInPortuguese() {
+    std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt", std::ios::binary};
+    std::ostringstream text;
+    text << in.rdbuf();
+    return Menu::SettingsFile(text.str()).Language() == Menu::Lang::Pt;
+}
+
 } // Anonymous namespace
 
 /// The system asks the app to close (the PS button's "Close Application"): say so in the log and leave
@@ -654,6 +688,7 @@ int main() {
     }
 
     Ps4::SetPhase("logging");
+    KeepEdenLogComplete(Settings::values);
     Common::Log::Initialize();
     Common::Log::Start();
     LOG_INFO(Frontend, "eden-ps4 frontend");
@@ -736,10 +771,14 @@ int main() {
         Ps4::SetPhase("shader cache");
         // Eden compiles EVERY pipeline of the game's disk cache before the game starts, and each one
         // stays in the driver's memory. A cache grown over many sessions (2185 pipelines in one log)
-        // used the whole arena and the app died with the game not yet started. So: a limit (the
-        // "shader_preload" option); the rest compile when the game asks for them, and are saved as
-        // before. A marker file records that the load is under way: if the app dies in it, the next
-        // start finds the marker, puts that game's cache aside and starts with an empty one.
+        // used the whole arena and the app died with the game not yet started. Until 0.7.2 this was
+        // limited by stopping Eden's load through its stop token, but Eden answers a stop by ending
+        // every thread of its pipeline worker pool (LoadDiskResources -> WaitForRequests), so after
+        // a capped preload nothing was left to build the shaders the game asked for. Now the size of
+        // the cache is limited BEFORE Eden reads it (shader_preload, see shader_policy.h) and Eden
+        // always reads what is left to the end, with its pool intact.
+        // A marker file records that the load is under way: if the app dies in it, the next start
+        // finds the marker, puts that game's cache aside and starts with an empty one.
         const std::uint64_t title_id = system.GetApplicationProcessProgramID();
         char id[17];
         std::snprintf(id, sizeof(id), "%016llx", static_cast<unsigned long long>(title_id));
@@ -757,21 +796,52 @@ int main() {
         }
         const int cap = Ps4Hook::Pending().shader_preload;
         {
+            const Ps4Shader::CacheCheck check = Ps4Shader::LimitCache(shader_root / id, cap);
+            const double size_mib = double(check.size) / (1024.0 * 1024.0);
+            const double limit_mib = double(check.limit) / (1024.0 * 1024.0);
+            switch (check.action) {
+            case Ps4Shader::CacheAction::NoFile:
+                Ps4::Log("shader cache: no vulkan.bin yet (a new one starts)");
+                break;
+            case Ps4Shader::CacheAction::Kept:
+                if (check.unlimited) {
+                    Ps4::Log("shader cache: vulkan.bin is %.1f MiB, no limit (shader_preload=all)", size_mib);
+                } else {
+                    Ps4::Log("shader cache: vulkan.bin is %.1f MiB, within the %.1f MiB limit (shader_preload=%d)", size_mib,
+                             limit_mib, cap);
+                }
+                break;
+            case Ps4Shader::CacheAction::SetAside:
+                Ps4::Log("shader cache: vulkan.bin is %.1f MiB, over the %.1f MiB limit (shader_preload=%d): set aside as vulkan.bin.bak, a new cache starts",
+                         size_mib, limit_mib, cap);
+                break;
+            case Ps4Shader::CacheAction::Failed:
+                Ps4::Log("shader cache: vulkan.bin is %.1f MiB, over the %.1f MiB limit but it could not be moved; loading it anyway",
+                         size_mib, limit_mib);
+                break;
+            }
+        }
+        {
             std::ofstream out{marker};
             out << "loading\n";
         }
-        std::stop_source stop;
-        if (cap == 0) {
-            stop.request_stop(); // set the cache up for saving, compile nothing now
-        }
-        std::atomic<size_t> loaded{0};
-        Ps4::Log("shader cache: loading (limit %s)", cap < 0 ? "none" : std::to_string(cap).c_str());
+        // Never stopped: see above.
+        const std::stop_source never_stopped;
+        std::atomic<size_t> loaded{0}, total{0}, logged{0};
+        Ps4::Log("shader cache: loading");
         system.Renderer().ReadRasterizer()->LoadDiskResources(
-            title_id, stop.get_token(), [&](VideoCore::LoadCallbackStage, size_t value, size_t) {
-                loaded = value;
-                if (cap > 0 && value >= static_cast<size_t>(cap) && !stop.stop_requested()) {
-                    Ps4::Log("shader cache: stopping the preload at %zu pipelines; the rest compile as the game asks", value);
-                    stop.request_stop();
+            title_id, never_stopped.get_token(), [&](VideoCore::LoadCallbackStage, size_t value, size_t count) {
+                if (count != 0) {
+                    total = count;
+                }
+                if (value != 0) {
+                    loaded = value;
+                    // Called from Eden's pipeline threads: one line per 64 pipelines, and the last one.
+                    if (value >= logged + 64 || value == total) {
+                        logged = value;
+                        Ps4::Log("shader cache: %zu of %zu pipelines built (free direct memory %lu MiB)", value, total.load(),
+                                 static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20));
+                    }
                 }
             });
         fs::remove(marker, cache_ec);
@@ -783,32 +853,32 @@ int main() {
     Ps4::ArmHangWatch(15);
     system.Run();
 
-    // Controller in, status out, until the game exits or Options + touch pad is held 2 s.
+    // Controller in, status out, until the game exits or the player leaves from the pause menu.
     auto* gamepad = input.GetVirtualGamepad();
     std::uint64_t quit_since = 0;
+    const bool pt = MenuInPortuguese();
     // The pause menu (L3 + R3), drawn over the frozen game by the video hook.
     bool in_menu = false, combo_before = false, overlay_warned = false;
     int menu_sel = 0;
     std::uint32_t menu_buttons_before = 0;
+    bool notice_on = Ps4Hook::Pending().shader_notice;
+    constexpr int MenuRows = 5; // Continue, HUD, speed limit, shader notice, back to the game list
     const auto show_menu = [&] {
-        bool pt = true;
-        {
-            std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt", std::ios::binary};
-            std::ostringstream text;
-            text << in.rdbuf();
-            pt = Menu::SettingsFile(text.str()).Language() == Menu::Lang::Pt;
-        }
         const auto state = [&](bool on) { return std::string(on ? (pt ? "ligado" : "on") : (pt ? "desligado" : "off")); };
         const std::vector<std::string> lines = {
             pt ? "Continuar" : "Continue",
             std::string(pt ? "HUD de desempenho: " : "Performance HUD: ") + state(Ps4Hook::HudOn()),
             std::string(pt ? "Limite de velocidade: " : "Speed limit: ") + state(Settings::values.use_speed_limit.GetValue()),
-            pt ? "Sair do jogo" : "Exit game"};
+            std::string(pt ? "Aviso de shaders e memoria: " : "Shader and memory notice: ") + state(notice_on),
+            pt ? "Sair do jogo (volta ao menu de jogos)" : "Exit game (back to the game list)"};
         Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu", lines, menu_sel,
                            pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
     };
-    std::uint64_t last_status = Ps4::NowUs();
-    unsigned status_count = 0;
+    std::uint64_t last_status = Ps4::NowUs(), last_notice = 0;
+    unsigned status_count = 0, notice_ticks = 0;
+    int shaders_last = 0, shaders_total = 0;
+    std::uint64_t free_mib = Ps4::FreeDirectMemory() >> 20;
+    const char* leave_reason = "the game exited";
     for (;;) {
         {
             std::unique_lock lock{exit_mutex};
@@ -825,11 +895,11 @@ int main() {
             bool redraw = false, close = (pressed & Ps4::Button::Circle) != 0 || (menu_combo && !combo_before), leave = false;
             combo_before = menu_combo;
             if (pressed & Ps4::Button::Down) {
-                menu_sel = (menu_sel + 1) % 4;
+                menu_sel = (menu_sel + 1) % MenuRows;
                 redraw = true;
             }
             if (pressed & Ps4::Button::Up) {
-                menu_sel = (menu_sel + 3) % 4;
+                menu_sel = (menu_sel + MenuRows - 1) % MenuRows;
                 redraw = true;
             }
             if (pressed & Ps4::Button::Cross) {
@@ -841,12 +911,19 @@ int main() {
                 } else if (menu_sel == 2) {
                     Settings::values.use_speed_limit.SetValue(!Settings::values.use_speed_limit.GetValue());
                     redraw = true;
+                } else if (menu_sel == 3) {
+                    notice_on = !notice_on;
+                    if (!notice_on) {
+                        Ps4Hook::SetNotice({});
+                    }
+                    redraw = true;
                 } else {
                     leave = true;
                 }
             }
             if (leave) {
                 Ps4::Log("exit chosen in the pause menu");
+                leave_reason = "exit chosen in the pause menu";
                 break;
             }
             if (close) {
@@ -883,17 +960,29 @@ int main() {
             quit_since = Ps4::NowUs();
         } else if (Ps4::NowUs() - quit_since > 2000000) {
             Ps4::Log("quit combo held");
+            leave_reason = "quit combo held";
             break;
+        }
+        // The shader counter (Cemu's "compiling shaders"): what Eden's own notifier says is being
+        // built, kept as a running total, and a warning when direct memory runs low. Every 250 ms;
+        // the memory is asked for once a second.
+        if (notice_on && Ps4::NowUs() - last_notice > 250000) {
+            last_notice = Ps4::NowUs();
+            Ps4Shader::CountBuilding(system.GPU().ShaderNotify().ShadersBuilding(), &shaders_last, &shaders_total);
+            if (notice_ticks++ % 4 == 0) {
+                free_mib = Ps4::FreeDirectMemory() >> 20;
+            }
+            Ps4Hook::SetNotice(Ps4Shader::NoticeText(shaders_last, shaders_total, free_mib, pt));
         }
         if (Ps4::NowUs() - last_status > 10000000) {
             last_status = Ps4::NowUs();
             const auto perf = system.GetAndResetPerfStats();
             const auto mem = Common::Orbis::GetStats();
-            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), largest free direct block %lu MiB",
+            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), largest free direct block %lu MiB, shaders built %d",
                      perf.average_game_fps, perf.emulation_speed * 100.0, perf.frametime * 1000.0,
                      static_cast<unsigned long>(mem.committed_bytes >> 20),
                      static_cast<unsigned long>(mem.decommitted_bytes >> 20),
-                     static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20));
+                     static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20), shaders_total);
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
                 Ps4::Log("%s", Ps4Hook::Describe().c_str());
@@ -901,15 +990,31 @@ int main() {
         }
     }
 
-    // No teardown: on the console an app that returns from main (or calls exit) is reported as
-    // CE-34878-0 anyway, and test 2 showed Eden's shutdown crashing in a worker thread here. The
-    // game is over and its saves are written; the PS button closes the app cleanly.
-    Ps4::SetPhase("finished");
+    // Eden cannot be torn down and started again inside one run (test 2 showed its shutdown crashing
+    // in a worker thread, and the game's memory is not given back), so leaving the game means
+    // starting the app again: a new process opens on the game list. The saves are written by the
+    // game itself; the logs are flushed line by line.
+    Ps4::SetPhase("leaving");
     Ps4::ArmHangWatch(0);
     system.Pause();
-    const auto mem = Common::Orbis::GetStats();
-    Ps4::Log("finished: close the app with the PS button (lazy memory peak %lu MiB)",
-             static_cast<unsigned long>(mem.committed_bytes >> 20));
+    {
+        const auto mem = Common::Orbis::GetStats();
+        Ps4::Log("leaving the game (%s): lazy memory peak %lu MiB, %d shaders built", leave_reason,
+                 static_cast<unsigned long>(mem.committed_bytes >> 20), shaders_total);
+    }
+    Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu",
+                       {pt ? "Voltando ao menu de jogos..." : "Going back to the game list..."}, -1, "");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400)); // a frame with the message
+    if (Ps4::RestartApp()) {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1)); // the system is replacing the process
+        }
+    }
+    Ps4::SetPhase("finished");
+    Ps4Hook::ShowPanel(pt ? "Nao foi possivel voltar ao menu" : "Could not go back to the game list",
+                       {pt ? "Feche o app com o botao PS e abra de novo." : "Close the app with the PS button and open it again."},
+                       -1, "boot.log: restart");
+    Ps4::Log("finished: close the app with the PS button");
     Ps4::SetPadLight(0, 255, 0);
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));

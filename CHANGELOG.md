@@ -2,6 +2,74 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.3] - real exit to the game list, safe shader preload, shader counter
+
+Written from the logs of a 0.7.2-fix run of Super Mario Maker 2 (`boot.log`, `boot.old.log`,
+`eden_log.txt`, `eden_log.txt.old`) and from reading the current Eden master. **Not built or run
+on a console by the author of this change**: the host tests below pass, `main.cpp` and
+`ps4_platform.cpp` are checked only by the GitHub build, and every behaviour on the console is
+untested. See "For the next log".
+
+### Fixed: what the logs showed
+- **`resolution` was never applied.** Every log says `settings.txt: resolution=0.75 (unknown,
+  ignored)`: the check `Res1X == 2` assumed an old enum numbering, and this Eden counts 1/4x first.
+  The scales are now set by name (`Res1_2X`, `Res3_4X`, `Res1X`, `Res3_2X`, `Res2X`).
+- **The HUD and the L3 + R3 panel flickered.** 0.7.2 drew only after the flip was over, that is,
+  after the frame was already on screen: the part already scanned out had no HUD and the next
+  frame was a different buffer. Now each frame is drawn in while its flip is still queued (after a
+  short wait for the GPU, `overlay_delay`, 2 ms) and once more after the flip, in case the GPU wrote
+  over it. A frame the game flips while the menu is up gets the panel too. `boot.log` counts
+  frames drawn "hidden" and "late" in the `video hook:` line.
+- **Shader preload no longer kills Eden's shader threads.** The 0.7.1 limit stopped Eden's load
+  with a stop token, but `LoadDiskResources` answers a stop by ending every thread of its pipeline
+  worker pool (`WaitForRequests`), so after a capped preload (and with "None") nothing was left to
+  build the shaders the game asked for. Now the size of `vulkan.bin` is limited before Eden reads
+  it (about 32 KiB per pipeline: 128 = ~4 MiB, 256 = ~8 MiB, 1024 = ~32 MiB, all = no limit); a
+  bigger cache is kept as `vulkan.bin.bak` and a new one starts. Eden then reads the rest to the
+  end, and `boot.log` prints progress every 64 pipelines.
+- **`eden_log.txt` no longer loses its last lines**: `log_flush_line` is turned on (the log of a 253 s
+  session ended at 158 s). If this Eden has no such setting, `boot.log` says so.
+
+### Changed: "Exit game" really leaves the game
+- The L3 + R3 menu's last row, and the Options + touch pad hold, and a game that closes itself,
+  now start the app again (`sceSystemServiceLoadExec`), so it opens on the game list. Eden cannot be
+  rebuilt inside one run and its teardown crashed in test 2, so a new process is the safe way back.
+  The call is weak: if the SDK lacks it, or the system refuses, the app stays up with a message
+  asking to close it with the PS button, and `boot.log` has the reason (`restart: ...`).
+- The menu has a new row: shader and memory notice on/off.
+
+### Added
+- **Shader counter** (like Cemu's): "Compilando shaders: N (total M)" in the bottom left corner,
+  from Eden's own `ShaderNotify`, kept as a running total. A "LOW MEMORY: N MiB free" warning is
+  added when the largest free direct block is under 160 MiB. Option `shader_notice` (PERFORMANCE tab).
+- **Memory options**: `driver_cache` (the driver's own pipeline cache file, on/off), the preload
+  size limit above, and two profiles: "Save RAM" (0.75x, 1024 MiB arena, ~4 MiB shader cache, no
+  driver cache) and "More video memory" (1792 MiB arena, ~32 MiB cache).
+- `overlay_delay` (0, 1, 2, 4, 8 ms) to tune the HUD timing without a new build.
+- `frontend/shader_policy.{h,cpp}` and `tests/shader_policy_test.cpp`; new cases in
+  `tests/video_hook_test.cpp` and `tests/menu_test.cpp`.
+
+### What the logs say that this version does not change
+- 0.7.2-fix Super Mario Maker 2: ~40 fps in the menus, then 10-13 fps from 119 s with the
+  game CPU-bound (CPUCore_1 at 93% busy, the GPU at 5-22%), at the same time as three heap
+  carve-outs took the largest free direct block from 608 MiB to 123 MiB. The two events coincide;
+  the logs do not prove one causes the other.
+- `boot.old.log`: the crash during the shader cache load (signal 10, four threads at the same
+  address, registers holding ASCII text such as "eo_core/", which looks like memory overwritten
+  or freed under the pipeline threads). It cannot be symbolized without the ELF of that build
+  (`v0.7.2-fix-20261029T234052Z-15f9f8859b80`). Send the ELF if it happens again.
+- The Eden zip sent for comparison is a newer master, not the pinned `5f142c79`: 15 of the 27
+  patches do not apply to it. No Eden patch was added or changed in 0.7.3; everything is in `frontend/`.
+
+### For the next log
+- Send `boot.log`, `boot.old.log`, `eden_log.txt` and the old one, and the ELF of the build.
+- Look in `boot.log` for: `restart:` lines (did the app start again?), `video hook: ... drawn N
+  hidden / M late` (if most draws are late, raise `overlay_delay`), `shader cache: vulkan.bin is ...`
+  (real size of the cache, to correct the 32 KiB per pipeline estimate), and `eden_log.txt: every line
+  is flushed`.
+- Proposed for a later version (needs an Eden patch, so it must be written against the pinned
+  commit): a preload limit inside `load_graphics` that skips entries instead of stopping the load.
+
 ## [0.7.2-fix] - the video hook stays out of the boot
 
 In 0.7.2 the games stopped starting. The log of a Super Mario Maker 2 run ends at 53.7 s, while the

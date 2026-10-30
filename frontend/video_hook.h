@@ -6,8 +6,11 @@
 // frontend.cmake). With the buffers' addresses known, this file can:
 //   - turn the registered pixel format into its red/blue mirror, which swaps red and blue on the
 //     screen (the "colour_swap" option);
-//   - draw a performance HUD into the frame that is about to be flipped;
-//   - draw a panel (the in-game menu) into the frame on the screen while the game is paused.
+//   - draw a performance HUD into each frame, in the short window after it was queued for the screen
+//     and before it is shown (a draw made after the frame is on screen flickers: the part already
+//     scanned out has no HUD, and the next frame is a different buffer);
+//   - draw a panel (the in-game menu) into the frame on the screen while the game is paused;
+//   - draw a small notice (the shader compile counter, like Cemu's) in the bottom left corner.
 // Drawing only writes (the buffers are write-combined memory: reading them back is very slow).
 
 #pragma once
@@ -25,7 +28,9 @@ struct Settings {
     bool swap_colours = true;
     bool overlay = true;        // arm the hook at all (the HUD, the pause menu and the colour swap need it)
     bool draw = true;           // draw the HUD and the pause menu (off: only the colour swap stays)
-    int shader_preload = 256;   // pipelines of the disk cache compiled at start: 0 none, -1 all
+    int shader_preload = 256;   // size class of the disk cache loaded at start: 0 none, -1 all (see main.cpp)
+    bool shader_notice = true;  // the shader compile counter over the game
+    int draw_delay_ms = 2;      // wait after a flip is queued before drawing into it (the GPU may still write)
 };
 
 /// The settings read from settings.txt (hud, hud_size, hud_position, colour_swap), until Arm().
@@ -45,6 +50,12 @@ void ShowPanel(const std::string& title, const std::vector<std::string>& lines, 
 std::string Describe();
 /// The pause menu is closed: stop drawing its panel.
 void HidePanel();
+/// The notice in the bottom left corner (the shader counter). An empty text removes it.
+void SetNotice(const std::string& text);
+/// How long to wait after a flip was queued before drawing into its buffer (host tests use 0).
+void SetDrawDelayMicros(int micros);
+/// Frames on which the HUD, panel or notice were drawn before the frame was on screen / after it.
+void DrawStats(std::uint64_t* hidden, std::uint64_t* late);
 
 } // namespace Ps4Hook
 

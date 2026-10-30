@@ -47,7 +47,16 @@ struct State {
     std::uint32_t tiling = 0;
     bool linear = false;
     int last_index = -1;
-    std::uint64_t flips = 0, drawn_flips = 0;
+    std::uint64_t flips = 0;
+    // A frame is drawn in twice: once while its flip is still queued (nothing of it is on screen
+    // yet, so no flicker) and once more when the flip is over (in case the GPU wrote over it late).
+    std::uint64_t hidden_flips = 0, shown_flips = 0;
+    std::uint64_t submit_us = 0;       // when the last flip was queued
+    std::uint64_t draws_hidden = 0, draws_late = 0;
+    int delay_us = 2000;               // the GPU gets this long to finish a frame before it is drawn in
+    // The notice in the bottom left corner (the shader counter).
+    std::string notice;
+    bool notice_dirty = false;
     // The pause menu's panel, drawn by the worker over each new frame while it is up.
     bool panel_active = false, panel_dirty = false;
     std::string panel_title, panel_footer;
@@ -75,6 +84,10 @@ double Now(clockid_t clock) {
     timespec ts{};
     clock_gettime(clock, &ts);
     return double(ts.tv_sec) + double(ts.tv_nsec) * 1e-9;
+}
+
+std::uint64_t NowMicros() {
+    return std::uint64_t(Now(CLOCK_MONOTONIC) * 1e6);
 }
 
 /// A pixel in the format on the screen: `rgb` is 0x00RRGGBB.
@@ -217,6 +230,19 @@ void DrawHud(State& s, int buffer) {
     }
 }
 
+/// The shader counter: small text on a dark strip, bottom left, clear of the HUD at the top.
+void DrawNotice(State& s, int buffer) {
+    if (s.notice.empty()) {
+        return;
+    }
+    const int cell_w = Menu::GlyphWidth / 2, cell_h = Menu::GlyphHeight / 2;
+    const int box_w = Menu::TextCells(s.notice) * cell_w + 16, box_h = cell_h + 12;
+    const int x = 40, y = int(s.height) - 40 - box_h;
+    constexpr std::uint32_t Back = 0x2A1C08, Fore = 0xFFD27A;
+    FillRect(s, buffer, x, y, box_w, box_h, Back);
+    DrawText(s, buffer, x + 8, y + 6, s.notice, Fore, Back, true);
+}
+
 void DrawPanel(State& s, int b) {
     const std::string& title = s.panel_title;
     const std::vector<std::string>& lines = s.panel_lines;
@@ -255,7 +281,8 @@ void Pump() {
     RefreshStats();
     int index;
     std::int32_t handle;
-    bool new_frame, panel;
+    bool hidden_pass, late_pass, panel, notice;
+    std::uint64_t submit_us, delay_us;
     {
         std::lock_guard lock{s.mutex};
         if (!s.armed || !s.settings.draw || !s.linear || s.handle < 0 || s.last_index < 0 ||
@@ -264,30 +291,59 @@ void Pump() {
         }
         index = s.last_index;
         handle = s.handle;
-        new_frame = s.flips != s.drawn_flips;
-        panel = s.panel_active && (new_frame || s.panel_dirty);
-        if (!new_frame && !panel) {
+        submit_us = s.submit_us;
+        delay_us = std::uint64_t(std::max(s.delay_us, 0));
+        hidden_pass = s.flips != s.hidden_flips;                      // a new frame, not drawn in yet
+        late_pass = !hidden_pass && s.flips != s.shown_flips;         // drawn in while queued: check again once shown
+        panel = s.panel_active && s.panel_dirty;
+        notice = s.notice_dirty;
+        if (!hidden_pass && !late_pass && !panel && !notice) {
             return;
         }
     }
-    // The frame flipped last is only safe to draw in once the flip is over: until then the GPU may
-    // still be writing it, and what is drawn would be overwritten or half-drawn (the flicker).
-    if (sceVideoOutIsFlipPending(handle) > 0) {
-        return;
+    const bool pending = sceVideoOutIsFlipPending(handle) > 0;
+    if (hidden_pass && pending && NowMicros() - submit_us < delay_us) {
+        return; // the GPU may still be writing this frame: give it a moment (it is not on screen yet)
+    }
+    if (late_pass && pending) {
+        return; // the queued frame is still hidden and already has its HUD: wait for the flip to finish
     }
     std::lock_guard lock{s.mutex};
     if (index != s.last_index) {
-        return;
+        return; // another flip was queued while the lock was free: the next round draws that one
     }
-    if (new_frame) {
-        if (s.hud && s.pitch != 0) {
+    const bool draw_all = hidden_pass || late_pass;
+    if (draw_all && s.pitch != 0) {
+        if (s.hud) {
             DrawHud(s, index);
         }
-        s.drawn_flips = s.flips;
+        DrawNotice(s, index);
+        if (s.panel_active) {
+            DrawPanel(s, index); // a frame the game flips while the menu is up gets the panel too
+            s.panel_dirty = false;
+        }
+        if (hidden_pass) {
+            ++(pending ? s.draws_hidden : s.draws_late);
+            s.hidden_flips = s.flips;
+            if (!pending) {
+                s.shown_flips = s.flips; // already on screen: nothing left to check
+            }
+        } else {
+            ++s.draws_late;
+            s.shown_flips = s.flips;
+        }
+        s.notice_dirty = false;
+        return;
     }
-    if (panel && s.pitch != 0) {
-        DrawPanel(s, index);
-        s.panel_dirty = false;
+    if (s.pitch != 0) {
+        if (panel) {
+            DrawPanel(s, index);
+            s.panel_dirty = false;
+        }
+        if (notice) {
+            DrawNotice(s, index);
+            s.notice_dirty = false;
+        }
     }
 }
 
@@ -302,6 +358,11 @@ void Arm(const Settings& settings, bool start_worker) {
         s.handle = -1;
         s.last_index = -1;
         s.panel_active = false;
+        s.hidden_flips = s.shown_flips = s.flips;
+        s.draws_hidden = s.draws_late = 0;
+        s.delay_us = std::max(0, settings.draw_delay_ms) * 1000;
+        s.notice.clear();
+        s.notice_dirty = false;
         s.worker_wanted = start_worker && settings.draw;
     }
 }
@@ -342,13 +403,40 @@ void HidePanel() {
     s.panel_active = false;
 }
 
+void SetNotice(const std::string& text) {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    if (s.notice != text) {
+        s.notice = text;
+        s.notice_dirty = true;
+    }
+}
+
+void SetDrawDelayMicros(int micros) {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    s.delay_us = std::max(0, micros);
+}
+
+void DrawStats(std::uint64_t* hidden, std::uint64_t* late) {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    if (hidden != nullptr) {
+        *hidden = s.draws_hidden;
+    }
+    if (late != nullptr) {
+        *late = s.draws_late;
+    }
+}
+
 std::string Describe() {
     State& s = S();
     std::lock_guard lock{s.mutex};
-    char text[200];
-    std::snprintf(text, sizeof(text), "video hook: armed=%d handle=%d buffers=%d %ux%u pitch %u tiling %u (%s), format seen 0x%08x used 0x%08x, %llu flips",
+    char text[260];
+    std::snprintf(text, sizeof(text), "video hook: armed=%d handle=%d buffers=%d %ux%u pitch %u tiling %u (%s), format seen 0x%08x used 0x%08x, %llu flips, drawn %llu hidden / %llu late",
                   s.armed, s.handle, s.count, s.width, s.height, s.pitch, s.tiling, s.linear ? "linear: drawing on" : "NOT linear: drawing off", s.format_seen, s.format_used,
-                  static_cast<unsigned long long>(s.flips));
+                  static_cast<unsigned long long>(s.flips), static_cast<unsigned long long>(s.draws_hidden),
+                  static_cast<unsigned long long>(s.draws_late));
     return text;
 }
 
@@ -429,6 +517,7 @@ extern "C" int32_t __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t index, u
         if (s.armed && handle == s.handle && index >= 0 && index < s.count && s.address[index] != nullptr) {
             s.last_index = index;
             ++s.flips;
+            s.submit_us = NowMicros();
         }
     }
     return __real_sceVideoOutSubmitFlip(handle, index, mode, arg);

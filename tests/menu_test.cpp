@@ -267,9 +267,15 @@ void TestNavigation() {
                   r.saved.find("resolution") == std::string::npos,
               "profile Compatibility replaces the Light one");
         r.Tap(Pad::Right);
+        Check(SettingsFile(r.saved).MatchPreset() == 3 && r.saved.find("ORBIS_ARENA_MIB=1024") != std::string::npos &&
+                  r.saved.find("driver_cache=off") != std::string::npos, "profile Save RAM: 1024 MiB arena and no driver cache written");
+        r.Tap(Pad::Right);
+        Check(SettingsFile(r.saved).MatchPreset() == 4 && r.saved.find("ORBIS_ARENA_MIB=1792") != std::string::npos &&
+                  r.saved.find("driver_cache") == std::string::npos, "profile More video memory replaces it (1792 MiB, driver cache back to default)");
+        r.Tap(Pad::Right);
         Check(r.saved.find("gpu_accuracy") == std::string::npos && SettingsFile(r.saved).MatchPreset() == 0, "wraps to Default: nothing written");
         r.Tap(Pad::Left);
-        Check(SettingsFile(r.saved).MatchPreset() == 2, "Left goes back to Compatibility");
+        Check(SettingsFile(r.saved).MatchPreset() == 4, "Left from Default wraps to the last profile");
         r.Tap(Pad::Triangle);
         Check(SettingsFile(r.saved).MatchPreset() == 0, "Triangle on the profile row: Default");
     }
@@ -285,7 +291,7 @@ void TestNavigation() {
         Rig q("resolution=2\n");
         q.Tap(Pad::R1);
         q.Tap(Pad::Left);
-        Check(SettingsFile(q.saved).MatchPreset() == 2, "Left from a custom mix: the last profile");
+        Check(SettingsFile(q.saved).MatchPreset() == 4, "Left from a custom mix: the last profile");
     }
     {
         // A save that fails is shown, and a save that works is too.
