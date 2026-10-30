@@ -16,6 +16,8 @@ on:
       - 'ci/**'
       - 'frontend/heap_census.cpp'
       - 'frontend/menu/**'
+      - 'frontend/video_hook.cpp'
+      - 'frontend/shader_policy.*'
       - 'tests/**'
       - '.github/workflows/check-patches.yml'
   pull_request:
@@ -70,6 +72,16 @@ jobs:
           g++ -O2 -std=c++20 -Wall -Wextra -Ifrontend tests/menu_test.cpp frontend/menu/menu_ui.cpp \
               frontend/menu/settings_model.cpp frontend/menu/menu_canvas.cpp -o menu_test
           ./menu_test
+      - name: "Video hook (frontend/video_hook.cpp) - drawing window, notice, panel"
+        run: |
+          g++ -O2 -std=c++20 -Wall -Wextra -pthread -Ifrontend tests/video_hook_test.cpp \
+              frontend/video_hook.cpp frontend/menu/menu_canvas.cpp -o video_hook_test
+          ./video_hook_test
+      - name: "Shader policy (frontend/shader_policy.cpp) - cache limit, counter text"
+        run: |
+          g++ -O2 -std=c++20 -Wall -Wextra -Ifrontend tests/shader_policy_test.cpp \
+              frontend/shader_policy.cpp -o shader_policy_test
+          ./shader_policy_test
 
   ci-scripts:
     name: CI scripts
