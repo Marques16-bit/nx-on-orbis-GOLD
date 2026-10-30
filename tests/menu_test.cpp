@@ -101,7 +101,7 @@ void TestSettingsFile() {
         Check(f.Get("cpu_accuracy") == "accurate", "key with spaces, comment and CRLF is read");
         Check(f.ChoiceIndex(*FindOption("cpu_accuracy")) == 2, "choice index follows");
         f.SetChoice(*FindOption("cpu_accuracy"), 0);
-        f.SetChoice(*FindOption("gpu_accuracy"), 1);
+        f.SetChoice(*FindOption("gpu_accuracy"), 2); // low, medium, high
         const std::string text = f.Text();
         Check(text.find("# my notes") != std::string::npos, "comments are kept");
         Check(text.find("foo=bar") != std::string::npos, "unknown lines are kept");

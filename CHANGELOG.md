@@ -2,6 +2,53 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.4] - options from Eden's own settings screens
+
+Written from screenshots of Eden's settings (Android, Portuguese) and the source of 0.7.3. **Not built
+or run on a console by the author of this change**: the host tests below pass; `main.cpp` is checked
+only by the GitHub build, and no option has been tried on the console. The Eden this port builds
+against is not in this repository, so the setting and enum names follow Eden's `settings.h` from
+memory and from Eden's public commits, not from the pinned source (see "Why each option is guarded").
+
+### Added: menu rows and `settings.txt` keys
+Same screens, same defaults as Eden (a line only appears in `settings.txt` when the option is not at
+its default):
+
+- VIDEO tab:
+  - `vsync=fifo|mailbox|immediate|relaxed`: VSync mode (default fifo).
+  - `scaling_filter=bilinear|nearest|bicubic|gaussian|scaleforce|fsr|area`: window adapting filter
+    (default bilinear). It matters when the internal resolution differs from the screen's.
+  - `anti_aliasing=none|fxaa|smaa` (default none).
+  - `anisotropy=default|auto|2|4|8|16` (default default).
+  - `dma_accuracy=default|unsafe|safe` (default default).
+  - `sync_memory=on|off`: sync memory operations (default off).
+  - `speed_percent=50|75|100|150|200`: speed limit percentage (default 100).
+  - `gpu_accuracy` gets `medium` (before: low, high).
+  - `resolution` gets `0.25` and `1.25` (before: 0.5, 0.75, 1, 1.5, 2).
+- CPU & MEMORY tab: `skip_cpu_invalidation=on|off`: skip inner CPU invalidation (default off). It
+  spends less CPU, the PS4's weak point, and may cause glitches or hangs: experimental.
+- ADVANCED tab: `auto_stub=on|off` (default off; fills in missing services, can add crashes) and
+  `region=japan|usa|europe|australia|china|korea|taiwan` (default usa, like Eden).
+
+### Why each option is guarded
+- `frontend/eden_settings.h` applies every new option with a `requires` check inside a template. A
+  setting or an enum member that the pinned Eden does not have is **skipped**, never a build error,
+  and `boot.log` says `settings.txt: vsync=mailbox (this Eden has no such setting, ignored)`. The
+  old and new spellings of the VSync names (`FIFO` / `Fifo`) are both tried.
+- `tests/eden_settings_test.cpp` checks it against three mock Edens (every setting, an older one, none)
+  and checks that every value the menu can write is a value the header understands. It is a new
+  step in `.github/workflows/check-patches.yml`.
+
+### What was left out on purpose
+Android-only or driver-specific items of those screens (Adreno max clock, BCn patching, Fix Bloom
+Effects, Optimized Vertex Buffers, NCE, fastmem, the system MMU, GPU logging) and the ones that change
+how Eden's threads run (GPU async emulation, asynchronous presentation, pipeline worker threads,
+GPU unswizzle): none of those has been shown to work with the PS4 driver or with this port's patches.
+Turbo and slow speed were not added because their setting names are not known.
+
+### Not changed
+Everything else of 0.7.3. In particular the boot logs of 0.7.3 are not analysed here.
+
 ## [0.7.3] - real exit to the game list, safe shader preload, shader counter
 
 Written from the logs of a 0.7.2-fix run of Super Mario Maker 2 (`boot.log`, `boot.old.log`,

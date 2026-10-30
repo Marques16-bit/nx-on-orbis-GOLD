@@ -11,7 +11,7 @@ An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a
 > **Continuation:** the project is being picked up again, in small versions that each get one change
 > and one console test. See [docs/ROADMAP.md](docs/ROADMAP.md) for the plan up to 1.0.0 and
 > [CHANGELOG.md](CHANGELOG.md) for what changed. Until a release says otherwise, everything on this
-> page describes v0.1.0 (v0.7.3 is the current work: see CHANGELOG.md).
+> page describes v0.1.0 (v0.7.4 is the current work: see CHANGELOG.md).
 
 | | |
 |---|---|

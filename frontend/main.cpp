@@ -61,6 +61,7 @@
 #include <csignal>
 #include <unistd.h>
 
+#include "eden_settings.h"
 #include "firmware_zip.h"
 #include "menu/menu_ui.h"
 #include "video_hook.h"
@@ -387,6 +388,11 @@ void ApplyPs4Settings() {
 ///   hud=on|off                  performance HUD over the game (default off)
 ///   hud_size=normal|small, hud_position=left|right
 ///   colour_swap=on|off          swap red and blue on the screen (default on)
+///   Options from Eden's own screens (0.7.4), each applied only if this Eden has the setting (eden_settings.h):
+///   vsync=fifo|mailbox|immediate|relaxed, scaling_filter=bilinear|nearest|bicubic|gaussian|scaleforce|fsr|area,
+///   anti_aliasing=none|fxaa|smaa, dma_accuracy=default|unsafe|safe, anisotropy=default|auto|2|4|8|16,
+///   gpu_accuracy=medium, resolution=0.25|1.25, sync_memory=on|off, skip_cpu_invalidation=on|off,
+///   auto_stub=on|off, speed_percent=50|75|100|150|200, region=japan|usa|europe|australia|china|korea|taiwan
 ///   language=pt|en              the menu's language (read by the menu only)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
 void ApplySettingsFile() {
@@ -408,6 +414,7 @@ void ApplySettingsFile() {
         const std::string key = line.substr(0, eq);
         const std::string value = line.substr(eq + 1);
         bool known = true;
+        bool missing = false; // a 0.7.4 option this Eden has no setting for
         if (key == "cpu_accuracy" && (value == "unsafe" || value == "auto" || value == "accurate")) {
             v.cpu_accuracy.SetValue(value == "unsafe"   ? Settings::CpuAccuracy::Unsafe
                                     : value == "auto" ? Settings::CpuAccuracy::Auto
@@ -455,7 +462,9 @@ void ApplySettingsFile() {
             } else if (value == "2") {
                 v.resolution_setup.SetValue(R::Res2X);
             } else {
-                known = false;
+                const auto result = Ps4Eden::Apply(v, key, value); // 0.25 and 1.25, if this Eden has them
+                known = result == Ps4Eden::Result::Applied;
+                missing = result == Ps4Eden::Result::Missing;
             }
         } else if (key == "shader_preload" &&
                    (value == "0" || value == "128" || value == "256" || value == "1024" || value == "all")) {
@@ -493,10 +502,14 @@ void ApplySettingsFile() {
             // A driver switch, e.g. env=ORBIS_GS_RING_SCALE=4 (read when Vulkan starts).
             const auto split = value.find('=');
             setenv(value.substr(0, split).c_str(), value.c_str() + split + 1, 1);
+        } else if (const auto result = Ps4Eden::Apply(v, key, value); result != Ps4Eden::Result::NotMine) {
+            known = result == Ps4Eden::Result::Applied;
+            missing = result == Ps4Eden::Result::Missing;
         } else {
             known = false;
         }
-        Ps4::Log("settings.txt: %s=%s%s", key.c_str(), value.c_str(), known ? "" : " (unknown, ignored)");
+        Ps4::Log("settings.txt: %s=%s%s", key.c_str(), value.c_str(),
+                 known ? "" : missing ? " (this Eden has no such setting, ignored)" : " (unknown, ignored)");
     }
 }
 
