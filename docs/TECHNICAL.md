@@ -118,3 +118,19 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
   samples the block once a second and reports a stage (ok / low under 160 MiB / critical under 64 MiB, with
   hysteresis) and the speed of the fall. `memory_action=pause` stops the game at critical and asks. It
   reclaims no memory held by Eden: that needs Eden-side patches (roadmap 0.8.0).
+
+## The shader cache, the way out and the restart (0.7.7; not yet seen on a console)
+
+- **Cache** (`frontend/shader_policy.{h,cpp}`, host-tested). Eden's `PipelineCache::LoadDiskResources` builds
+  every pipeline of `vulkan.bin` in a worker pool before the game starts, and a stopped token kills the
+  pool for good, so the size is limited before Eden reads the file (`shader_preload`, default all) and the
+  load is never cut short. A cache over a chosen limit is parked (`vulkan.bin.bak`, `.bak2`...), never
+  deleted. While the load runs `cache/shader/loading.marker` holds `attempt N <title id>`; a start that finds
+  it loads the same cache with one builder thread (`std::thread::hardware_concurrency()` is wrapped with
+  `-Wl,--wrap=_ZNSt3__16thread20hardware_concurrencyEv`, see `ps4_platform.cpp`), and the one after that
+  parks the cache and starts empty. The cap is set before `System::Load` because Eden sizes the pool when
+  it creates the pipeline cache there.
+- **Leaving the game.** Eden cannot be torn down and rebuilt in one process, so leaving starts the app again
+  (`sceSystemServiceLoadExec`, found with `sceKernelDlsym` in the console's libSceSystemService because the
+  SDK stub lacks it) and, when that fails, ends the process. "Restart game" leaves `restart_game.txt` for the
+  new process (read and deleted first thing in `FindGame`).

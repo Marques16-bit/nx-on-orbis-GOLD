@@ -41,21 +41,51 @@ int main() {
     Check(c.action == CacheAction::Kept && c.unlimited, "all: no limit, kept");
 
     Make(dir / "vulkan.bin", 9 * 1024 * 1024, 'n');
-    Make(dir / "vulkan.bin.bak", 100, 'o'); // an older backup is replaced
+    Make(dir / "vulkan.bin.bak", 100, 'o'); // an older backup: 0.7.7 never replaces it
     c = LimitCache(dir, 256);
-    Check(c.action == CacheAction::SetAside, "9 MiB over an 8 MiB limit: set aside");
-    Check(!fs::exists(dir / "vulkan.bin") && fs::exists(dir / "vulkan.bin.bak") &&
-              fs::file_size(dir / "vulkan.bin.bak") == 9 * 1024 * 1024, "...vulkan.bin.bak is the big one now, vulkan.bin is gone");
+    Check(c.action == CacheAction::SetAside, "9 MiB over an 8 MiB limit: parked");
+    Check(!fs::exists(dir / "vulkan.bin") && fs::file_size(dir / "vulkan.bin.bak") == 100 &&
+              fs::file_size(dir / "vulkan.bin.bak2") == 9 * 1024 * 1024,
+          "...under a NEW name (vulkan.bin.bak2): the older backup is not replaced, nothing is deleted");
 
     Make(dir / "vulkan.bin", 10);
     c = LimitCache(dir, 0);
-    Check(c.action == CacheAction::SetAside && c.limit == 0, "none (0): even a tiny cache is set aside");
+    Check(c.action == CacheAction::SetAside && c.limit == 0 && fs::exists(dir / "vulkan.bin.bak3"), "none (0): even a tiny cache is parked (bak3)");
+    {
+        fs::path as;
+        Check(!ParkCache(dir, &as), "ParkCache with no vulkan.bin: false");
+        Make(dir / "vulkan.bin", 7);
+        Check(ParkCache(dir, &as) && as.filename() == "vulkan.bin.bak4" && fs::file_size(as) == 7, "ParkCache names the first free backup and reports it");
+    }
 
     // The rest of the folder (the driver's own cache) is never touched.
     Make(dir / "vulkan_pipelines.bin", 5000);
     Make(dir / "vulkan.bin", 50 * 1024 * 1024);
     LimitCache(dir, 128);
     Check(fs::exists(dir / "vulkan_pipelines.bin"), "the driver's cache file is left alone");
+
+    {
+        // The ladder after a start that died while loading the cache.
+        const fs::path marker = dir / "t.loading";
+        fs::remove(marker);
+        Check(!ReadMarker(marker).present, "no marker: nothing died");
+        Check(DecideLoad(ReadMarker(marker), "A") == LoadMode::Normal && NextAttempt(ReadMarker(marker), "A") == 1, "no marker: normal load, attempt 1");
+        Check(WriteMarker(marker, 1, "A"), "marker written");
+        LoadMarker m = ReadMarker(marker);
+        Check(m.present && m.attempt == 1 && m.title == "A", "marker read back: attempt 1, title A");
+        Check(DecideLoad(m, "A") == LoadMode::Safe && NextAttempt(m, "A") == 2, "one death of this game: safe load (one builder), attempt 2, cache kept");
+        WriteMarker(marker, 2, "A");
+        m = ReadMarker(marker);
+        Check(DecideLoad(m, "A") == LoadMode::Empty && NextAttempt(m, "A") == 3, "two deaths: the cache is parked, empty start");
+        Check(DecideLoad(m, "B") == LoadMode::Safe && NextAttempt(m, "B") == 1, "another game's marker: safe load for this one, its own cache untouched, attempt 1");
+        {
+            std::ofstream(marker) << "loading\n"; // what 0.7.3 to 0.7.6 left behind
+        }
+        m = ReadMarker(marker);
+        Check(m.present && m.attempt == 1 && m.title.empty() && DecideLoad(m, "A") == LoadMode::Safe, "an old-style marker counts as one death, title unknown: safe");
+        Check(std::string(LoadModeName(LoadMode::Empty)).find("parked") != std::string::npos, "mode names for the log");
+        fs::remove(marker);
+    }
 
     int last = 0, total = 0;
     CountBuilding(3, &last, &total);

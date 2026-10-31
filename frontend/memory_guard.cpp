@@ -79,19 +79,21 @@ Plan PlanFor(Profile profile, Tier detected) {
     Plan plan;
     plan.tier = tier;
     switch (tier) {
-    case Tier::Roomy: // the values 0.7.3 and 0.7.4 always used, measured on a PS4 Pro
+    case Tier::Roomy: // the arena 0.7.3 to 0.7.6 used, measured on a PS4 Pro; the shader cache has no limit (0.7.7)
         plan.arena_mib = 1280;
-        plan.shader_preload = 256;
+        plan.shader_preload = -1;
         plan.driver_cache = true;
         break;
     case Tier::Standard:
-        plan.arena_mib = 1152;
-        plan.shader_preload = 128;
+        plan.arena_mib = 1280;
+        plan.shader_preload = 4096; // about 128 MiB of cache
         plan.driver_cache = true;
         break;
     case Tier::Tight:
-        plan.arena_mib = 1024;
-        plan.shader_preload = 128;
+        // Not 1024: a Super Mario Maker 2 start with ORBIS_ARENA_MIB=1024 died in the shader load, right
+        // after the driver's last line "GS ring SIZES scaled by 2" (boot.old.log of 0.7.6).
+        plan.arena_mib = 1152;
+        plan.shader_preload = 1024; // about 32 MiB of cache
         plan.driver_cache = false;
         break;
     }

@@ -142,6 +142,7 @@ void TestSettingsFile() {
         check("memory_profile", {"auto", "roomy", "standard", "tight", "strict"}, "auto");
         check("memory_action", {"warn", "pause"}, "warn");
         check("env:ORBIS_ARENA_MIB", {"1024", "1152", "1280", "1536", "1792"}, "1280");
+        check("shader_preload", {"0", "128", "256", "1024", "4096", "all"}, "all"); // 0.7.7: no limit by default
         SettingsFile f("overlay_mode=classic\nmemory_profile=tight\nmemory_action=pause\n");
         Check(f.ChoiceIndex(*FindOption("overlay_mode")) == 1 && f.ChoiceIndex(*FindOption("memory_profile")) == 3 &&
                   f.ChoiceIndex(*FindOption("memory_action")) == 1,
@@ -295,17 +296,25 @@ void TestNavigation() {
                   r.saved.find("resolution") == std::string::npos,
               "profile Compatibility replaces the Light one");
         r.Tap(Pad::Right);
-        Check(SettingsFile(r.saved).MatchPreset() == 3 && r.saved.find("ORBIS_ARENA_MIB=1024") != std::string::npos &&
+        Check(SettingsFile(r.saved).MatchPreset() == 3 && r.saved.find("ORBIS_ARENA_MIB=1152") != std::string::npos && r.saved.find("shader_preload=1024") != std::string::npos &&
                   r.saved.find("driver_cache=off") != std::string::npos && r.saved.find("memory_profile=tight") != std::string::npos &&
                   r.saved.find("memory_action=pause") != std::string::npos,
-              "profile Save RAM: 1024 MiB arena, no driver cache, tight memory profile and pause written");
+              "profile Save RAM: 1152 MiB arena, no driver cache, tight memory profile and pause written");
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 4 && r.saved.find("ORBIS_ARENA_MIB=1792") != std::string::npos &&
-                  r.saved.find("driver_cache") == std::string::npos && r.saved.find("memory_profile") == std::string::npos, "profile More video memory replaces it (1792 MiB, driver cache back to default)");
+                  r.saved.find("driver_cache") == std::string::npos && r.saved.find("memory_profile") == std::string::npos &&
+                  r.saved.find("shader_preload") == std::string::npos,
+              "profile More video memory replaces it (1792 MiB, driver cache and shader cache back to default)");
+        r.Tap(Pad::Right);
+        Check(SettingsFile(r.saved).MatchPreset() == 5 && r.saved.find("gpu_accuracy=high") != std::string::npos &&
+                  r.saved.find("dma_accuracy=safe") != std::string::npos && r.saved.find("sync_memory=on") != std::string::npos &&
+                  r.saved.find("async_shaders=off") != std::string::npos && r.saved.find("ORBIS_ARENA_MIB") == std::string::npos &&
+                  r.saved.find("ORBIS_VRAM_GARLIC") == std::string::npos,
+              "profile Exact graphics (test): accuracy options written, the arena back to default");
         r.Tap(Pad::Right);
         Check(r.saved.find("gpu_accuracy") == std::string::npos && SettingsFile(r.saved).MatchPreset() == 0, "wraps to Default: nothing written");
         r.Tap(Pad::Left);
-        Check(SettingsFile(r.saved).MatchPreset() == 4, "Left from Default wraps to the last profile");
+        Check(SettingsFile(r.saved).MatchPreset() == 5, "Left from Default wraps to the last profile");
         r.Tap(Pad::Triangle);
         Check(SettingsFile(r.saved).MatchPreset() == 0, "Triangle on the profile row: Default");
     }
@@ -321,7 +330,7 @@ void TestNavigation() {
         Rig q("resolution=2\n");
         q.Tap(Pad::R1);
         q.Tap(Pad::Left);
-        Check(SettingsFile(q.saved).MatchPreset() == 4, "Left from a custom mix: the last profile");
+        Check(SettingsFile(q.saved).MatchPreset() == 5, "Left from a custom mix: the last profile");
     }
     {
         // A save that fails is shown, and a save that works is too.

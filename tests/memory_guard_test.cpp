@@ -23,12 +23,14 @@ int main() {
 
     {
         const Plan roomy = PlanFor(Profile::Auto, Tier::Roomy);
-        Check(roomy.arena_mib == 1280 && roomy.shader_preload == 256 && roomy.driver_cache && !roomy.vram_in_arena,
-              "auto on a roomy console keeps exactly the 0.7.3 / 0.7.4 values");
+        Check(roomy.arena_mib == 1280 && roomy.shader_preload == -1 && roomy.driver_cache && !roomy.vram_in_arena,
+              "auto on a roomy console: the 1280 MiB arena of 0.7.3 to 0.7.6 and no shader cache limit (0.7.7)");
         const Plan standard = PlanFor(Profile::Auto, Tier::Standard);
         const Plan tight = PlanFor(Profile::Auto, Tier::Tight);
-        Check(standard.arena_mib < roomy.arena_mib && tight.arena_mib < standard.arena_mib, "less memory: a smaller GPU arena");
-        Check(tight.shader_preload <= standard.shader_preload && standard.shader_preload < roomy.shader_preload, "...and a smaller shader preload");
+        Check(standard.arena_mib <= roomy.arena_mib && tight.arena_mib < standard.arena_mib, "less memory: a smaller or equal GPU arena");
+        Check(tight.arena_mib >= 1152, "...never the 1024 MiB that died loading Super Mario Maker 2's shaders");
+        Check(tight.shader_preload > 0 && tight.shader_preload <= standard.shader_preload && standard.shader_preload > 0 && roomy.shader_preload < 0,
+              "...and a smaller shader preload (roomy: -1 = all)");
         Check(!tight.driver_cache && standard.driver_cache, "...and the driver's pipeline cache is off only when tight");
         Check(PlanFor(Profile::Tight, Tier::Roomy).arena_mib == tight.arena_mib, "a profile other than auto ignores what was detected");
         Check(PlanFor(Profile::Roomy, Tier::Tight).arena_mib == 1280, "...in both directions");

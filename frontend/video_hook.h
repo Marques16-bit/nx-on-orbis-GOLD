@@ -39,7 +39,7 @@ struct Settings {
     bool swap_colours = true;
     bool overlay = true;        // arm the hook at all (the HUD, the pause menu and the colour swap need it)
     bool draw = true;           // draw the HUD and the pause menu (off: only the colour swap stays)
-    int shader_preload = 256;   // size class of the disk cache loaded at start: 0 none, -1 all (see main.cpp)
+    int shader_preload = -1;    // size class of the disk cache loaded at start: 0 none, -1 all (default since 0.7.7; see main.cpp)
     bool shader_notice = true;  // the shader compile counter over the game
     int draw_delay_ms = 2;      // classic mode: wait after a flip is queued before drawing into it
     bool keepalive = true;      // 0.7.6: keep the overlay alive in every buffer (false: the 0.7.3 "classic" mode)

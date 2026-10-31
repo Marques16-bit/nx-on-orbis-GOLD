@@ -226,6 +226,24 @@ Menu::SystemInfo CollectSystemInfo() {
 std::string FindGame() {
     const fs::path data{Ps4::DataDir};
     std::error_code ec;
+    // 0.7.7: "Restart game" in the L3 + R3 menu leaves the game's path here and starts the app again; this
+    // new process opens that game without the list. The file is removed before it is used, so a start
+    // that dies cannot loop.
+    if (const fs::path again = data / "restart_game.txt"; fs::exists(again, ec)) {
+        std::string line;
+        if (std::ifstream in{again}; in) {
+            std::getline(in, line);
+        }
+        fs::remove(again, ec);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+            line.pop_back();
+        }
+        if (!line.empty() && fs::is_regular_file(line, ec)) {
+            Ps4::Log("restart_game.txt: starting %s again, without the game list", line.c_str());
+            return line;
+        }
+        Ps4::Log("restart_game.txt names '%s', which is not a file: the game list opens", line.c_str());
+    }
     if (std::ifstream in{data / "game.txt"}; in) {
         std::string line;
         std::getline(in, line);
@@ -449,8 +467,9 @@ void ApplyMemoryPlan() {
 ///   multicore=on|off            (default on)
 ///   vram=conservative|aggressive  (default conservative)
 ///   shader_cache=on|off         shaders kept on disk (default on)
-///   shader_preload=0|128|256|1024|all  how much of the disk cache is compiled at start (default 256): the
-///                               cache may weigh up to N x 32 KiB, a bigger one is set aside (see shader_policy.h)
+///   shader_preload=0|128|256|1024|4096|all  how much of the disk cache is compiled at start (default all, no
+///                               limit, since 0.7.7): with a number the cache may weigh up to N x 32 KiB and a bigger
+///                               one is set aside under a new name, never deleted (see shader_policy.h)
 ///   shader_notice=on|off        the shader counter and the low-memory warning over the game (default on)
 ///   overlay_mode=keepalive|classic  0.7.6: keepalive keeps the HUD, notice and pause menu in every video buffer so
 ///                               they do not flicker (default); classic is the 0.7.3 way, drawn once around the flip
@@ -545,7 +564,7 @@ void ApplySettingsFile() {
                 missing = result == Ps4Eden::Result::Missing;
             }
         } else if (key == "shader_preload" &&
-                   (value == "0" || value == "128" || value == "256" || value == "1024" || value == "all")) {
+                   (value == "0" || value == "128" || value == "256" || value == "1024" || value == "4096" || value == "all")) {
             Ps4Hook::Pending().shader_preload = value == "all" ? -1 : std::atoi(value.c_str());
         } else if (key == "shader_notice" && (value == "on" || value == "off")) {
             Ps4Hook::Pending().shader_notice = value == "on";
@@ -856,7 +875,38 @@ int main() {
     } else {
         Ps4::Log("overlay off: no HUD, no pause menu, no colour swap");
     }
+    // 0.7.7: the pool that builds the disk cache's pipelines is sized from hardware_concurrency() when Eden
+    // creates its pipeline cache, which happens inside Load, so the answer is decided here. A marker file
+    // says the last start died while the cache loaded; the deaths seen so far were in those builder
+    // threads, so this start builds with ONE (see shader_policy.h for the whole ladder).
+    const fs::path shader_root = fs::path{Ps4::DataDir} / "cache/shader";
+    const fs::path marker_file = shader_root / "loading.marker";
+    fs::create_directories(shader_root, ec);
+    Ps4Shader::LoadMarker marker = Ps4Shader::ReadMarker(marker_file);
+    if (!marker.present) {
+        // 0.7.6 kept one "<title id>.loading" file per game: the same news, from an older version.
+        for (fs::directory_iterator it{shader_root, ec}, end; !ec && it != end; it.increment(ec)) {
+            if (it->path().extension() == ".loading") {
+                marker = Ps4Shader::ReadMarker(it->path());
+                std::error_code rm_ec;
+                fs::remove(it->path(), rm_ec);
+                break;
+            }
+        }
+    }
+    const bool disk_cache = Settings::values.use_disk_shader_cache.GetValue();
+    if (disk_cache && marker.present) {
+        Ps4::SetWorkerCap(2); // Eden builds with max(threads, 2) - 1
+        Ps4::Log("shader cache: the last start died while the cache loaded (attempt %d, title %s): this start builds with one thread",
+                 marker.attempt, marker.title.empty() ? "unknown" : marker.title.c_str());
+    }
     const Core::SystemResultStatus loaded = system.Load(window, game, params);
+    {
+        unsigned asked = 0, capped = 0;
+        Ps4::WorkerCapStats(&asked, &capped);
+        Ps4::Log("shader cache: hardware_concurrency was asked %u times, %u answers cut by the cap%s", asked, capped,
+                 asked == 0 ? " (never asked: the --wrap did not take effect, the cap does nothing)" : "");
+    }
     if (loaded != Core::SystemResultStatus::Success) {
         const unsigned code = static_cast<unsigned>(loaded);
         Ps4::Log("load failed: status %u%s", code,
@@ -873,35 +923,36 @@ int main() {
     Ps4::SetPhase("starting GPU");
     system.GPU().Start();
     system.GetCpuManager().OnGpuReady();
-    if (Settings::values.use_disk_shader_cache.GetValue()) {
+    if (disk_cache) {
         Ps4::SetPhase("shader cache");
         // Eden compiles EVERY pipeline of the game's disk cache before the game starts, and each one
-        // stays in the driver's memory. A cache grown over many sessions (2185 pipelines in one log)
-        // used the whole arena and the app died with the game not yet started. Until 0.7.2 this was
-        // limited by stopping Eden's load through its stop token, but Eden answers a stop by ending
-        // every thread of its pipeline worker pool (LoadDiskResources -> WaitForRequests), so after
-        // a capped preload nothing was left to build the shaders the game asked for. Now the size of
-        // the cache is limited BEFORE Eden reads it (shader_preload, see shader_policy.h) and Eden
-        // always reads what is left to the end, with its pool intact.
-        // A marker file records that the load is under way: if the app dies in it, the next start
-        // finds the marker, puts that game's cache aside and starts with an empty one.
+        // stays in the driver's memory. Until 0.7.2 this was limited by stopping Eden's load through its
+        // stop token, but Eden answers a stop by ending every thread of its pipeline worker pool
+        // (LoadDiskResources -> WaitForRequests), so after a capped preload nothing was left to build the
+        // shaders the game asked for. Since then the size of the cache is limited BEFORE Eden reads it
+        // (shader_preload, see shader_policy.h) and Eden always reads what is left to the end.
+        // 0.7.7: no limit by default (like the Cemu cache the player expects), and a start that finds
+        // the marker of a death goes down a ladder that never deletes anything: the same cache with one
+        // builder thread, then the cache parked (vulkan.bin.bak) and an empty one.
         const std::uint64_t title_id = system.GetApplicationProcessProgramID();
         char id[17];
         std::snprintf(id, sizeof(id), "%016llx", static_cast<unsigned long long>(title_id));
-        const fs::path shader_root = fs::path{Ps4::DataDir} / "cache/shader";
-        const fs::path marker = shader_root / (std::string(id) + ".loading");
         std::error_code cache_ec;
-        fs::create_directories(shader_root, cache_ec);
-        if (fs::exists(marker, cache_ec)) {
-            const fs::path aside = shader_root / (std::string(id) + ".bad");
-            fs::remove_all(aside, cache_ec);
-            fs::rename(shader_root / id, aside, cache_ec);
-            fs::remove(marker, cache_ec);
-            Ps4::Log("the last start died while loading the shader cache of %s: it was moved to %s.bad; this game starts with an empty cache",
-                     id, id);
+        const Ps4Shader::LoadMode mode = Ps4Shader::DecideLoad(marker, id);
+        const int attempt = Ps4Shader::NextAttempt(marker, id);
+        if (mode != Ps4Shader::LoadMode::Normal) {
+            Ps4::Log("shader cache: %s - mode %s", id, Ps4Shader::LoadModeName(mode));
         }
         const int cap = Ps4Hook::Pending().shader_preload;
-        {
+        if (mode == Ps4Shader::LoadMode::Empty) {
+            fs::path parked;
+            if (Ps4Shader::ParkCache(shader_root / id, &parked)) {
+                Ps4::Log("shader cache: the last two starts died loading it, so vulkan.bin was kept as %s and this game starts with an empty cache",
+                         parked.filename().string().c_str());
+            } else {
+                Ps4::Log("shader cache: no vulkan.bin to park (or it could not be moved)");
+            }
+        } else {
             const Ps4Shader::CacheCheck check = Ps4Shader::LimitCache(shader_root / id, cap);
             const double size_mib = double(check.size) / (1024.0 * 1024.0);
             const double limit_mib = double(check.limit) / (1024.0 * 1024.0);
@@ -918,7 +969,7 @@ int main() {
                 }
                 break;
             case Ps4Shader::CacheAction::SetAside:
-                Ps4::Log("shader cache: vulkan.bin is %.1f MiB, over the %.1f MiB limit (shader_preload=%d): set aside as vulkan.bin.bak, a new cache starts",
+                Ps4::Log("shader cache: vulkan.bin is %.1f MiB, over the %.1f MiB limit (shader_preload=%d): kept as vulkan.bin.bak (nothing deleted), a new cache starts",
                          size_mib, limit_mib, cap);
                 break;
             case Ps4Shader::CacheAction::Failed:
@@ -927,13 +978,13 @@ int main() {
                 break;
             }
         }
-        {
-            std::ofstream out{marker};
-            out << "loading\n";
+        if (!Ps4Shader::WriteMarker(marker_file, attempt, id)) {
+            Ps4::Log("shader cache: the marker file could not be written (a death in the load will not be noticed)");
         }
         // Never stopped: see above.
         const std::stop_source never_stopped;
         std::atomic<size_t> loaded{0}, total{0}, logged{0};
+        const std::uint64_t load_began = Ps4::NowUs();
         Ps4::Log("shader cache: loading");
         system.Renderer().ReadRasterizer()->LoadDiskResources(
             title_id, never_stopped.get_token(), [&](VideoCore::LoadCallbackStage, size_t value, size_t count) {
@@ -950,8 +1001,9 @@ int main() {
                     }
                 }
             });
-        fs::remove(marker, cache_ec);
-        Ps4::Log("shader cache: %zu pipelines loaded", loaded.load());
+        fs::remove(marker_file, cache_ec);
+        Ps4::SetWorkerCap(0); // the recovery start is over; whatever Eden asks for from now on gets the real answer
+        Ps4::Log("shader cache: %zu pipelines loaded in %.1f s", loaded.load(), double(Ps4::NowUs() - load_began) / 1e6);
     }
 
     Ps4::SetPhase("running");
@@ -968,8 +1020,9 @@ int main() {
     int menu_sel = 0;
     std::uint32_t menu_buttons_before = 0;
     bool notice_on = Ps4Hook::Pending().shader_notice;
-    constexpr int MenuRows = 5;   // Continue, HUD, speed limit, shader notice, back to the game list
-    constexpr int MemoryRows = 2; // the memory alert: continue anyway, back to the game list
+    constexpr int MenuRows = 6;   // Continue, HUD, speed limit, shader notice, restart the game, back to the game list
+    constexpr int MemoryRows = 3; // the memory alert: continue anyway, restart the game, back to the game list
+    bool restart_game = false;    // 0.7.7: leave by starting this same game again (no game list)
     bool memory_panel = false;    // the panel is the memory alert (memory_action=pause), not the L3 + R3 menu
     Ps4Memory::Watch mem_watch;
     Ps4Memory::Status mem_status;
@@ -980,6 +1033,7 @@ int main() {
                           static_cast<unsigned long>(mem_status.free_mib));
             Ps4Hook::ShowPanel(title,
                                {pt ? "Continuar assim mesmo (pode travar)" : "Continue anyway (it may crash)",
+                                pt ? "Reiniciar o jogo (libera a memoria)" : "Restart the game (frees the memory)",
                                 pt ? "Sair do jogo (volta ao menu de jogos)" : "Exit game (back to the game list)"},
                                menu_sel,
                                pt ? "O jogo foi pausado antes de a memoria acabar.   X: confirmar" : "The game was paused before memory ran out.   X: confirm");
@@ -991,6 +1045,7 @@ int main() {
             std::string(pt ? "HUD de desempenho: " : "Performance HUD: ") + state(Ps4Hook::HudOn()),
             std::string(pt ? "Limite de velocidade: " : "Speed limit: ") + state(Settings::values.use_speed_limit.GetValue()),
             std::string(pt ? "Aviso de shaders e memoria: " : "Shader and memory notice: ") + state(notice_on),
+            pt ? "Reiniciar o jogo" : "Restart the game",
             pt ? "Sair do jogo (volta ao menu de jogos)" : "Exit game (back to the game list)"};
         Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu", lines, menu_sel,
                            pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
@@ -1029,7 +1084,12 @@ int main() {
             }
             if (pressed & Ps4::Button::Cross) {
                 if (memory_panel) {
-                    (menu_sel == 0 ? close : leave) = true;
+                    if (menu_sel == 0) {
+                        close = true;
+                    } else {
+                        restart_game = menu_sel == 1;
+                        leave = true;
+                    }
                 } else if (menu_sel == 0) {
                     close = true;
                 } else if (menu_sel == 1) {
@@ -1045,12 +1105,14 @@ int main() {
                     }
                     redraw = true;
                 } else {
+                    restart_game = menu_sel == 4;
                     leave = true;
                 }
             }
             if (leave) {
-                Ps4::Log(memory_panel ? "exit chosen in the memory alert" : "exit chosen in the pause menu");
-                leave_reason = memory_panel ? "exit chosen in the memory alert" : "exit chosen in the pause menu";
+                leave_reason = restart_game ? (memory_panel ? "restart chosen in the memory alert" : "restart chosen in the pause menu")
+                                            : (memory_panel ? "exit chosen in the memory alert" : "exit chosen in the pause menu");
+                Ps4::Log("%s", leave_reason);
                 break;
             }
             if (close) {
@@ -1167,23 +1229,37 @@ int main() {
         Ps4::Log("leaving the game (%s): lazy memory peak %lu MiB, %d shaders built", leave_reason,
                  static_cast<unsigned long>(mem.committed_bytes >> 20), shaders_total);
     }
+    if (restart_game) {
+        // The new process reads this file first thing (FindGame) and opens the same game.
+        std::ofstream out{fs::path{Ps4::DataDir} / "restart_game.txt"};
+        out << game << '\n';
+        if (!out) {
+            Ps4::Log("restart_game.txt could not be written: the game list opens instead");
+            restart_game = false;
+        }
+    }
     Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu",
-                       {pt ? "Voltando ao menu de jogos..." : "Going back to the game list..."}, -1, "");
+                       {restart_game ? (pt ? "Reiniciando o jogo..." : "Restarting the game...")
+                                     : (pt ? "Voltando ao menu de jogos..." : "Going back to the game list...")},
+                       -1, "");
     std::this_thread::sleep_for(std::chrono::milliseconds(400)); // a frame with the message
     if (Ps4::RestartApp()) {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1)); // the system is replacing the process
         }
     }
+    // 0.7.7: the system would not start the app again (the reason is in boot.log). Until 0.7.6 the app then
+    // stayed open on a panel that sent the player to boot.log; now it says what happens and closes itself.
     Ps4::SetPhase("finished");
-    Ps4Hook::ShowPanel(pt ? "Nao foi possivel voltar ao menu" : "Could not go back to the game list",
-                       {pt ? "Feche o app com o botao PS e abra de novo." : "Close the app with the PS button and open it again."},
-                       -1, "boot.log: restart");
-    Ps4::Log("finished: close the app with the PS button");
-    Ps4::SetPadLight(0, 255, 0);
-    for (;;) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    Ps4::Log("the app could not start itself again: closing it%s", restart_game ? " (restart_game.txt stays: the game starts at the next open)" : "");
+    Ps4Hook::ShowPanel(pt ? "O app vai fechar" : "The app is closing",
+                       {restart_game ? (pt ? "O sistema nao deixou reiniciar sozinho. Abra o app de novo: o jogo inicia direto."
+                                           : "The system would not restart it. Open the app again: the game starts right away.")
+                                     : (pt ? "O sistema nao deixou voltar sozinho. Abra o app de novo para ver a lista de jogos."
+                                           : "The system would not go back by itself. Open the app again to see the game list.")},
+                       -1, "boot.log");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    Ps4::QuitApp();
 }
 
 #define VMA_IMPLEMENTATION

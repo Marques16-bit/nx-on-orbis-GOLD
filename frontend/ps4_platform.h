@@ -45,6 +45,15 @@ void NoteFrame();
 /// only if the system refused or the SDK cannot do it; the caller then keeps the app idle.
 bool RestartApp();
 
+/// 0.7.7: ends the app for good (the way out when RestartApp() found no way to start it again).
+[[noreturn]] void QuitApp();
+
+/// 0.7.7: limits what std::thread::hardware_concurrency() answers (0 lifts the limit). Eden sizes its
+/// shader builder pool from it, so this must be set before the game is loaded.
+void SetWorkerCap(unsigned threads);
+/// How many times hardware_concurrency() was asked and how many answers were cut by the cap.
+void WorkerCapStats(unsigned* asked, unsigned* capped);
+
 /// System modules the SDK does not load by itself (pad, user service, audio out...).
 void LoadSystemModules();
 void HideSplashScreen();

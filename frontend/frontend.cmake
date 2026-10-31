@@ -25,7 +25,7 @@ execute_process(COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --short=12 HEAD
     COMMAND_ERROR_IS_FATAL ANY)
 # The project version (bump it with every release; see CHANGELOG.md) leads the build id, which is
 # printed at the top of boot.log and in the release's ELF name.
-set(EDEN_PS4_VERSION "0.7.6" CACHE STRING "nx-on-orbis version")
+set(EDEN_PS4_VERSION "0.7.7" CACHE STRING "nx-on-orbis version")
 set(_ps4_build_id "v${EDEN_PS4_VERSION}-${_ps4_build_stamp}-${_ps4_eden_revision}")
 target_compile_definitions(eden-ps4 PRIVATE EDEN_PS4_BUILD_ID="${_ps4_build_id}")
 file(WRITE "${CMAKE_BINARY_DIR}/eden-ps4-build-id.txt" "${_ps4_build_id}\n")
@@ -49,6 +49,10 @@ target_link_libraries(eden-ps4 PRIVATE -lSceAudioOut -lScePad -lSceUserService -
 # Video hook (video_hook.cpp): RADV's WSI registers its buffers and flips through these two calls;
 # the wrappers let the HUD, the pause menu and the colour swap draw over the game without Eden.
 target_link_options(eden-ps4 PRIVATE -Wl,--wrap=sceVideoOutRegisterBuffers -Wl,--wrap=sceVideoOutSubmitFlip)
+# 0.7.7: std::thread::hardware_concurrency() (libc++, std::__1) goes through __wrap_ in ps4_platform.cpp, so a
+# start that follows a death while the shader cache loaded can build with one thread. If this symbol is spelled
+# differently in the SDK's libc++ the wrap is simply never used and boot.log says the cap was never asked.
+target_link_options(eden-ps4 PRIVATE -Wl,--wrap=_ZNSt3__16thread20hardware_concurrencyEv)
 # The HUD's temperatures call two system functions; ci/stage-eden.sh retries with this OFF if the
 # stub library of the SDK does not have them.
 option(EDEN_PS4_HUD_TEMPERATURE "Show temperatures in the HUD" ON)

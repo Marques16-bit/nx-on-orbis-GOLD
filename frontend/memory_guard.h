@@ -39,7 +39,7 @@ bool ParseProfile(std::string_view text, Profile* out);
 struct Plan {
     Tier tier = Tier::Roomy;
     int arena_mib = 1280;        // ORBIS_ARENA_MIB: the GPU driver's arena
-    int shader_preload = 256;    // pipelines' worth of shader cache compiled at start (see shader_policy.h)
+    int shader_preload = -1;     // pipelines' worth of shader cache compiled at start: -1 all (see shader_policy.h)
     bool driver_cache = true;    // the driver's own pipeline cache file
     bool vram_in_arena = false;  // ORBIS_VRAM_GARLIC=0: every GPU image inside the arena (a hard cap; experimental)
 };

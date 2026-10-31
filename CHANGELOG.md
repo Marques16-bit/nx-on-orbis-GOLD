@@ -2,6 +2,103 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.7] - a shader cache with no limit that survives a bad start, "Restart game", a way out that works
+
+**Not built or run on a console by the author of this change.** The host tests pass (every file under
+`tests/`), and the new `ps4_platform.cpp` pieces (restart, quit, thread cap) were syntax-checked against
+stand-ins for the PS4 library; `main.cpp` is checked only by the GitHub build. Nothing below has been
+seen on the console. The "How to read the next boot.log" list at the end says what to look for.
+
+What the 0.7.6 run on the console (video, boot.log, boot.old.log, eden_log, mesa.log) showed: the HUD and
+the L3 + R3 menu **no longer flicker** (confirmed by the player on the video), which closes the 0.7.6
+change. The same run brought four problems; this version works on those.
+
+### Fixed: leaving the game from the L3 + R3 menu ended on a panel that sent the player to boot.log
+- boot.log said `restart: this SDK's system service library has no sceSystemServiceLoadExec`: the SDK's
+  stub library does not export it, so "Exit game" could not start the app again and stayed on the panel
+  "Could not go back to the game list / boot.log: restart".
+- Now `RestartApp()` looks the function up **by name inside the console's own libSceSystemService**
+  (`sceKernelLoadStartModule` + `sceKernelDlsym`, both declared weak so the link cannot break on them).
+  Every step is logged with a `restart:` prefix.
+- If the system still refuses, the app says so on the panel ("The app is closing ...") and **ends itself**
+  (`_exit(0)`) after two and a half seconds, instead of staying open on an idle screen. The player opens it
+  again from the home screen.
+- **Not known:** whether `sceKernelDlsym` finds the function on firmware 12.02. The `restart:` lines in
+  boot.log will say; if both ways fail, "Exit game" now closes the app, which is the best the code can do.
+
+### Added: "Restart game" in the L3 + R3 menu
+- A new row between the shader notice and "Exit game", also in the memory alert panel (where it is the way
+  to give the memory back). It writes `restart_game.txt` (the game's path) and starts the app again; the
+  new process reads the file first thing, deletes it **before** using it (a start that dies cannot loop) and
+  opens that game without the game list. If the app cannot start itself again the file stays, and the game
+  starts the next time the app is opened (the panel says so).
+
+### Changed: the shader cache has no limit and never loses what it saved
+- Why the cache seemed to save nothing and games stopped opening: 0.7.6 limited the preload to ~8 MiB and
+  moved a bigger cache aside, and a start that died while the cache loaded moved the whole cache to
+  `.bad` (boot.old.log: 384 of 795 pipelines built, then a write to a null address in a builder thread,
+  with the driver arena at 1024 MiB).
+- **`shader_preload` now defaults to `all`** (no limit), as in Cemu: every shader the game compiles stays on
+  disk and is loaded at the next start. A `4096` choice (~128 MiB) joins the menu; a number is a size of
+  `N x 32 KiB`, only a way to save memory.
+- **Nothing is deleted.** A cache over a chosen limit is kept as `vulkan.bin.bak`, then `.bak2`, `.bak3`...
+  (no earlier backup is replaced), and a new cache starts. The `<title id>.bad` folders made by 0.7.6 are
+  not touched: renaming one back to `<title id>` gives that game its old cache back.
+- **A death while the cache loads is recovered in steps, without losing the cache:** while Eden builds the
+  pipelines of `vulkan.bin` the app keeps `cache/shader/loading.marker` (`attempt N <title id>`), removed
+  when the load ends. If the next start finds it: (1) the same cache is loaded with **one** builder thread
+  (a race between the builder threads is the leading suspect; Eden sizes the pool from
+  `std::thread::hardware_concurrency()`, which `frontend.cmake` now routes through a wrapper with
+  `--wrap`; the cap is lifted when the load ends); (2) if that start dies too, `vulkan.bin` is parked as
+  `.bak` and the game starts with an empty cache. A marker left by another game gives step 1 only.
+  0.7.6's per-game `<title id>.loading` files are read as an attempt-1 marker.
+- **Not known:** the real cause of the crash in the builder threads (arena exhaustion and a race are both
+  possible). With no limit a very large cache still needs the arena to hold every pipeline at once; the
+  ladder keeps the app from dying in a loop, it does not make a huge cache fit. boot.log prints
+  `X of Y pipelines built (free direct memory ...)` every 64 pipelines and the load time, so the next log
+  shows whether memory or a race is the cause.
+
+### Changed: memory classes (`memory_guard`)
+  | class | driver arena | shader preload | driver pipeline cache |
+  |---|---|---|---|
+  | roomy (4300 MiB or more, the Pro measured) | 1280 | all | on |
+  | standard (3800 to 4299) | 1280 | 4096 (~128 MiB) | on |
+  | tight (under 3800) | 1152 | 1024 (~32 MiB) | off |
+- The tight arena was 1024 MiB: the one run that died loading Super Mario Maker 2's shaders had that
+  value, so it is now 1152. The menu's arena help text says to avoid 1024. The "Save RAM" profile follows
+  (1152, cache up to ~32 MiB). The "More video memory" profile no longer touches the shader cache.
+- The class limits for other consoles are still **guesses** (nobody has measured a Fat or a Slim).
+
+### Added: the profile "Exact graphics (test)" (VIDEO tab, first row)
+- High GPU accuracy, reactive flushing, safe DMA, synchronised memory, synchronous shaders and
+  `ORBIS_VRAM_GARLIC` back to its default (images outside the driver's arena). Slower. It exists to
+  compare against the other profiles on the Super Mario Maker 2 themes below, not as a fix.
+
+### Not fixed: Super Mario Maker 2's themes (8-bit, Mario World, Mario 3, New Super Mario Bros. U)
+- In the video the sprites alternate between sharp and flat/blurred (a castle as a flat dark-blue
+  silhouette). That looks like a texture sampled at a very low mip level or a render target read before it
+  was complete, **but the cause was not found**: no Eden source is available here and the logs do not
+  contain the failure. Things the logs show that could be involved: images kept inside the arena
+  (`ORBIS_VRAM_GARLIC=0` makes every image live in the driver's arena, and the driver warns it costs about
+  2/3 of the GPU speed), asynchronous shaders, and the stream-buffer synchronisation. Try the new profile,
+  then remove `env=ORBIS_VRAM_GARLIC=0` from settings.txt if it is there, and say which one changes it.
+
+### Not fixed: the amount of RAM
+- The 0.7.6 boot.log at Super Mario Maker 2's title screen adds up to: ~1.29 GiB of guest RAM (what the
+  game really uses), the 1.28 GiB driver arena, ~0.9 GiB held by the C heap (the census sees ~475 MiB in
+  large allocations), and the JIT and the rest; the largest free block stayed at 764 MiB. So most of it is
+  accounted for, not wasted by the frontend. Real savings need changes inside Eden (stream buffer from
+  256 to 128 MiB, texture and buffer cache budgets), which cannot be written without the pinned Eden
+  source: roadmap 0.8.0. The build's `eden-ps4` ELF would show which allocations are large; it is not in
+  this repository's zip.
+
+### How to read the next boot.log
+- `restart:` lines (what the console said to the lookup of `sceSystemServiceLoadExec`).
+- `shader cache: hardware_concurrency was asked N times, M answers cut by the cap`: N = 0 means the
+  `--wrap` did not take effect and the one-thread step does nothing.
+- `shader cache: ... mode safe` / `mode empty` after a death, `... pipelines loaded in X s` after a good load.
+- `restart_game.txt: starting ... again` on the start after "Restart game".
+
 ## [0.7.6] - flicker of the HUD and the pause menu, memory profiles and a memory watch
 
 **Not built or run on a console by the author of this change.** The host tests pass (every file under

@@ -43,6 +43,13 @@ int32_t sceSystemServiceHideSplashScreen(void);
 // Weak on purpose: if this SDK's stub library does not export it the link still works and the
 // pointer is null; RestartApp() then says so instead of the build failing.
 int32_t sceSystemServiceLoadExec(const char* path, char* const argv[]) __attribute__((weak));
+// 0.7.7: this SDK's stub library does not export sceSystemServiceLoadExec (boot.log: "restart: this SDK's
+// system service library has no sceSystemServiceLoadExec"), but the console's own libSceSystemService
+// does. sceKernelDlsym finds it by name at run time. Weak for the same reason: if the stub library lacks
+// it too, the link still works and RestartApp() says so.
+int32_t sceKernelDlsym(int32_t handle, const char* symbol, void** address) __attribute__((weak));
+// Hooked by frontend.cmake (--wrap): the number of builder threads Eden's pipeline cache starts comes from it.
+unsigned __real__ZNSt3__16thread20hardware_concurrencyEv() __attribute__((weak));
 }
 
 namespace Ps4 {
@@ -671,20 +678,78 @@ void HideSplashScreen() {
     sceSystemServiceHideSplashScreen();
 }
 
+namespace {
+
+using LoadExecFn = int32_t (*)(const char*, char* const[]);
+
+/// sceSystemServiceLoadExec: the SDK's own, or the console's, found by name in libSceSystemService.
+LoadExecFn FindLoadExec() {
+    if (&sceSystemServiceLoadExec != nullptr) {
+        return sceSystemServiceLoadExec;
+    }
+    Log("restart: this SDK's system service library has no sceSystemServiceLoadExec; looking it up in the console's own library");
+    if (&sceKernelDlsym == nullptr) {
+        Log("restart: this SDK has no sceKernelDlsym either");
+        return nullptr;
+    }
+    const char* word = sceKernelGetFsSandboxRandomWord();
+    const std::string dir = std::string("/") + (word != nullptr ? word : "system") + "/common/lib/";
+    const std::string paths[] = {dir + "libSceSystemService.sprx", "libSceSystemService.sprx"};
+    for (const std::string& path : paths) {
+        int32_t result = 0;
+        const int32_t handle = sceKernelLoadStartModule(path.c_str(), 0, nullptr, 0, nullptr, &result);
+        if (handle < 0) {
+            Log("restart: module %s: 0x%08x", path.c_str(), static_cast<unsigned>(handle));
+            continue;
+        }
+        void* address = nullptr;
+        const int32_t rc = sceKernelDlsym(handle, "sceSystemServiceLoadExec", &address);
+        Log("restart: sceKernelDlsym(%s, sceSystemServiceLoadExec) = 0x%08x, address %p", path.c_str(), static_cast<unsigned>(rc), address);
+        if (rc >= 0 && address != nullptr) {
+            return reinterpret_cast<LoadExecFn>(address);
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
 bool RestartApp() {
-    if (&sceSystemServiceLoadExec == nullptr) {
-        Log("restart: this SDK's system service library has no sceSystemServiceLoadExec");
+    const LoadExecFn load_exec = FindLoadExec();
+    if (load_exec == nullptr) {
+        Log("restart: no way found to start the app again");
         return false;
     }
-    // The app starts again from its own executable and lands on the game list. On success the call
-    // does not return (the system replaces the process); a return value is the failure.
+    // The app starts again from its own executable and lands on the game list (or, with
+    // restart_game.txt, on the game that was running). On success the call does not return (the
+    // system replaces the process); a return value is the failure.
     static const char* const paths[] = {"EBOOT.BIN", "/app0/eboot.bin"};
     for (const char* path : paths) {
         Log("restart: sceSystemServiceLoadExec(\"%s\")", path);
-        const int32_t rc = sceSystemServiceLoadExec(path, nullptr);
+        const int32_t rc = load_exec(path, nullptr);
         Log("restart: it returned 0x%08x (the app is still here)", static_cast<unsigned>(rc));
     }
     return false;
+}
+
+void QuitApp() {
+    Log("quit: the app ends here (it could not start itself again); open it again from the PS4 home screen");
+    _exit(0);
+}
+
+namespace {
+std::atomic<unsigned> g_worker_cap{0};
+std::atomic<unsigned> g_cap_asked{0};
+std::atomic<unsigned> g_cap_applied{0};
+} // namespace
+
+void SetWorkerCap(unsigned threads) {
+    g_worker_cap = threads;
+}
+
+void WorkerCapStats(unsigned* asked, unsigned* capped) {
+    *asked = g_cap_asked;
+    *capped = g_cap_applied;
 }
 
 bool OpenPad() {
@@ -754,6 +819,20 @@ std::uint64_t DirectMemoryTotal() {
 }
 
 } // namespace Ps4
+
+// std::thread::hardware_concurrency(), redirected by the linker (frontend.cmake: --wrap). Eden sizes its
+// pipeline-builder pool from it (hardware_concurrency - 1). While SetWorkerCap(n) is on, the answer is at most
+// n, so a start that follows a death while the shader cache loaded builds with ONE thread (n = 2).
+extern "C" unsigned __wrap__ZNSt3__16thread20hardware_concurrencyEv() {
+    const unsigned real = &__real__ZNSt3__16thread20hardware_concurrencyEv != nullptr ? __real__ZNSt3__16thread20hardware_concurrencyEv() : 6;
+    Ps4::g_cap_asked.fetch_add(1);
+    const unsigned cap = Ps4::g_worker_cap.load();
+    if (cap != 0 && real > cap) {
+        Ps4::g_cap_applied.fetch_add(1);
+        return cap;
+    }
+    return real;
+}
 
 // Before any other static initialiser of the program (Eden has many): a crash there still
 // leaves boot.log with the reason.
