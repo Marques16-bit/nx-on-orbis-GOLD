@@ -99,3 +99,22 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
   (signals raised with `sceKernelRaiseException`); a sampling profiler (per-thread busy share, JIT
   share and hottest code buckets every 30 s); heap census of allocations of 1 MiB or more.
 - Startup checks: TLS, mutexes, `std::find` over 4-byte types, boost `flat_map`.
+
+## The overlay and the memory watch (0.7.6; not yet seen on a console)
+
+- **Overlay** (`frontend/video_hook.cpp`). RADV's WSI registers its swapchain images as the video-out
+  buffers; the linker's `--wrap` sends `sceVideoOutRegisterBuffers` and `sceVideoOutSubmitFlip` through
+  the hook. The game's GPU rewrites a whole buffer per frame, so an overlay written once around the flip
+  was missing from the next frame (a flicker at the game's frame rate). The keep-alive mode builds each
+  element (HUD, notice, panel) as a bitmap in normal memory and keeps it in every buffer: the worker looks
+  at 9 probe pixels per buffer (reads of the write-combined buffers are slow, so nothing else is read),
+  copies the bitmap again when a probe no longer matches, and the wrapped flip stamps the frame about to
+  be shown. `overlay_mode=classic` keeps the 0.7.3 drawing. The counters in `Describe()` (boot.log) say how
+  often each path was needed.
+- **Memory** (`frontend/memory_guard.{h,cpp}`, pure logic, host-tested). The process gets ~4608 MiB of direct
+  memory on the PS4 Pro measured; what runs out is the largest free block (`sceKernelAvailableDirectMemorySize`),
+  because the C heap takes 128 MiB at a time. At start the memory class (roomy / standard / tight) sets the
+  driver arena, the shader preload and the driver cache before `settings.txt`; while playing, a watch
+  samples the block once a second and reports a stage (ok / low under 160 MiB / critical under 64 MiB, with
+  hysteresis) and the speed of the fall. `memory_action=pause` stops the game at critical and asks. It
+  reclaims no memory held by Eden: that needs Eden-side patches (roadmap 0.8.0).

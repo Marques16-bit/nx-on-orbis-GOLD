@@ -87,4 +87,8 @@ std::uint64_t NowUs();
 /// Direct and flexible memory still free, for the periodic status line.
 std::uint64_t FreeDirectMemory();
 
+/// All the direct memory the console gives this process, in bytes (4608 MiB on the PS4 Pro that was
+/// measured). 0.7.6: the memory profile (memory_guard.h) is chosen from it.
+std::uint64_t DirectMemoryTotal();
+
 } // namespace Ps4

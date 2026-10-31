@@ -2,6 +2,97 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.6] - flicker of the HUD and the pause menu, memory profiles and a memory watch
+
+**Not built or run on a console by the author of this change.** The host tests pass (every file under
+`tests/`, including the new `memory_guard_test`), and the new `main.cpp` functions were compiled
+against stand-ins for Eden and the PS4 library; the real `main.cpp` is checked only by the GitHub
+build, and nothing below has been seen on the console. Read the boot.log lines in "How to read the
+next boot.log" to find out whether it worked.
+
+Note on versions: the zip received as "0.7.5" carried the 0.7.4 sources (version string, CHANGELOG and
+files). There is no 0.7.5 in it, so this is built on 0.7.4 and goes straight to 0.7.6.
+
+### Fixed (hypothesis, not proven): the HUD and the L3 + R3 menu flickering (seen in Super Mario Maker 2)
+- Cause as read from the code: the game's GPU rewrites a whole video-out buffer for every frame, and
+  the overlay was written into a buffer only once or twice around the flip. When the GPU finished
+  after that, the frame was shown without the overlay for one screen refresh, and the next frame (a
+  different buffer) did it again: a flicker at the game's frame rate. It is not because the HUD is
+  2D; every overlay element (HUD, shader/memory notice, pause panel) had the same problem.
+- Now the overlay is built once as a bitmap and **kept alive in every video-out buffer**: the worker
+  thread checks a few probe pixels of each buffer (one read each, the buffers are slow to read) and
+  copies the bitmap again the moment the game has painted over it; the frame is also stamped inside
+  the wrapped flip call, so a frame whose GPU work is already done never goes out without it.
+  Elements are copied row by row in their final pixels (no "clear, then draw" step a refresh could catch
+  half way), and are redrawn when a buffer is registered again.
+- The 0.7.3 drawing stays as `overlay_mode=classic`.
+- Host test: a model of a display that takes frames from the buffers while a "GPU" repaints them.
+  Frames shown without the overlay, classic against keep-alive: 4.6% to 0.8%, 23.5% to 2.2%, 58.8% to
+  1.8% (three load levels). That is the model, not the console.
+
+### Added: memory profiles (`frontend/memory_guard.{h,cpp}`)
+- At start the app reads how much direct memory the console gives it (`sceKernelGetDirectMemorySize`)
+  and picks the memory defaults from it, **before** `settings.txt` is applied (a line there still
+  wins):
+
+  | class | direct memory | driver arena | shader preload | driver pipeline cache |
+  |---|---|---|---|---|
+  | roomy | 4300 MiB or more (the PS4 Pro measured: 4608) | 1280 | 256 | on |
+  | standard | 3800 to 4299 | 1152 | 128 | on |
+  | tight | under 3800 | 1024 | 128 | off |
+
+  On a console with as much memory as the Pro that was measured nothing changes from 0.7.4. The
+  class limits for the other models are **guesses**: nobody has measured a Fat or a Slim yet. The boot.log
+  line `memory: N MiB of direct memory ...` shows what the console reported; send it and the table
+  can be fixed (0.10.0 in the roadmap). `memory_profile` overrides the guess meanwhile.
+- `memory_profile=auto|roomy|standard|tight|strict`. `strict` is `tight` plus `ORBIS_VRAM_GARLIC=0`
+  (every GPU image inside the driver's arena: a hard cap, experimental, never tried).
+- The driver arena menu gets a 1152 MiB choice (default still 1280).
+- No `sceKernelIsNeoMode` or any other new SDK call is used to tell the models apart: a symbol the
+  SDK stub does not export would break the link, and the build cannot be tried here.
+
+### Added: the memory watch
+- Once a second the app samples the largest free block of direct memory (what actually runs out: the
+  C heap takes 128 MiB at a time) and keeps its trend. Stages: ok, **low** under 160 MiB, **critical**
+  under 64 MiB, with a 32 MiB hysteresis so a block hovering at a limit does not flap.
+- The corner notice shows `MEMORIA BAIXA: 120 MiB livres, caindo 20 MiB/min (~90 s)` (the speed and
+  the time to the critical level are shown only while the block is really falling), or `MEMORIA
+  CRITICA`. A race at ~100 MiB that is not falling shows the plain low-memory line and no panic.
+- `memory_action=warn|pause` (default warn). With `pause`, reaching the critical level pauses the game
+  and opens a panel: continue anyway, or leave to the game list, instead of the app dying with the game
+  on screen. It needs the video overlay.
+- The `status:` line in boot.log gains the stage and the trend in MiB/min.
+- **What this does not do:** it does not free memory that Eden holds, so it does not stop a game
+  that really needs more than the console has. Reclaiming memory (Eden's 256 MiB stream buffer to
+  128 MiB, texture and buffer-cache limits, GARLIC images) means changes inside Eden written against the
+  pinned source, which is not in this repository: 0.8.0 in the roadmap. This version warns early,
+  can pause, and measures, so the next log says where the memory goes.
+
+### Added: menu rows and `settings.txt` keys
+- PERFORMANCE tab: `overlay_mode=keepalive|classic`, `overlay_poll=1|2|4|8` (ms between checks, default 1),
+  `overlay_flip_stamp=on|off` (default on). `overlay_delay` now says it is for the classic mode.
+- CPU & MEMORY tab: `memory_profile`, `memory_action`.
+- The "Save RAM" preset also sets `memory_profile=tight` and `memory_action=pause`.
+- SYSTEM tab: "Direct memory" shows free of total and the class; "Memory plan" shows what the
+  profile set (the data folder and logs rows were merged to make room).
+
+### How to read the next boot.log
+- `overlay: keep-alive drawing ...` at the start, then every 30 s `video hook: ... keep-alive (copied: A at the
+  flip, B repairs after the game painted over it, C for new content; D probe reads)`. If B is growing
+  while you play and the HUD no longer flickers, the cause above was right. If it still flickers with B
+  growing, send the log: the repair is too slow, try `overlay_poll=1` with `overlay_flip_stamp=on`.
+  If it still flickers and B stays near zero, the flicker is not the game painting over the overlay.
+- `memory: ... profile auto -> roomy ...` at the start; `memory watch: ok -> low ...` when the stage changes.
+- To compare with the old behaviour: `overlay_mode=classic`.
+
+### Host tests
+- New `tests/memory_guard_test.cpp` (tiers, plans, stages, hysteresis, trend, text) and many keep-alive
+  checks in `tests/video_hook_test.cpp`; `tests/menu_test.cpp` checks the new options against the values
+  `main.cpp` accepts.
+- `.github/workflows/check-patches.yml` gains the `eden_settings` step that the 0.7.4 notes said it had
+  (it was missing) and the `memory_guard` step. A workflow file cannot be changed through the update
+  zip: paste this version's `.github/workflows/check-patches.yml` in by hand.
+
 ## [0.7.4] - options from Eden's own settings screens
 
 Written from screenshots of Eden's settings (Android, Portuguese) and the source of 0.7.3. **Not built

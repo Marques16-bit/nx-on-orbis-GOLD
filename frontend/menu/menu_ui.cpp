@@ -579,14 +579,21 @@ void MenuUi::DrawSystem(Canvas& c) const {
     }
     row("Firmware", firmware, firmware_color);
     row(T("Jogos", "Games"), std::to_string(games_.size()) + T(" em ", " in ") + info_.data_dir + "/roms", Color::Text);
-    row(T("Memória direta livre", "Free direct memory"), std::to_string(info_.free_memory_mib) + " MiB", Color::Text);
+    if (info_.memory_budget_mib > 0) {
+        row(T("Memória direta", "Direct memory"),
+            std::to_string(info_.free_memory_mib) + T(" MiB livres de ", " MiB free of ") + std::to_string(info_.memory_budget_mib) + " MiB (" +
+                info_.memory_tier + ")",
+            Color::Text);
+        row(T("Plano de memória", "Memory plan"), info_.memory_plan, Color::Text);
+    } else {
+        row(T("Memória direta livre", "Free direct memory"), std::to_string(info_.free_memory_mib) + " MiB", Color::Text);
+    }
     row(T("Cache de shaders", "Shader cache"),
         info_.shader_cache_games > 0 ? std::string("✓ ") + std::to_string(info_.shader_cache_games) + T(" jogos, ", " games, ") +
                                            std::to_string(info_.shader_cache_mib) + T(" MiB: um por jogo, ao jogar", " MiB: one per game, filled as you play")
                                      : std::string(T("vazio: é criado e preenchido enquanto você joga (um por jogo)", "empty: made and filled as you play (one per game)")),
         info_.shader_cache_games > 0 ? Color::Good : Color::Dim);
-    row(T("Pasta de dados", "Data folder"), info_.data_dir, Color::Text);
-    row("Logs", "boot.log, mesa.log, log/eden_log.txt", Color::Text);
+    row(T("Dados e logs", "Data and logs"), info_.data_dir + "  (boot.log, mesa.log, log/)", Color::Text);
 }
 
 void MenuUi::DrawHelp(Canvas& c, const std::vector<std::string>& lines) const {

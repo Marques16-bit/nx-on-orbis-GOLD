@@ -115,12 +115,40 @@ void TestSettingsFile() {
         const Option* arena = FindOption("env:ORBIS_ARENA_MIB");
         Check(arena != nullptr, "the driver arena option exists");
         Check(f.ChoiceIndex(*arena) == arena->default_index, "no line: default arena");
-        f.SetChoice(*arena, 2);
+        Check(std::string(arena->choices[size_t(arena->default_index)].value) == "1280", "the default arena is still 1280 MiB");
+        f.SetChoice(*arena, 3);
         Check(f.Text().find("env=ORBIS_ARENA_MIB=1536") != std::string::npos, "env option is written as env=NAME=value");
         Check(f.Get("env:ORBIS_ARENA_MIB") == "1536" && f.Get("env:RADV_DEBUG") == "info", "env lines are told apart by name");
         f.SetChoice(*arena, arena->default_index);
         Check(f.Text().find("ORBIS_ARENA_MIB") == std::string::npos, "default arena removes its line");
         Check(f.Text().find("env=RADV_DEBUG=info") != std::string::npos, "the other env line stays");
+    }
+    {
+        // 0.7.6: the overlay and memory options. Their values are exactly what main.cpp's ApplySettingsFile
+        // accepts, and each default is what main.cpp does when the line is absent.
+        const auto check = [&](const char* key, std::vector<std::string> values, const char* def) {
+            const Option* o = FindOption(key);
+            bool ok = o != nullptr && o->choices.size() == values.size();
+            for (size_t i = 0; ok && i < values.size(); ++i) {
+                ok = values[i] == o->choices[i].value;
+            }
+            ok = ok && std::string(o->choices[size_t(o->default_index)].value) == def;
+            std::printf("%s", ok ? "" : (std::string("  (") + key + ")\n").c_str());
+            Check(ok, key);
+        };
+        check("overlay_mode", {"keepalive", "classic"}, "keepalive");
+        check("overlay_poll", {"1", "2", "4", "8"}, "1");
+        check("overlay_flip_stamp", {"on", "off"}, "on");
+        check("memory_profile", {"auto", "roomy", "standard", "tight", "strict"}, "auto");
+        check("memory_action", {"warn", "pause"}, "warn");
+        check("env:ORBIS_ARENA_MIB", {"1024", "1152", "1280", "1536", "1792"}, "1280");
+        SettingsFile f("overlay_mode=classic\nmemory_profile=tight\nmemory_action=pause\n");
+        Check(f.ChoiceIndex(*FindOption("overlay_mode")) == 1 && f.ChoiceIndex(*FindOption("memory_profile")) == 3 &&
+                  f.ChoiceIndex(*FindOption("memory_action")) == 1,
+              "the new options are read from settings.txt");
+        f.SetChoice(*FindOption("overlay_mode"), 0);
+        Check(f.Get("overlay_mode").empty() && f.Get("memory_profile") == "tight", "the default of overlay_mode removes its line, the others stay");
+        Check(FindOption("overlay_mode")->group == Group::Perf && FindOption("memory_profile")->group == Group::Cpu, "they sit in the Perf and Cpu tabs");
     }
     {
         SettingsFile f("astc=bogus\nmode=docked\nlanguage=en\n");
@@ -268,10 +296,12 @@ void TestNavigation() {
               "profile Compatibility replaces the Light one");
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 3 && r.saved.find("ORBIS_ARENA_MIB=1024") != std::string::npos &&
-                  r.saved.find("driver_cache=off") != std::string::npos, "profile Save RAM: 1024 MiB arena and no driver cache written");
+                  r.saved.find("driver_cache=off") != std::string::npos && r.saved.find("memory_profile=tight") != std::string::npos &&
+                  r.saved.find("memory_action=pause") != std::string::npos,
+              "profile Save RAM: 1024 MiB arena, no driver cache, tight memory profile and pause written");
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 4 && r.saved.find("ORBIS_ARENA_MIB=1792") != std::string::npos &&
-                  r.saved.find("driver_cache") == std::string::npos, "profile More video memory replaces it (1792 MiB, driver cache back to default)");
+                  r.saved.find("driver_cache") == std::string::npos && r.saved.find("memory_profile") == std::string::npos, "profile More video memory replaces it (1792 MiB, driver cache back to default)");
         r.Tap(Pad::Right);
         Check(r.saved.find("gpu_accuracy") == std::string::npos && SettingsFile(r.saved).MatchPreset() == 0, "wraps to Default: nothing written");
         r.Tap(Pad::Left);

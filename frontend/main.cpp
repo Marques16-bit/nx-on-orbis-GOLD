@@ -63,6 +63,7 @@
 
 #include "eden_settings.h"
 #include "firmware_zip.h"
+#include "memory_guard.h"
 #include "menu/menu_ui.h"
 #include "video_hook.h"
 #include "menu/rom_menu.h"
@@ -114,9 +115,40 @@ bool HasExtension(const fs::path& p, std::initializer_list<const char*> exts) {
     return std::any_of(exts.begin(), exts.end(), [&](const char* x) { return e == x; });
 }
 
+/// settings.txt as the menu reads it (empty when there is none).
+Menu::SettingsFile LoadSettingsFile() {
+    std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt", std::ios::binary};
+    std::ostringstream text;
+    text << in.rdbuf();
+    return Menu::SettingsFile(text.str());
+}
+
 /// What the menu's SYSTEM tab shows: why a game may not start (keys, firmware) and where things are.
 Menu::SystemInfo CollectSystemInfo() {
     Menu::SystemInfo info;
+    {
+        // 0.7.6: the memory this console gives the process and what the memory profile does with it.
+        const Menu::SettingsFile file = LoadSettingsFile();
+        const bool pt = file.Language() == Menu::Lang::Pt;
+        Ps4Memory::Profile profile = Ps4Memory::Profile::Auto;
+        const std::string profile_text = file.Get("memory_profile");
+        if (profile_text.empty() || !Ps4Memory::ParseProfile(profile_text, &profile)) {
+            profile = Ps4Memory::Profile::Auto;
+        }
+        const std::uint64_t budget_mib = Ps4::DirectMemoryTotal() >> 20;
+        const Ps4Memory::Tier detected = Ps4Memory::TierForBudget(budget_mib);
+        const Ps4Memory::Plan plan = Ps4Memory::PlanFor(profile, detected);
+        const char* const tier_names_pt[] = {"folgado", "padrao", "apertado"};
+        const char* const tier_names_en[] = {"roomy", "standard", "tight"};
+        const int tier = static_cast<int>(detected);
+        info.memory_budget_mib = budget_mib;
+        info.memory_tier = (pt ? tier_names_pt : tier_names_en)[tier];
+        char plan_text[120];
+        std::snprintf(plan_text, sizeof(plan_text), pt ? "%s: arena %d MiB, shaders %d, cache do driver %s" : "%s: arena %d MiB, shaders %d, driver cache %s",
+                      profile_text.empty() ? "auto" : profile_text.c_str(), plan.arena_mib, plan.shader_preload,
+                      plan.driver_cache ? (pt ? "sim" : "on") : (pt ? "nao" : "off"));
+        info.memory_plan = plan_text;
+    }
     const fs::path data{Ps4::DataDir};
     std::error_code ec;
     info.build_id = EDEN_PS4_BUILD_ID;
@@ -353,9 +385,48 @@ void ApplyPs4Settings() {
     setenv("MESA_LOG_FILE", mesa_log.string().c_str(), 1);
     setenv("MESA_LOG_LEVEL", "info", 1);
     setenv("RADV_DEBUG", "info", 1);
-    // The driver's GPU arena: 1024 MiB by default ran out loading an MK8D race (test 20); there
-    // was direct memory to spare. The texture and buffer caches size their budgets from this.
-    setenv("ORBIS_ARENA_MIB", "1280", 1);
+    // The driver's GPU arena (ORBIS_ARENA_MIB) is set by ApplyMemoryPlan() from what this console
+    // gives the process: 1280 MiB on the PS4 Pro that was measured (1024 ran out loading an MK8D
+    // race, test 20, with direct memory to spare), less on a console with less memory.
+}
+
+/// What to do when the memory watch reaches its critical level (settings.txt: memory_action).
+Ps4Memory::Action g_memory_action = Ps4Memory::Action::Warn;
+
+/// 0.7.6: the memory-related defaults for THIS console, set before settings.txt is applied (so a
+/// line in settings.txt still wins). Everything here equals the 0.7.3 / 0.7.4 values on a console
+/// with as much direct memory as the PS4 Pro that was measured; only a console with less gets less.
+void ApplyMemoryPlan() {
+    const Menu::SettingsFile file = LoadSettingsFile();
+
+    Ps4Memory::Profile profile = Ps4Memory::Profile::Auto;
+    const std::string profile_text = file.Get("memory_profile");
+    if (!profile_text.empty() && !Ps4Memory::ParseProfile(profile_text, &profile)) {
+        Ps4::Log("settings.txt: memory_profile=%s (unknown, auto is used)", profile_text.c_str());
+    }
+    const std::string action_text = file.Get("memory_action");
+    if (!action_text.empty() && !Ps4Memory::ParseAction(action_text, &g_memory_action)) {
+        Ps4::Log("settings.txt: memory_action=%s (unknown, warn is used)", action_text.c_str());
+    }
+
+    const std::uint64_t budget_mib = Ps4::DirectMemoryTotal() >> 20;
+    const Ps4Memory::Tier detected = Ps4Memory::TierForBudget(budget_mib);
+    const Ps4Memory::Plan plan = Ps4Memory::PlanFor(profile, detected);
+    setenv("ORBIS_ARENA_MIB", std::to_string(plan.arena_mib).c_str(), 1);
+    Ps4Hook::Pending().shader_preload = plan.shader_preload;
+    if (!plan.driver_cache) {
+        Settings::values.use_vulkan_driver_pipeline_cache.SetValue(false);
+    }
+    if (plan.vram_in_arena) {
+        setenv("ORBIS_VRAM_GARLIC", "0", 1);
+    }
+    Ps4::Log("memory: %lu MiB of direct memory for this process (%s), profile %s -> %s: driver arena %d MiB, shader preload %d, driver cache %s%s",
+             static_cast<unsigned long>(budget_mib), Ps4Memory::TierName(detected, false),
+             profile_text.empty() ? "auto" : profile_text.c_str(), Ps4Memory::TierName(plan.tier, false), plan.arena_mib,
+             plan.shader_preload, plan.driver_cache ? "on" : "off", plan.vram_in_arena ? ", every GPU image inside the arena" : "");
+    Ps4::Log("memory: watch warns below %lu MiB and is critical below %lu MiB of free direct memory (largest free block); on critical: %s",
+             static_cast<unsigned long>(Ps4Memory::Watch::DefaultLowMiB), static_cast<unsigned long>(Ps4Memory::Watch::DefaultCriticalMiB),
+             g_memory_action == Ps4Memory::Action::Pause ? "pause the game and ask" : "warn on screen");
 }
 
 /// settings.txt: lines "key=value" ('#' starts a comment). Each recognized line is logged; any
@@ -381,7 +452,14 @@ void ApplyPs4Settings() {
 ///   shader_preload=0|128|256|1024|all  how much of the disk cache is compiled at start (default 256): the
 ///                               cache may weigh up to N x 32 KiB, a bigger one is set aside (see shader_policy.h)
 ///   shader_notice=on|off        the shader counter and the low-memory warning over the game (default on)
-///   overlay_delay=0|1|2|4|8     ms the GPU gets to finish a frame before the HUD is drawn into it (default 2)
+///   overlay_mode=keepalive|classic  0.7.6: keepalive keeps the HUD, notice and pause menu in every video buffer so
+///                               they do not flicker (default); classic is the 0.7.3 way, drawn once around the flip
+///   overlay_poll=1|2|4|8        keepalive: ms between the worker's checks of the buffers (default 1)
+///   overlay_flip_stamp=on|off   keepalive: also draw inside the flip call (default on)
+///   overlay_delay=0|1|2|4|8     classic: ms the GPU gets to finish a frame before the HUD is drawn into it (default 2)
+///   memory_profile=auto|roomy|standard|tight|strict  0.7.6: arena, shader preload and driver cache for this
+///                               console's memory (default auto: chosen from the direct memory it gives; see memory_guard.h)
+///   memory_action=warn|pause    when the memory watch is critical: a warning on screen (default) or also pause the game
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
 ///   overlay_draw=on|off         draw the HUD and the pause menu over the game (default on)
@@ -473,6 +551,16 @@ void ApplySettingsFile() {
             Ps4Hook::Pending().shader_notice = value == "on";
         } else if (key == "overlay_delay" && (value == "0" || value == "1" || value == "2" || value == "4" || value == "8")) {
             Ps4Hook::Pending().draw_delay_ms = std::atoi(value.c_str());
+        } else if (key == "overlay_mode" && (value == "keepalive" || value == "classic")) {
+            Ps4Hook::Pending().keepalive = value == "keepalive";
+        } else if (key == "overlay_poll" && (value == "1" || value == "2" || value == "4" || value == "8")) {
+            Ps4Hook::Pending().poll_ms = std::atoi(value.c_str());
+        } else if (key == "overlay_flip_stamp" && (value == "on" || value == "off")) {
+            Ps4Hook::Pending().flip_stamp = value == "on";
+        } else if (key == "memory_profile" && (value == "auto" || value == "roomy" || value == "standard" || value == "tight" || value == "strict")) {
+            // Already applied by ApplyMemoryPlan(), before this file's other lines.
+        } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
+            g_memory_action = value == "pause" ? Ps4Memory::Action::Pause : Ps4Memory::Action::Warn;
         } else if (key == "driver_cache" && (value == "on" || value == "off")) {
             v.use_vulkan_driver_pipeline_cache.SetValue(value == "on");
         } else if (key == "overlay_draw" && (value == "on" || value == "off")) {
@@ -621,10 +709,7 @@ void KeepEdenLogComplete(V& values) {
 }
 
 bool MenuInPortuguese() {
-    std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt", std::ios::binary};
-    std::ostringstream text;
-    text << in.rdbuf();
-    return Menu::SettingsFile(text.str()).Language() == Menu::Lang::Pt;
+    return LoadSettingsFile().Language() == Menu::Lang::Pt;
 }
 
 } // Anonymous namespace
@@ -725,6 +810,7 @@ int main() {
 
     Ps4::SetPhase("core init");
     ApplyPs4Settings();
+    ApplyMemoryPlan();
     ApplySettingsFile();
     Core::System system;
     system.Initialize();
@@ -759,6 +845,13 @@ int main() {
     Service::AM::FrontendAppletParameters params{.applet_id = Service::AM::AppletId::Application};
     // From here the video buffers the game registers are known to the hook (HUD, pause menu, colours).
     if (Ps4Hook::Pending().overlay) {
+        const Ps4Hook::Settings& hook = Ps4Hook::Pending();
+        if (hook.keepalive) {
+            Ps4::Log("overlay: keep-alive drawing (the HUD, notice and pause menu are kept in every video buffer), checks every %d ms, flip stamp %s",
+                     hook.poll_ms, hook.flip_stamp ? "on" : "off");
+        } else {
+            Ps4::Log("overlay: classic drawing (0.7.3), %d ms wait", hook.draw_delay_ms);
+        }
         Ps4Hook::Arm(Ps4Hook::Pending());
     } else {
         Ps4::Log("overlay off: no HUD, no pause menu, no colour swap");
@@ -875,8 +968,23 @@ int main() {
     int menu_sel = 0;
     std::uint32_t menu_buttons_before = 0;
     bool notice_on = Ps4Hook::Pending().shader_notice;
-    constexpr int MenuRows = 5; // Continue, HUD, speed limit, shader notice, back to the game list
+    constexpr int MenuRows = 5;   // Continue, HUD, speed limit, shader notice, back to the game list
+    constexpr int MemoryRows = 2; // the memory alert: continue anyway, back to the game list
+    bool memory_panel = false;    // the panel is the memory alert (memory_action=pause), not the L3 + R3 menu
+    Ps4Memory::Watch mem_watch;
+    Ps4Memory::Status mem_status;
     const auto show_menu = [&] {
+        if (memory_panel) {
+            char title[80];
+            std::snprintf(title, sizeof(title), pt ? "Memoria critica: %lu MiB livres" : "Memory critical: %lu MiB free",
+                          static_cast<unsigned long>(mem_status.free_mib));
+            Ps4Hook::ShowPanel(title,
+                               {pt ? "Continuar assim mesmo (pode travar)" : "Continue anyway (it may crash)",
+                                pt ? "Sair do jogo (volta ao menu de jogos)" : "Exit game (back to the game list)"},
+                               menu_sel,
+                               pt ? "O jogo foi pausado antes de a memoria acabar.   X: confirmar" : "The game was paused before memory ran out.   X: confirm");
+            return;
+        }
         const auto state = [&](bool on) { return std::string(on ? (pt ? "ligado" : "on") : (pt ? "desligado" : "off")); };
         const std::vector<std::string> lines = {
             pt ? "Continuar" : "Continue",
@@ -887,10 +995,13 @@ int main() {
         Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu", lines, menu_sel,
                            pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
     };
-    std::uint64_t last_status = Ps4::NowUs(), last_notice = 0;
-    unsigned status_count = 0, notice_ticks = 0;
+    std::uint64_t last_status = Ps4::NowUs(), last_notice = 0, last_mem_check = 0;
+    unsigned status_count = 0;
     int shaders_last = 0, shaders_total = 0;
     std::uint64_t free_mib = Ps4::FreeDirectMemory() >> 20;
+    const auto stage_name = [](Ps4Memory::Stage stage) {
+        return stage == Ps4Memory::Stage::Ok ? "ok" : stage == Ps4Memory::Stage::Low ? "low" : "critical";
+    };
     const char* leave_reason = "the game exited";
     for (;;) {
         {
@@ -907,16 +1018,19 @@ int main() {
             menu_buttons_before = pad.buttons;
             bool redraw = false, close = (pressed & Ps4::Button::Circle) != 0 || (menu_combo && !combo_before), leave = false;
             combo_before = menu_combo;
+            const int rows = memory_panel ? MemoryRows : MenuRows;
             if (pressed & Ps4::Button::Down) {
-                menu_sel = (menu_sel + 1) % MenuRows;
+                menu_sel = (menu_sel + 1) % rows;
                 redraw = true;
             }
             if (pressed & Ps4::Button::Up) {
-                menu_sel = (menu_sel + MenuRows - 1) % MenuRows;
+                menu_sel = (menu_sel + rows - 1) % rows;
                 redraw = true;
             }
             if (pressed & Ps4::Button::Cross) {
-                if (menu_sel == 0) {
+                if (memory_panel) {
+                    (menu_sel == 0 ? close : leave) = true;
+                } else if (menu_sel == 0) {
                     close = true;
                 } else if (menu_sel == 1) {
                     Ps4Hook::SetHud(!Ps4Hook::HudOn());
@@ -935,15 +1049,21 @@ int main() {
                 }
             }
             if (leave) {
-                Ps4::Log("exit chosen in the pause menu");
-                leave_reason = "exit chosen in the pause menu";
+                Ps4::Log(memory_panel ? "exit chosen in the memory alert" : "exit chosen in the pause menu");
+                leave_reason = memory_panel ? "exit chosen in the memory alert" : "exit chosen in the pause menu";
                 break;
             }
             if (close) {
                 in_menu = false;
                 Ps4Hook::HidePanel();
                 system.Run();
-                Ps4::Log("pause menu closed, the game runs again");
+                if (memory_panel) {
+                    Ps4::Log("memory alert closed, the game runs again (largest free direct block %lu MiB)",
+                             static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20));
+                } else {
+                    Ps4::Log("pause menu closed, the game runs again");
+                }
+                memory_panel = false;
             } else if (redraw) {
                 show_menu();
             }
@@ -976,26 +1096,58 @@ int main() {
             leave_reason = "quit combo held";
             break;
         }
+        // The memory watch (0.7.6), once a second: the largest free block of direct memory, its stage
+        // and the speed it is falling at. What kills the app is that block running out (the C heap
+        // takes 128 MiB at a time), so this warns early and, with memory_action=pause, stops the game
+        // at the critical level with a choice instead of letting it crash.
+        if (Ps4::NowUs() - last_mem_check > 1000000) {
+            last_mem_check = Ps4::NowUs();
+            free_mib = Ps4::FreeDirectMemory() >> 20;
+            const Ps4Memory::Stage before = mem_status.stage;
+            mem_status = mem_watch.Update(free_mib, last_mem_check / 1000);
+            if (mem_status.stage != before) {
+                Ps4::Log("memory watch: %s -> %s, largest free direct block %lu MiB, trend %.0f MiB/min", stage_name(before),
+                         stage_name(mem_status.stage), static_cast<unsigned long>(free_mib), mem_status.trend_mib_per_min);
+            }
+            if (mem_status.entered_critical && g_memory_action == Ps4Memory::Action::Pause) {
+                if (Ps4Hook::Ready()) {
+                    in_menu = true;
+                    memory_panel = true;
+                    menu_sel = 0;
+                    menu_buttons_before = pad.buttons;
+                    system.Pause();
+                    Ps4::Log("memory critical (%lu MiB free): the game is paused (memory_action=pause)", static_cast<unsigned long>(free_mib));
+                    show_menu();
+                    continue;
+                }
+                Ps4::Log("memory critical (%lu MiB free): the pause panel needs the overlay, which is not ready", static_cast<unsigned long>(free_mib));
+            }
+        }
         // The shader counter (Cemu's "compiling shaders"): what Eden's own notifier says is being
-        // built, kept as a running total, and a warning when direct memory runs low. Every 250 ms;
-        // the memory is asked for once a second.
+        // built, kept as a running total, with the memory watch's warning after it. Every 250 ms.
         if (notice_on && Ps4::NowUs() - last_notice > 250000) {
             last_notice = Ps4::NowUs();
             Ps4Shader::CountBuilding(system.GPU().ShaderNotify().ShadersBuilding(), &shaders_last, &shaders_total);
-            if (notice_ticks++ % 4 == 0) {
-                free_mib = Ps4::FreeDirectMemory() >> 20;
+            // The memory warning comes from the watch above (with the speed of the fall), not from the
+            // shader text: its own low-memory line is switched off by passing a huge free size.
+            std::string text = Ps4Shader::NoticeText(shaders_last, shaders_total, std::uint64_t{1} << 40, pt);
+            const std::string banner = Ps4Memory::BannerText(mem_status, pt);
+            if (!banner.empty()) {
+                text += text.empty() ? "" : "   ";
+                text += banner;
             }
-            Ps4Hook::SetNotice(Ps4Shader::NoticeText(shaders_last, shaders_total, free_mib, pt));
+            Ps4Hook::SetNotice(text);
         }
         if (Ps4::NowUs() - last_status > 10000000) {
             last_status = Ps4::NowUs();
             const auto perf = system.GetAndResetPerfStats();
             const auto mem = Common::Orbis::GetStats();
-            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), largest free direct block %lu MiB, shaders built %d",
+            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), largest free direct block %lu MiB (%s, %+.0f MiB/min), shaders built %d",
                      perf.average_game_fps, perf.emulation_speed * 100.0, perf.frametime * 1000.0,
                      static_cast<unsigned long>(mem.committed_bytes >> 20),
                      static_cast<unsigned long>(mem.decommitted_bytes >> 20),
-                     static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20), shaders_total);
+                     static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20), stage_name(mem_status.stage),
+                     mem_status.trend_mib_per_min, shaders_total);
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
                 Ps4::Log("%s", Ps4Hook::Describe().c_str());

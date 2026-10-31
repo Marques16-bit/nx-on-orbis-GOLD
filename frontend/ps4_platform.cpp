@@ -749,6 +749,10 @@ std::uint64_t FreeDirectMemory() {
     return size;
 }
 
+std::uint64_t DirectMemoryTotal() {
+    return sceKernelGetDirectMemorySize();
+}
+
 } // namespace Ps4
 
 // Before any other static initialiser of the program (Eden has many): a crash there still

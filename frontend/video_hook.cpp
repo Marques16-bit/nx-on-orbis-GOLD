@@ -8,7 +8,12 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <string_view>
 #include <thread>
+
+#if defined(__SSE__)
+#include <xmmintrin.h>
+#endif
 
 #include "menu/menu_canvas.h"
 #include "video_hook.h"
@@ -34,6 +39,27 @@ constexpr int MaxBuffers = 16;
 constexpr std::uint32_t FormatA8R8G8B8 = 0x80000000u; // bytes B G R A: the value reads 0xAARRGGBB
 constexpr std::uint32_t FormatA8B8G8R8 = 0x80002200u; // bytes R G B A
 
+/// What is drawn over the game. Each one is a small bitmap kept in ordinary memory.
+enum Element_ : int { ElHud = 0, ElNotice = 1, ElPanel = 2, ElCount = 3 };
+
+struct Rect {
+    int x = 0, y = 0, w = 0, h = 0;
+};
+
+struct Element {
+    Rect rect;
+    std::vector<std::uint32_t> px;  // rect.w * rect.h, in the pixel format of the screen
+    bool built = false;             // px shows what the element should show now
+    std::uint64_t version = 0;      // grows with every rebuild
+};
+
+/// Where the text and rectangles of an element are drawn: a bitmap whose top left corner is at
+/// (ox, oy) on the screen. Drawing code works in screen coordinates.
+struct Surface {
+    std::uint32_t* base;
+    int pitch, w, h, ox, oy;
+};
+
 struct State {
     std::mutex mutex;
     bool armed = false;
@@ -48,20 +74,26 @@ struct State {
     bool linear = false;
     int last_index = -1;
     std::uint64_t flips = 0;
-    // A frame is drawn in twice: once while its flip is still queued (nothing of it is on screen
-    // yet, so no flicker) and once more when the flip is over (in case the GPU wrote over it late).
+    // Classic mode: a frame is drawn in twice: once while its flip is still queued (nothing of it is
+    // on screen yet, so no flicker) and once more when the flip is over (in case the GPU wrote over it late).
     std::uint64_t hidden_flips = 0, shown_flips = 0;
     std::uint64_t submit_us = 0;       // when the last flip was queued
     std::uint64_t draws_hidden = 0, draws_late = 0;
-    int delay_us = 2000;               // the GPU gets this long to finish a frame before it is drawn in
-    // The notice in the bottom left corner (the shader counter).
+    int delay_us = 2000;               // classic: the GPU gets this long to finish a frame before it is drawn in
+    // The notice in the bottom left corner (the shader counter, memory warnings).
     std::string notice;
     bool notice_dirty = false;
+    int notice_cells = 0;              // widest the notice has been: the box never shrinks, so no remnant is left
     // The pause menu's panel, drawn by the worker over each new frame while it is up.
     bool panel_active = false, panel_dirty = false;
     std::string panel_title, panel_footer;
     std::vector<std::string> panel_lines;
     int panel_selected = -1;
+    int panel_cells = 0, panel_rows = 0; // widest / tallest while this panel has been up
+    // Keep-alive mode.
+    Element element[ElCount];
+    std::uint64_t stamped[MaxBuffers][ElCount] = {}; // the version of each element last copied into each buffer
+    KeepAliveStats ka;
     std::thread worker;
     std::atomic<bool> stop_worker{false};
     // The worker is not started by Arm(): it starts when the game's buffers are first registered, so
@@ -80,6 +112,8 @@ State& S() {
     return state;
 }
 
+std::uint64_t (*g_clock)() = nullptr;
+
 double Now(clockid_t clock) {
     timespec ts{};
     clock_gettime(clock, &ts);
@@ -87,7 +121,20 @@ double Now(clockid_t clock) {
 }
 
 std::uint64_t NowMicros() {
+    if (g_clock != nullptr) {
+        return g_clock();
+    }
     return std::uint64_t(Now(CLOCK_MONOTONIC) * 1e6);
+}
+
+/// Pushes the write-combining buffers out, so what was just copied reaches the screen's memory now
+/// and not whenever the CPU gets round to it (the last lines of a copy could sit there a while).
+inline void FlushWrites() {
+#if defined(__SSE__)
+    _mm_sfence();
+#else
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
 }
 
 /// A pixel in the format on the screen: `rgb` is 0x00RRGGBB.
@@ -107,33 +154,31 @@ std::uint32_t Mix(std::uint32_t bg, std::uint32_t fg, unsigned coverage) {
     return out;
 }
 
-void FillRect(const State& s, int buffer, int x, int y, int w, int h, std::uint32_t rgb) {
-    std::uint32_t* base = s.address[buffer];
+void FillRect(const State& s, Surface& sf, int x, int y, int w, int h, std::uint32_t rgb) {
     const std::uint32_t pixel = Pixel(s, rgb);
-    for (int j = std::max(y, 0); j < std::min<int>(y + h, int(s.height)); ++j) {
-        for (int i = std::max(x, 0); i < std::min<int>(x + w, int(s.width)); ++i) {
-            base[size_t(j) * s.pitch + size_t(i)] = pixel;
+    for (int j = std::max(y - sf.oy, 0); j < std::min(y - sf.oy + h, sf.h); ++j) {
+        for (int i = std::max(x - sf.ox, 0); i < std::min(x - sf.ox + w, sf.w); ++i) {
+            sf.base[size_t(j) * size_t(sf.pitch) + size_t(i)] = pixel;
         }
     }
 }
 
-/// Text on a flat background colour (so nothing has to be read back); `half` draws it at half size.
-int DrawText(const State& s, int buffer, int x, int y, std::string_view text, std::uint32_t fg,
+/// Text on a flat background colour; `half` draws it at half size.
+int DrawText(const State& s, Surface& sf, int x, int y, std::string_view text, std::uint32_t fg,
              std::uint32_t bg, bool half) {
-    std::uint32_t* base = s.address[buffer];
     const int cell_w = half ? Menu::GlyphWidth / 2 : Menu::GlyphWidth;
     const int cell_h = half ? Menu::GlyphHeight / 2 : Menu::GlyphHeight;
     int pen = x;
     for (size_t i = 0; i < text.size();) {
         const std::uint8_t* glyph = Menu::GlyphFor(Menu::NextCodePoint(text, i));
         for (int row = 0; row < cell_h; ++row) {
-            const int py = y + row;
-            if (py < 0 || py >= int(s.height)) {
+            const int py = y + row - sf.oy;
+            if (py < 0 || py >= sf.h) {
                 continue;
             }
             for (int col = 0; col < cell_w; ++col) {
-                const int px = pen + col;
-                if (px < 0 || px >= int(s.width)) {
+                const int px = pen + col - sf.ox;
+                if (px < 0 || px >= sf.w) {
                     continue;
                 }
                 unsigned coverage;
@@ -143,12 +188,27 @@ int DrawText(const State& s, int buffer, int x, int y, std::string_view text, st
                 } else {
                     coverage = glyph[row * Menu::GlyphWidth + col];
                 }
-                base[size_t(py) * s.pitch + size_t(px)] = Pixel(s, Mix(bg, fg, coverage));
+                sf.base[size_t(py) * size_t(sf.pitch) + size_t(px)] = Pixel(s, Mix(bg, fg, coverage));
             }
         }
         pen += cell_w;
     }
     return pen - x;
+}
+
+/// The text cut or padded with spaces to exactly `cells` characters, so a redraw covers what an earlier,
+/// longer text left behind.
+std::string FitCells(const std::string& text, int cells) {
+    std::string out;
+    int count = 0;
+    for (size_t i = 0; i < text.size() && count < cells;) {
+        const size_t start = i;
+        Menu::NextCodePoint(text, i);
+        out.append(text, start, i - start);
+        ++count;
+    }
+    out.append(size_t(std::max(cells - count, 0)), ' ');
+    return out;
 }
 
 void ReadTemperatures(State& s) {
@@ -205,9 +265,14 @@ void RefreshStats() {
     s.cpu_temp = scratch.cpu_temp;
     s.soc_temp = scratch.soc_temp;
     s.free_mib = free_mib;
+    s.element[ElHud].built = false; // new numbers: the bitmap is made again
 }
 
-void DrawHud(State& s, int buffer) {
+// ---------------------------------------------------------------- the elements
+
+/// The HUD: four lines in a box, at the top left or right.
+void BuildHud(State& s) {
+    constexpr int Cells = 24;
     char line[4][48];
     std::snprintf(line[0], sizeof(line[0]), "FPS %.1f  (%.0f ms)", s.fps, s.fps > 0 ? 1000.0 / s.fps : 0.0);
     std::snprintf(line[1], sizeof(line[1]), "CPU %.1f nucleos de 8", s.cores);
@@ -220,30 +285,39 @@ void DrawHud(State& s, int buffer) {
     const bool half = s.settings.hud_small;
     const int cell_w = half ? Menu::GlyphWidth / 2 : Menu::GlyphWidth;
     const int cell_h = half ? Menu::GlyphHeight / 2 : Menu::GlyphHeight;
-    const int box_w = 24 * cell_w + 16, box_h = 4 * cell_h + 12;
+    const int box_w = Cells * cell_w + 16, box_h = 4 * cell_h + 12;
     const int x = s.settings.hud_right ? int(s.width) - box_w - 40 : 40;
     const int y = 40;
     constexpr std::uint32_t Back = 0x101830, Fore = 0xE8F0FF;
-    FillRect(s, buffer, x, y, box_w, box_h, Back);
+    Element& e = s.element[ElHud];
+    e.rect = {x, y, box_w, box_h};
+    e.px.assign(size_t(box_w) * size_t(box_h), Pixel(s, Back));
+    Surface sf{e.px.data(), box_w, box_w, box_h, x, y};
     for (int i = 0; i < 4; ++i) {
-        DrawText(s, buffer, x + 8, y + 6 + i * cell_h, line[i], i == 3 && s.cpu_temp > 80 ? 0xFF6060 : Fore, Back, half);
+        DrawText(s, sf, x + 8, y + 6 + i * cell_h, FitCells(line[i], Cells), i == 3 && s.cpu_temp > 80 ? 0xFF6060 : Fore, Back, half);
     }
+    e.built = true;
+    ++e.version;
 }
 
-/// The shader counter: small text on a dark strip, bottom left, clear of the HUD at the top.
-void DrawNotice(State& s, int buffer) {
-    if (s.notice.empty()) {
-        return;
-    }
+/// The notice: small text on a dark strip, bottom left, clear of the HUD at the top.
+void BuildNotice(State& s) {
     const int cell_w = Menu::GlyphWidth / 2, cell_h = Menu::GlyphHeight / 2;
-    const int box_w = Menu::TextCells(s.notice) * cell_w + 16, box_h = cell_h + 12;
+    s.notice_cells = std::max(s.notice_cells, Menu::TextCells(s.notice));
+    const int box_w = s.notice_cells * cell_w + 16, box_h = cell_h + 12;
     const int x = 40, y = int(s.height) - 40 - box_h;
     constexpr std::uint32_t Back = 0x2A1C08, Fore = 0xFFD27A;
-    FillRect(s, buffer, x, y, box_w, box_h, Back);
-    DrawText(s, buffer, x + 8, y + 6, s.notice, Fore, Back, true);
+    Element& e = s.element[ElNotice];
+    e.rect = {x, y, box_w, box_h};
+    e.px.assign(size_t(box_w) * size_t(box_h), Pixel(s, Back));
+    Surface sf{e.px.data(), box_w, box_w, box_h, x, y};
+    DrawText(s, sf, x + 8, y + 6, FitCells(s.notice, s.notice_cells), Fore, Back, true);
+    e.built = true;
+    ++e.version;
 }
 
-void DrawPanel(State& s, int b) {
+/// The pause menu: a framed box in the middle of the screen.
+void BuildPanel(State& s) {
     const std::string& title = s.panel_title;
     const std::vector<std::string>& lines = s.panel_lines;
     const int selected = s.panel_selected;
@@ -253,32 +327,160 @@ void DrawPanel(State& s, int b) {
         cells = std::max(cells, Menu::TextCells(l) + 4);
     }
     cells = std::max(cells, Menu::TextCells(footer));
-    const int w = std::min<int>(cells * Menu::GlyphWidth + 80, int(s.width) - 80);
-    const int h = int(lines.size()) * 56 + 150;
+    s.panel_cells = std::max(s.panel_cells, cells);
+    s.panel_rows = std::max(s.panel_rows, int(lines.size()));
+    const int w = std::min<int>(s.panel_cells * Menu::GlyphWidth + 80, int(s.width) - 80);
+    const int h = s.panel_rows * 56 + 150;
     const int x = (int(s.width) - w) / 2, y = (int(s.height) - h) / 2;
     constexpr std::uint32_t Back = 0x141C38, Edge = 0x4A86FF, Sel = 0x2B4FA6, Text = 0xEAF0FF, Dim = 0x8FA0C8;
-    FillRect(s, b, x - 4, y - 4, w + 8, h + 8, Edge);
-    FillRect(s, b, x, y, w, h, Back);
-    DrawText(s, b, x + 40, y + 20, title, 0x2DD4C4, Back, false);
+    Element& e = s.element[ElPanel];
+    e.rect = {x - 4, y - 4, w + 8, h + 8};
+    e.px.assign(size_t(e.rect.w) * size_t(e.rect.h), Pixel(s, Edge));
+    Surface sf{e.px.data(), e.rect.w, e.rect.w, e.rect.h, e.rect.x, e.rect.y};
+    FillRect(s, sf, x, y, w, h, Back);
+    DrawText(s, sf, x + 40, y + 20, title, 0x2DD4C4, Back, false);
     for (size_t i = 0; i < lines.size(); ++i) {
         const int ly = y + 84 + int(i) * 56;
         const bool on = int(i) == selected;
-        FillRect(s, b, x + 20, ly - 4, w - 40, 52, on ? Sel : Back);
-        DrawText(s, b, x + 40, ly, lines[i], on ? 0xFFFFFF : Text, on ? Sel : Back, false);
+        FillRect(s, sf, x + 20, ly - 4, w - 40, 52, on ? Sel : Back);
+        DrawText(s, sf, x + 40, ly, lines[i], on ? 0xFFFFFF : Text, on ? Sel : Back, false);
     }
-    DrawText(s, b, x + 40, y + h - 52, footer, Dim, Back, false);
+    DrawText(s, sf, x + 40, y + h - 52, footer, Dim, Back, false);
+    e.built = true;
+    ++e.version;
 }
 
-} // Anonymous namespace
-
-Settings& Pending() {
-    static Settings settings;
-    return settings;
+bool Active(const State& s, int element) {
+    switch (element) {
+    case ElHud:
+        return s.hud;
+    case ElNotice:
+        return !s.notice.empty();
+    default:
+        return s.panel_active;
+    }
 }
 
-void Pump() {
-    State& s = S();
-    RefreshStats();
+/// Makes the bitmaps of the elements that are showing and changed since they were built.
+void EnsureBuilt(State& s) {
+    if (s.pitch == 0) {
+        return;
+    }
+    if (s.hud && !s.element[ElHud].built) {
+        BuildHud(s);
+    }
+    if (!s.notice.empty() && !s.element[ElNotice].built) {
+        BuildNotice(s);
+    }
+    if (s.panel_active && !s.element[ElPanel].built) {
+        BuildPanel(s);
+    }
+}
+
+/// Every bitmap is made again (a new set of buffers: the format may differ) and no buffer is known
+/// to hold any of them.
+void InvalidateElements(State& s) {
+    for (Element& e : s.element) {
+        e.built = false;
+    }
+    std::memset(s.stamped, 0, sizeof(s.stamped));
+}
+
+/// The element's rows, copied into the buffer: every pixel is written once, with its final value.
+void Blit(const State& s, int buffer, const Element& e) {
+    std::uint32_t* base = s.address[buffer];
+    const int x0 = std::max(e.rect.x, 0), x1 = std::min(e.rect.x + e.rect.w, int(s.width));
+    if (x1 <= x0) {
+        return;
+    }
+    for (int j = 0; j < e.rect.h; ++j) {
+        const int y = e.rect.y + j;
+        if (y < 0 || y >= int(s.height)) {
+            continue;
+        }
+        std::memcpy(base + size_t(y) * s.pitch + size_t(x0), e.px.data() + size_t(j) * size_t(e.rect.w) + size_t(x0 - e.rect.x),
+                    size_t(x1 - x0) * sizeof(std::uint32_t));
+    }
+}
+
+/// Is the element still in the buffer? Nine pixels spread over it are read and compared with the
+/// bitmap: when the game paints a frame over it, a horizontal or vertical edge of that paint cannot
+/// pass through the element without leaving probes on both sides of it. Reads of video memory are
+/// slow, so it is only these nine.
+bool Intact(State& s, int buffer, const Element& e) {
+    const volatile std::uint32_t* base = s.address[buffer];
+    for (int j = 0; j < 3; ++j) {
+        for (int i = 0; i < 3; ++i) {
+            const int lx = (e.rect.w - 1) * (1 + 3 * i) / 8; // 1/8, 4/8, 7/8 of the width
+            const int ly = (e.rect.h - 1) * (1 + 3 * j) / 8;
+            const int x = e.rect.x + lx, y = e.rect.y + ly;
+            if (x < 0 || y < 0 || x >= int(s.width) || y >= int(s.height)) {
+                continue;
+            }
+            ++s.ka.probe_reads;
+            if (base[size_t(y) * s.pitch + size_t(x)] != e.px[size_t(ly) * size_t(e.rect.w) + size_t(lx)]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Keep-alive: puts every showing element into the buffer where the buffer lacks it (never copied
+/// there, changed since, or painted over by the game). Returns how many were copied.
+int StampBuffer(State& s, int buffer, std::uint64_t* changed, std::uint64_t* painted_over) {
+    if (buffer < 0 || buffer >= s.count || s.address[buffer] == nullptr) {
+        return 0;
+    }
+    int copied = 0;
+    for (int id = 0; id < ElCount; ++id) {
+        Element& e = s.element[id];
+        if (!Active(s, id) || !e.built) {
+            continue;
+        }
+        const bool stale = s.stamped[buffer][id] != e.version;
+        if (!stale && Intact(s, buffer, e)) {
+            continue;
+        }
+        Blit(s, buffer, e);
+        s.stamped[buffer][id] = e.version;
+        ++(stale ? *changed : *painted_over);
+        ++copied;
+    }
+    if (copied > 0) {
+        FlushWrites();
+    }
+    return copied;
+}
+
+bool Drawable(const State& s) {
+    return s.armed && s.settings.draw && s.linear && s.handle >= 0 && s.count > 0 && s.pitch != 0;
+}
+
+/// Classic mode: everything that is showing, into one buffer.
+void DrawAllClassic(State& s, int buffer) {
+    EnsureBuilt(s);
+    for (int id = 0; id < ElCount; ++id) {
+        if (Active(s, id) && s.element[id].built) {
+            Blit(s, buffer, s.element[id]);
+        }
+    }
+    FlushWrites();
+}
+
+void PumpKeepAlive(State& s) {
+    std::lock_guard lock{s.mutex};
+    if (!Drawable(s)) {
+        return;
+    }
+    EnsureBuilt(s);
+    for (int b = 0; b < s.count; ++b) {
+        StampBuffer(s, b, &s.ka.stamps_content, &s.ka.stamps_repair);
+    }
+    s.notice_dirty = s.panel_dirty = false;
+}
+
+void PumpClassic(State& s) {
     int index;
     std::int32_t handle;
     bool hidden_pass, late_pass, panel, notice;
@@ -314,12 +516,8 @@ void Pump() {
     }
     const bool draw_all = hidden_pass || late_pass;
     if (draw_all && s.pitch != 0) {
-        if (s.hud) {
-            DrawHud(s, index);
-        }
-        DrawNotice(s, index);
+        DrawAllClassic(s, index); // a frame the game flips while the menu is up gets the panel too
         if (s.panel_active) {
-            DrawPanel(s, index); // a frame the game flips while the menu is up gets the panel too
             s.panel_dirty = false;
         }
         if (hidden_pass) {
@@ -336,14 +534,51 @@ void Pump() {
         return;
     }
     if (s.pitch != 0) {
-        if (panel) {
-            DrawPanel(s, index);
+        EnsureBuilt(s);
+        if (panel && s.element[ElPanel].built) {
+            Blit(s, index, s.element[ElPanel]);
             s.panel_dirty = false;
         }
-        if (notice) {
-            DrawNotice(s, index);
+        if (notice && Active(s, ElNotice) && s.element[ElNotice].built) {
+            Blit(s, index, s.element[ElNotice]);
             s.notice_dirty = false;
         }
+        FlushWrites();
+    }
+}
+
+/// How long the worker sleeps between two rounds. Keep-alive: the configured period, and a short one
+/// for a moment after each flip, which is when the game's GPU is most likely to paint over the overlay.
+std::uint64_t WorkerSleepMicros() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    if (!s.settings.keepalive) {
+        return 2000;
+    }
+    const std::uint64_t base = std::uint64_t(std::clamp(s.settings.poll_ms, 1, 8)) * 1000;
+    const bool hot = s.submit_us != 0 && NowMicros() - s.submit_us < 25000;
+    return hot ? std::min<std::uint64_t>(base, 300) : base;
+}
+
+} // Anonymous namespace
+
+Settings& Pending() {
+    static Settings settings;
+    return settings;
+}
+
+void Pump() {
+    State& s = S();
+    RefreshStats();
+    bool keepalive;
+    {
+        std::lock_guard lock{s.mutex};
+        keepalive = s.settings.keepalive;
+    }
+    if (keepalive) {
+        PumpKeepAlive(s);
+    } else {
+        PumpClassic(s);
     }
 }
 
@@ -363,6 +598,11 @@ void Arm(const Settings& settings, bool start_worker) {
         s.delay_us = std::max(0, settings.draw_delay_ms) * 1000;
         s.notice.clear();
         s.notice_dirty = false;
+        s.notice_cells = 0;
+        s.panel_cells = s.panel_rows = 0;
+        s.ka = KeepAliveStats{};
+        s.submit_us = 0;
+        InvalidateElements(s);
         s.worker_wanted = start_worker && settings.draw;
     }
 }
@@ -377,6 +617,7 @@ void SetHud(bool on) {
     State& s = S();
     std::lock_guard lock{s.mutex};
     s.hud = on;
+    s.element[ElHud].built = false;
 }
 
 bool HudOn() {
@@ -389,12 +630,16 @@ void ShowPanel(const std::string& title, const std::vector<std::string>& lines, 
                const std::string& footer) {
     State& s = S();
     std::lock_guard lock{s.mutex};
+    if (!s.panel_active) {
+        s.panel_cells = s.panel_rows = 0; // a new panel: its size starts again
+    }
     s.panel_active = true;
     s.panel_dirty = true;
     s.panel_title = title;
     s.panel_lines = lines;
     s.panel_selected = selected;
     s.panel_footer = footer;
+    s.element[ElPanel].built = false;
 }
 
 void HidePanel() {
@@ -409,6 +654,10 @@ void SetNotice(const std::string& text) {
     if (s.notice != text) {
         s.notice = text;
         s.notice_dirty = true;
+        s.element[ElNotice].built = false;
+        if (text.empty()) {
+            s.notice_cells = 0;
+        }
     }
 }
 
@@ -429,15 +678,35 @@ void DrawStats(std::uint64_t* hidden, std::uint64_t* late) {
     }
 }
 
+KeepAliveStats GetKeepAliveStats() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    return s.ka;
+}
+
+void SetClockForTest(std::uint64_t (*now_micros)()) {
+    g_clock = now_micros;
+}
+
 std::string Describe() {
     State& s = S();
     std::lock_guard lock{s.mutex};
-    char text[260];
-    std::snprintf(text, sizeof(text), "video hook: armed=%d handle=%d buffers=%d %ux%u pitch %u tiling %u (%s), format seen 0x%08x used 0x%08x, %llu flips, drawn %llu hidden / %llu late",
-                  s.armed, s.handle, s.count, s.width, s.height, s.pitch, s.tiling, s.linear ? "linear: drawing on" : "NOT linear: drawing off", s.format_seen, s.format_used,
-                  static_cast<unsigned long long>(s.flips), static_cast<unsigned long long>(s.draws_hidden),
-                  static_cast<unsigned long long>(s.draws_late));
-    return text;
+    char text[420];
+    std::snprintf(text, sizeof(text),
+                  "video hook: armed=%d handle=%d buffers=%d %ux%u pitch %u tiling %u (%s), format seen 0x%08x used 0x%08x, %llu flips, %s",
+                  s.armed, s.handle, s.count, s.width, s.height, s.pitch, s.tiling, s.linear ? "linear: drawing on" : "NOT linear: drawing off",
+                  s.format_seen, s.format_used, static_cast<unsigned long long>(s.flips),
+                  s.settings.keepalive ? "keep-alive" : "classic");
+    std::string out = text;
+    if (s.settings.keepalive) {
+        std::snprintf(text, sizeof(text), " (copied: %llu at the flip, %llu repairs after the game painted over it, %llu for new content; %llu probe reads)",
+                      static_cast<unsigned long long>(s.ka.stamps_flip), static_cast<unsigned long long>(s.ka.stamps_repair),
+                      static_cast<unsigned long long>(s.ka.stamps_content), static_cast<unsigned long long>(s.ka.probe_reads));
+    } else {
+        std::snprintf(text, sizeof(text), ", drawn %llu hidden / %llu late", static_cast<unsigned long long>(s.draws_hidden),
+                      static_cast<unsigned long long>(s.draws_late));
+    }
+    return out + text;
 }
 
 } // namespace Ps4Hook
@@ -474,8 +743,9 @@ extern "C" int32_t __wrap_sceVideoOutRegisterBuffers(int32_t handle, int32_t sta
             for (int i = 0; i < count && start + i < MaxBuffers; ++i) {
                 s.address[start + i] = static_cast<std::uint32_t*>(addresses[i]);
             }
-            s.count = std::max(s.count, start + count);
+            s.count = std::max(s.count, std::min(start + count, MaxBuffers));
             s.last_index = -1; // a new set of buffers: nothing is on screen from it yet
+            InvalidateElements(s); // the pixel format may differ, and no buffer holds any bitmap yet
             std::snprintf(note, sizeof(note), "video hook: %s %d buffers at index %d, %ux%u pitch %u, tiling %u (%s), format 0x%08x -> 0x%08x",
                           again ? "registered AGAIN:" : "registered:", count, start, s.width, s.height, s.pitch, tiling,
                           s.linear ? "linear" : "NOT linear, so no drawing over the game", s.format_seen, s.format_used);
@@ -496,11 +766,11 @@ extern "C" int32_t __wrap_sceVideoOutRegisterBuffers(int32_t handle, int32_t sta
             s.worker = std::thread([] {
                 while (!S().stop_worker) {
                     Pump();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    std::this_thread::sleep_for(std::chrono::microseconds(WorkerSleepMicros()));
                 }
             });
             s.worker.detach();
-            Ps4::Log("video hook: worker started");
+            Ps4::Log("video hook: worker started (%s)", Pending().keepalive ? "keep-alive" : "classic");
         } catch (...) {
             Ps4::Log("video hook: the worker thread could not be started (no HUD, no pause menu)");
         }
@@ -512,12 +782,19 @@ extern "C" int32_t __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t index, u
     using namespace Ps4Hook;
     State& s = S();
     {
-        // Only a note of which buffer went on screen: nothing here may slow the thread that presents.
         std::lock_guard lock{s.mutex};
         if (s.armed && handle == s.handle && index >= 0 && index < s.count && s.address[index] != nullptr) {
             s.last_index = index;
             ++s.flips;
             s.submit_us = NowMicros();
+            // Keep-alive: the frame is stamped before the real flip. If the game's GPU is already done
+            // with it this is its final overlay; if not, the worker puts the overlay back within a
+            // millisecond of the game painting over it. Only bitmaps that already exist are copied
+            // here (nothing is built on this thread), and a buffer that still has its overlay costs
+            // nine reads.
+            if (s.settings.keepalive && s.settings.flip_stamp && Drawable(s)) {
+                StampBuffer(s, index, &s.ka.stamps_flip, &s.ka.stamps_flip);
+            }
         }
     }
     return __real_sceVideoOutSubmitFlip(handle, index, mode, arg);

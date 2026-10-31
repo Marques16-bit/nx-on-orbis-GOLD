@@ -55,6 +55,11 @@ struct SystemInfo {
     std::vector<std::string> log_previous;
     std::vector<std::string> log_current;
     std::uint64_t free_memory_mib = 0;
+    /// 0.7.6: all the direct memory the console gives the process (0 when unknown), its class in words
+    /// ("folgado", "roomy"...) and what the memory profile sets, e.g. "auto: arena 1280 MiB, ...".
+    std::uint64_t memory_budget_mib = 0;
+    std::string memory_tier;
+    std::string memory_plan;
 };
 
 struct MenuResult {
