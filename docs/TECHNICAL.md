@@ -134,3 +134,15 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
   (`sceSystemServiceLoadExec`, found with `sceKernelDlsym` in the console's libSceSystemService because the
   SDK stub lacks it) and, when that fails, ends the process. "Restart game" leaves `restart_game.txt` for the
   new process (read and deleted first thing in `FindGame`).
+
+## The restart ladder and the HUD at the flip (0.7.7-fix; not yet seen on a console)
+
+- `RestartApp()` tries `sceSystemServiceLoadExec` with four (path, argv) pairs, the one known to work first.
+  An attempt is written to `restart_state.txt` before the call; `NoteRestartOutcome()` at the next start reads
+  the wall-clock time since it and records `good` or marks the way in `bad`. A call that works never returns,
+  so the log cannot say so itself.
+- `FlipStamp()` (inside the wrapped `sceVideoOutSubmitFlip`) writes the HUD and notice again whatever the
+  probes say; `RestampShown()` repeats it every 4 ms for 40 ms; `Blit()` flushes the cache lines of each row.
+- Asynchronous shaders: `PipelineCache::BuiltPipeline` returns null for an unbuilt pipeline when they are on,
+  and `RasterizerVulkan::PrepareDraw` skips the draw; the port's default is now off, as Eden's.
+

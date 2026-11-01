@@ -77,6 +77,10 @@ struct KeepAliveStats {
     std::uint64_t stamps_repair = 0;  // the worker found the overlay painted over by the game and put it back
     std::uint64_t stamps_content = 0; // copied because the overlay itself changed (HUD numbers, panel, notice)
     std::uint64_t probe_reads = 0;    // single-pixel reads of video memory
+    // 0.7.7 fix
+    std::uint64_t blind_flips = 0;    // flips where the HUD and notice were written again whatever the probes said
+    std::uint64_t restamps = 0;       // writes of them again into the buffer on screen, in the 40 ms after a flip
+    std::uint64_t erased_after_flip = 0; // the first look after a flip found the overlay no longer in that buffer
 };
 KeepAliveStats GetKeepAliveStats();
 

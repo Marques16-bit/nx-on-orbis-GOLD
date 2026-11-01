@@ -308,7 +308,7 @@ void TestNavigation() {
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 5 && r.saved.find("gpu_accuracy=high") != std::string::npos &&
                   r.saved.find("dma_accuracy=safe") != std::string::npos && r.saved.find("sync_memory=on") != std::string::npos &&
-                  r.saved.find("async_shaders=off") != std::string::npos && r.saved.find("ORBIS_ARENA_MIB") == std::string::npos &&
+                  r.saved.find("async_shaders") == std::string::npos && r.saved.find("ORBIS_ARENA_MIB") == std::string::npos &&
                   r.saved.find("ORBIS_VRAM_GARLIC") == std::string::npos,
               "profile Exact graphics (test): accuracy options written, the arena back to default");
         r.Tap(Pad::Right);

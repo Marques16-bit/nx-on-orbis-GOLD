@@ -2,6 +2,71 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.7-fix] - "Exit game" and "Restart game" that start the app again, the HUD written at every flip, no skipped draws
+
+**Not built or run on a console by the author of this change.** The host tests pass (every file under
+`tests/`, with new cases in `video_hook_test`), and the new `ps4_platform.cpp` code was syntax-checked
+against stand-ins for the PS4 library; `main.cpp` is checked only by the GitHub build.
+
+What the 0.7.7 run on the console showed (boot.log, boot.old.log, eden_log, mesa.log):
+- `sceKernelDlsym` found `sceSystemServiceLoadExec` (address `0x8007e8ea0`, result 0) and the call was made,
+  but **never returned**: the system ended the app and started nothing. Both "Exit game" (boot.old.log) and
+  "Restart game" (boot.log) ended that way, which is why they "only close the emulator".
+- The new shader cache worked as designed (`41 pipelines loaded in 0.2 s`, preload `4096`).
+- `hardware_concurrency was asked 1 times`: the `--wrap` link is in effect.
+
+### Fixed (hypothesis, not proven): "Exit game" and "Restart game" only closed the app
+- The call used the path `"EBOOT.BIN"` with a NULL `argv`. Titles that start themselves again name their
+  executable `"/app0/eboot.bin"` (the form shadPS4 and AnyPS5 document for relaunching a title; neither
+  was seen on a PS4 here), so the first way is now `sceSystemServiceLoadExec("/app0/eboot.bin", {NULL})`.
+- Because a way that ends the app without bringing it back cannot report its own failure, there is now a
+  ladder of four ways (`/app0/eboot.bin` with an empty argv list, `EBOOT.BIN` with one, `/app0/eboot.bin`
+  with a NULL argv, `eboot.bin`). Each attempt is written to `restart_state.txt` (and synced) **before** the
+  call. The next start judges it: back within 12 s means the app came back by itself and that way is
+  remembered and used first; a start much later (opened by hand) marks the way as not working and the next
+  restart uses the next one. In the worst case that costs one manual reopen per way that does not work
+  (at most three), then it works for good. `boot.log` says all of it with `restart:` lines, and also lists
+  what `/app0` holds and whether `/app0/eboot.bin` exists.
+- "Exit game" leaves no `restart_game.txt`, so the new process opens on the game list. "Restart game"
+  leaves it, so the new process opens the same game (and, if the app has to be opened by hand, it opens that
+  game directly).
+- **Not known:** whether any of the four ways works on firmware 12.02. If none does, the panel says the app
+  is closing and it closes; reopening it by hand gives the game list (or the same game after "Restart game").
+
+### Fixed (hypothesis, not proven): the FPS HUD still blinking
+- The 0.7.7 counters show the HUD was present at every flip (`copied: 0 at the flip`) and was repaired once per
+  frame after the game painted over it, so a frame going out without it is not what the log shows. Two
+  things the probes cannot see are covered instead:
+  1. The nine probe pixels cannot see a thin band painted over part of the HUD, so the HUD and the notice are
+     now written again **at every flip** whatever the probes say (the game's GPU is done with the frame by
+     then), and again every 4 ms for the 40 ms after it, while that buffer is the one on screen.
+  2. The buffers may be ordinary cached memory (the log has `ORBIS_VRAM_GARLIC=0`, which puts every image on
+     the cache-coherent bus). A write that stays in the CPU's cache is not on the screen's memory until the
+     cache evicts it, which would show as a HUD that comes and goes. Every row written is now flushed
+     line by line (`clflush`), harmless on write-combined memory.
+- New counters in the `video hook:` line: `flips stamped`, `overlays found missing right after a flip` (the
+  buffer on screen lost the HUD after the flip: if this is non-zero, something paints over shown buffers) and
+  `rewrites while shown`.
+- **Not known:** the cause. If it still blinks, send the `video hook:` line and say whether
+  `ORBIS_VRAM_GARLIC=0` was set: the driver itself warns that this setting "cost this title two thirds of its
+  frame rate" and is for comparison runs only.
+
+### Changed: asynchronous shaders are off by default (Super Mario Maker 2's themes)
+- In the Eden source sent for comparison (`vk_pipeline_cache.cpp`, `PipelineCache::BuiltPipeline`): with asynchronous
+  shaders on, a draw whose pipeline is not built yet returns no pipeline, and `RasterizerVulkan::PrepareDraw`
+  then **skips the draw** (`if (!pipeline) return;`). Draws with a depth buffer, or with more than 6 indices,
+  are the ones skipped. Eden's own default is off; this port turned it on.
+- The frames of the video (castle and ground as flat silhouettes, a pale object that changes from frame to
+  frame, while `shaders built` goes from 41 to 148 in the log) fit layers that are not drawn while their shaders
+  compile. That is consistent, **not proven**: no run with it off has been seen. Off means a first run stalls
+  while shaders compile (the disk cache, preloaded at start, removes most of that from later runs).
+  `async_shaders=on` in settings.txt (or the "Light" profile) brings the old behaviour back for a comparison.
+- Note: the Eden zip sent is a newer master (`943f1fc7`), not the pinned `5f142c79` that the build uses; this
+  code path has long been the same in yuzu-based emulators, but it was read in the newer one.
+
+### Still not fixed
+- RAM use and anything that needs a change inside Eden: unchanged from 0.7.7.
+
 ## [0.7.7] - a shader cache with no limit that survives a bad start, "Restart game", a way out that works
 
 **Not built or run on a console by the author of this change.** The host tests pass (every file under

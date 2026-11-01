@@ -13,6 +13,7 @@
 
 #if defined(__SSE__)
 #include <xmmintrin.h>
+#include <emmintrin.h>
 #endif
 
 #include "menu/menu_canvas.h"
@@ -105,6 +106,8 @@ struct State {
     std::uint64_t free_mib = 0;
     double window_start = 0, cpu_start = 0;
     std::uint64_t window_flips = 0;
+    // 0.7.7 fix: the buffer that was just flipped is the one on screen; it is written again for a while.
+    std::uint64_t looked_flip = ~std::uint64_t{0}, restamp_us = 0;
 };
 
 State& S() {
@@ -398,8 +401,18 @@ void Blit(const State& s, int buffer, const Element& e) {
         if (y < 0 || y >= int(s.height)) {
             continue;
         }
-        std::memcpy(base + size_t(y) * s.pitch + size_t(x0), e.px.data() + size_t(j) * size_t(e.rect.w) + size_t(x0 - e.rect.x),
-                    size_t(x1 - x0) * sizeof(std::uint32_t));
+        std::uint32_t* const row = base + size_t(y) * s.pitch + size_t(x0);
+        const size_t bytes = size_t(x1 - x0) * sizeof(std::uint32_t);
+        std::memcpy(row, e.px.data() + size_t(j) * size_t(e.rect.w) + size_t(x0 - e.rect.x), bytes);
+#if defined(__SSE2__)
+        // 0.7.7 fix: the buffers may be ordinary cached memory (ORBIS_VRAM_GARLIC=0 puts every image on the
+        // cache-coherent bus), and the display reads memory, not the CPU's cache: push the lines just written
+        // out, or the overlay shows up whenever the cache happens to evict them. Harmless on write-combined memory.
+        const char* line = reinterpret_cast<const char*>(reinterpret_cast<std::uintptr_t>(row) & ~std::uintptr_t{63});
+        for (const char* end = reinterpret_cast<const char*>(row) + bytes; line < end; line += 64) {
+            _mm_clflush(line);
+        }
+#endif
     }
 }
 
@@ -453,6 +466,86 @@ int StampBuffer(State& s, int buffer, std::uint64_t* changed, std::uint64_t* pai
     return copied;
 }
 
+/// 0.7.7 fix, at the flip: the game's GPU is done with the frame, so this is the last write before the display
+/// takes it. The small elements (HUD, notice) are written whatever the nine probes say: a probe can miss a thin
+/// band the game left over part of the HUD, a write over unchanged pixels costs nothing on screen. The panel
+/// (large) is only written where the probes find it missing.
+void FlipStamp(State& s, int buffer) {
+    if (buffer < 0 || buffer >= s.count || s.address[buffer] == nullptr) {
+        return;
+    }
+    int copied = 0;
+    for (int id = 0; id < ElCount; ++id) {
+        Element& e = s.element[id];
+        if (!Active(s, id) || !e.built) {
+            continue;
+        }
+        const bool stale = s.stamped[buffer][id] != e.version;
+        const bool intact = !stale && Intact(s, buffer, e);
+        if (intact && id == ElPanel) {
+            continue;
+        }
+        if (!intact) {
+            ++s.ka.stamps_flip; // the frame was about to go out without it
+        }
+        Blit(s, buffer, e);
+        s.stamped[buffer][id] = e.version;
+        ++copied;
+    }
+    if (copied > 0) {
+        FlushWrites();
+        ++s.ka.blind_flips;
+    }
+}
+
+/// Keep-alive, after a flip: the flipped buffer is the one on screen for the next 40 ms. First look (before the
+/// repairs): is the overlay still in it? The count tells whether anything paints over a buffer that is being shown.
+void LookAtShown(State& s) {
+    if (!s.settings.flip_stamp || s.last_index < 0 || s.last_index >= s.count || s.address[s.last_index] == nullptr || s.submit_us == 0) {
+        return;
+    }
+    if (s.looked_flip == s.flips) {
+        return;
+    }
+    s.looked_flip = s.flips;
+    s.restamp_us = 0;
+    for (int id : {int(ElHud), int(ElNotice)}) {
+        Element& e = s.element[id];
+        if (Active(s, id) && e.built && s.stamped[s.last_index][id] == e.version && !Intact(s, s.last_index, e)) {
+            ++s.ka.erased_after_flip;
+            break;
+        }
+    }
+}
+
+/// ...and then the small elements are written again every 4 ms for those 40 ms, in case something did.
+void RestampShown(State& s) {
+    if (!s.settings.flip_stamp || s.last_index < 0 || s.last_index >= s.count || s.address[s.last_index] == nullptr || s.submit_us == 0) {
+        return;
+    }
+    const std::uint64_t now = NowMicros();
+    if (now < s.submit_us || now - s.submit_us > 40000) {
+        return;
+    }
+    if (s.restamp_us != 0 && now - s.restamp_us < 4000) {
+        return;
+    }
+    int copied = 0;
+    for (int id : {int(ElHud), int(ElNotice)}) {
+        Element& e = s.element[id];
+        if (Active(s, id) && e.built) {
+            Blit(s, s.last_index, e);
+            s.stamped[s.last_index][id] = e.version;
+            ++copied;
+        }
+    }
+    if (copied > 0) {
+        FlushWrites();
+        ++s.ka.restamps;
+    }
+    s.restamp_us = now;
+}
+
 bool Drawable(const State& s) {
     return s.armed && s.settings.draw && s.linear && s.handle >= 0 && s.count > 0 && s.pitch != 0;
 }
@@ -474,9 +567,11 @@ void PumpKeepAlive(State& s) {
         return;
     }
     EnsureBuilt(s);
+    LookAtShown(s); // before the repairs, so it can count what was erased
     for (int b = 0; b < s.count; ++b) {
         StampBuffer(s, b, &s.ka.stamps_content, &s.ka.stamps_repair);
     }
+    RestampShown(s);
     s.notice_dirty = s.panel_dirty = false;
 }
 
@@ -602,6 +697,8 @@ void Arm(const Settings& settings, bool start_worker) {
         s.panel_cells = s.panel_rows = 0;
         s.ka = KeepAliveStats{};
         s.submit_us = 0;
+        s.looked_flip = ~std::uint64_t{0};
+        s.restamp_us = 0;
         InvalidateElements(s);
         s.worker_wanted = start_worker && settings.draw;
     }
@@ -691,7 +788,7 @@ void SetClockForTest(std::uint64_t (*now_micros)()) {
 std::string Describe() {
     State& s = S();
     std::lock_guard lock{s.mutex};
-    char text[420];
+    char text[560];
     std::snprintf(text, sizeof(text),
                   "video hook: armed=%d handle=%d buffers=%d %ux%u pitch %u tiling %u (%s), format seen 0x%08x used 0x%08x, %llu flips, %s",
                   s.armed, s.handle, s.count, s.width, s.height, s.pitch, s.tiling, s.linear ? "linear: drawing on" : "NOT linear: drawing off",
@@ -699,9 +796,12 @@ std::string Describe() {
                   s.settings.keepalive ? "keep-alive" : "classic");
     std::string out = text;
     if (s.settings.keepalive) {
-        std::snprintf(text, sizeof(text), " (copied: %llu at the flip, %llu repairs after the game painted over it, %llu for new content; %llu probe reads)",
+        std::snprintf(text, sizeof(text),
+                      " (copied: %llu at the flip, %llu repairs after the game painted over it, %llu for new content; %llu probe reads; 0.7.7 fix: %llu flips stamped, %llu overlays found missing right after a flip, %llu rewrites while shown)",
                       static_cast<unsigned long long>(s.ka.stamps_flip), static_cast<unsigned long long>(s.ka.stamps_repair),
-                      static_cast<unsigned long long>(s.ka.stamps_content), static_cast<unsigned long long>(s.ka.probe_reads));
+                      static_cast<unsigned long long>(s.ka.stamps_content), static_cast<unsigned long long>(s.ka.probe_reads),
+                      static_cast<unsigned long long>(s.ka.blind_flips), static_cast<unsigned long long>(s.ka.erased_after_flip),
+                      static_cast<unsigned long long>(s.ka.restamps));
     } else {
         std::snprintf(text, sizeof(text), ", drawn %llu hidden / %llu late", static_cast<unsigned long long>(s.draws_hidden),
                       static_cast<unsigned long long>(s.draws_late));
@@ -793,7 +893,7 @@ extern "C" int32_t __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t index, u
             // here (nothing is built on this thread), and a buffer that still has its overlay costs
             // nine reads.
             if (s.settings.keepalive && s.settings.flip_stamp && Drawable(s)) {
-                StampBuffer(s, index, &s.ka.stamps_flip, &s.ka.stamps_flip);
+                FlipStamp(s, index);
             }
         }
     }

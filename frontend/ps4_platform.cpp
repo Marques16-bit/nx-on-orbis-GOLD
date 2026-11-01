@@ -714,20 +714,152 @@ LoadExecFn FindLoadExec() {
 
 } // namespace
 
+namespace {
+
+/// 0.7.7 fix: the ways the app asks the system to start itself again, tried in this order. boot.log of 0.7.7
+/// showed that sceSystemServiceLoadExec("EBOOT.BIN", NULL) is accepted and never returns: the system ends the
+/// app and starts nothing. Titles that restart themselves name their executable as "/app0/eboot.bin", so that
+/// comes first. A way that ends the app without bringing it back cannot report its own failure (the process
+/// is gone), so every attempt is written to restart_state.txt first and the NEXT start judges it
+/// (NoteRestartOutcome): back within a few seconds means it worked, a start opened by hand much later means it
+/// did not, and the next restart uses the next way.
+struct RestartWay {
+    const char* path;
+    bool argv_list; // an argv array holding only the terminating NULL, instead of a NULL argv
+};
+constexpr RestartWay kRestartWays[] = {
+    {"/app0/eboot.bin", true},
+    {"EBOOT.BIN", true},
+    {"/app0/eboot.bin", false},
+    {"eboot.bin", true},
+};
+constexpr int kRestartWayCount = int(sizeof(kRestartWays) / sizeof(kRestartWays[0]));
+constexpr long kBackBySelfSeconds = 12; // an automatic restart opens the app again within this
+
+struct RestartState {
+    int good = -1;        // the way that brought the app back by itself, once known
+    unsigned bad_mask = 0; // ways that ended the app without bringing it back
+    int tried = -1;       // the way of the attempt in flight (written just before the call)
+    long tried_at = 0;    // wall clock seconds of that attempt
+};
+
+std::string RestartStatePath() {
+    return std::string(DataDir) + "/restart_state.txt";
+}
+
+RestartState ReadRestartState() {
+    RestartState st;
+    if (FILE* f = std::fopen(RestartStatePath().c_str(), "r")) {
+        int good = -1, tried = -1;
+        unsigned bad = 0;
+        long at = 0;
+        if (std::fscanf(f, "good %d bad %u tried %d at %ld", &good, &bad, &tried, &at) == 4) {
+            st.good = good;
+            st.bad_mask = bad & ((1u << kRestartWayCount) - 1);
+            st.tried = (tried >= 0 && tried < kRestartWayCount) ? tried : -1;
+            st.tried_at = at;
+        }
+        std::fclose(f);
+    }
+    return st;
+}
+
+void WriteRestartState(const RestartState& st) {
+    if (FILE* f = std::fopen(RestartStatePath().c_str(), "w")) {
+        std::fprintf(f, "good %d bad %u tried %d at %ld\n", st.good, st.bad_mask, st.tried, st.tried_at);
+        std::fflush(f);
+        fsync(fileno(f));
+        std::fclose(f);
+    }
+}
+
+long WallSeconds() {
+    timespec ts{};
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return long(ts.tv_sec);
+}
+
+void ListApp0() {
+    if (DIR* d = opendir("/app0")) {
+        std::string names;
+        int n = 0;
+        while (const dirent* e = readdir(d)) {
+            if (e->d_name[0] != '.' && n++ < 24) {
+                names += std::string(names.empty() ? "" : ", ") + e->d_name;
+            }
+        }
+        closedir(d);
+        Log("restart: /app0 holds: %s", names.c_str());
+    }
+    struct stat sb{};
+    const bool found = stat("/app0/eboot.bin", &sb) == 0;
+    Log("restart: /app0/eboot.bin %s (%lld bytes)", found ? "exists" : "NOT found", static_cast<long long>(found ? sb.st_size : 0));
+}
+
+} // namespace
+
+void NoteRestartOutcome() {
+    RestartState st = ReadRestartState();
+    if (st.tried < 0) {
+        return;
+    }
+    const long now = WallSeconds();
+    const long dt = now - st.tried_at;
+    const bool clock_ok = st.tried_at > 1000000000L && dt >= 0;
+    if (clock_ok && dt <= kBackBySelfSeconds) {
+        st.good = st.tried;
+        st.bad_mask &= ~(1u << st.tried);
+        Log("restart: way %d (%s) brought the app back by itself in %ld s: it is remembered and used first", st.tried,
+            kRestartWays[st.tried].path, dt);
+    } else {
+        st.bad_mask |= 1u << st.tried;
+        if (st.good == st.tried) {
+            st.good = -1;
+        }
+        Log("restart: way %d (%s) did NOT bring the app back (this start came %s): it is marked as not working and the next restart uses another way",
+            st.tried, kRestartWays[st.tried].path, clock_ok ? (std::to_string(dt) + " s later, opened by hand").c_str() : "at an unknown time");
+    }
+    st.tried = -1;
+    WriteRestartState(st);
+}
+
 bool RestartApp() {
     const LoadExecFn load_exec = FindLoadExec();
     if (load_exec == nullptr) {
         Log("restart: no way found to start the app again");
         return false;
     }
-    // The app starts again from its own executable and lands on the game list (or, with
-    // restart_game.txt, on the game that was running). On success the call does not return (the
-    // system replaces the process); a return value is the failure.
-    static const char* const paths[] = {"EBOOT.BIN", "/app0/eboot.bin"};
-    for (const char* path : paths) {
-        Log("restart: sceSystemServiceLoadExec(\"%s\")", path);
-        const int32_t rc = load_exec(path, nullptr);
+    ListApp0();
+    RestartState st = ReadRestartState();
+    // The way that is known to work first, then the others in order, never the ones marked as not working.
+    int order[kRestartWayCount];
+    int n = 0;
+    if (st.good >= 0) {
+        order[n++] = st.good;
+    }
+    for (int i = 0; i < kRestartWayCount; ++i) {
+        if (i != st.good && !(st.bad_mask & (1u << i))) {
+            order[n++] = i;
+        }
+    }
+    if (n == 0) {
+        Log("restart: every way was tried and none brought the app back; closing it instead");
+        return false;
+    }
+    for (int k = 0; k < n; ++k) {
+        const RestartWay& way = kRestartWays[order[k]];
+        // Written and synced BEFORE the call: if the call ends the process, this is all that is left.
+        st.tried = order[k];
+        st.tried_at = WallSeconds();
+        WriteRestartState(st);
+        char* argv_list[1] = {nullptr};
+        Log("restart: way %d: sceSystemServiceLoadExec(\"%s\", %s)", order[k], way.path, way.argv_list ? "{NULL}" : "NULL");
+        const int32_t rc = load_exec(way.path, way.argv_list ? argv_list : nullptr);
+        // Only an error comes back; success replaces the process.
         Log("restart: it returned 0x%08x (the app is still here)", static_cast<unsigned>(rc));
+        st.tried = -1;
+        st.bad_mask |= 1u << order[k];
+        WriteRestartState(st);
     }
     return false;
 }

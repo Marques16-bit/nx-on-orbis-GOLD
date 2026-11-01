@@ -44,6 +44,9 @@ void NoteFrame();
 /// back to the menu: Eden cannot be torn down and rebuilt inside one run, a new process can). Returns
 /// only if the system refused or the SDK cannot do it; the caller then keeps the app idle.
 bool RestartApp();
+/// 0.7.7 fix: call once at start. If the last run asked the system to start the app again, judge from the time
+/// that went by whether that way worked (restart_state.txt), so the next restart uses a way that does.
+void NoteRestartOutcome();
 
 /// 0.7.7: ends the app for good (the way out when RestartApp() found no way to start it again).
 [[noreturn]] void QuitApp();

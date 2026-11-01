@@ -374,7 +374,11 @@ void ApplyPs4Settings() {
     v.use_docked_mode.SetValue(Settings::ConsoleMode::Handheld);
     v.resolution_setup.SetValue(Settings::ResolutionSetup::Res1X);
     v.use_disk_shader_cache.SetValue(true);
-    v.use_asynchronous_shaders.SetValue(true);
+    // 0.7.7 fix: off, as Eden itself defaults. With it on, a draw whose pipeline is not built yet is SKIPPED
+    // (PipelineCache::BuiltPipeline returns null and RasterizerVulkan::PrepareDraw returns), which shows up as
+    // missing layers in a game such as Super Mario Maker 2 while its shaders compile. A first run stalls
+    // instead; the disk cache (preloaded at start) removes most of the stalls from the next runs.
+    v.use_asynchronous_shaders.SetValue(false);
     v.use_speed_limit.SetValue(true);
     v.sink_id.SetValue(Settings::AudioEngine::Auto);
     v.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_4Gb);
@@ -460,7 +464,7 @@ void ApplyMemoryPlan() {
 ///   gpu_accuracy=low|high       (default low)
 ///   reactive_flushing=on|off    (default off)
 ///   profile=on|off              sampling profiler in boot.log (default on)
-///   async_shaders=on|off        (default on)
+///   async_shaders=on|off        (default off since 0.7.7 fix: on skips draws whose shader is still compiling)
 ///   mode=handheld|docked        console mode: 720p or 1080p rendering (default handheld)
 ///   resolution=0.5|0.75|1|1.5|2 internal resolution scale (default 1)
 ///   speed_limit=on|off          (default on)
@@ -813,6 +817,7 @@ int main() {
     const bool pad_ok = Ps4::OpenPad();
     Ps4::Log("controller %s", pad_ok ? "open" : "NOT available");
 
+    Ps4::NoteRestartOutcome();
     const std::string game = FindGame();
     if (game.empty()) {
         Ps4::Log("no game: put an .nsp or .xci in %s/roms (or its path in game.txt)", Ps4::DataDir);

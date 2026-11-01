@@ -508,6 +508,63 @@ int main() {
         Check(!g.Touched(0, 0, 0, 1920, 1080), "overlay_draw off: nothing is drawn in keep-alive either");
     }
     {
+        // 0.7.7 fix: a thin band painted over the HUD between the nine probe rows is invisible to the probes,
+        // so the repair round leaves it; the flip writes the whole HUD again, and the buffer on screen is
+        // written again for 40 ms after the flip.
+        Ps4Hook::Settings s;
+        s.hud = true;
+        s.swap_colours = false;
+        Ps4Hook::Arm(s, false);
+        g_sim_now_us = 1000000;
+        Ps4Hook::SetClockForTest(&SimClock);
+        Frames3 f(ARGB);
+        __wrap_sceVideoOutRegisterBuffers(26, 0, f.ptrs, 3, f.attr);
+        __wrap_sceVideoOutSubmitFlip(26, 0, 1, 0);
+        Ps4Hook::Pump();
+        const std::vector<std::uint32_t> good(f.buf[1]);
+        const auto same = [&](int b) { // the HUD box only (the rest of the buffer is the game's business)
+            for (int y = 40; y < 40 + 172; ++y) {
+                if (!std::equal(f.buf[b].begin() + y * Frames3::W + 40, f.buf[b].begin() + y * Frames3::W + 40 + 496,
+                                good.begin() + y * Frames3::W + 40)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const auto band = [&](int b) {
+            for (int y = 70; y < 74; ++y) { // local rows 30-33 of the HUD box: probe rows are 21, 85 and 149
+                std::fill(f.buf[b].begin() + y * Frames3::W + 40, f.buf[b].begin() + y * Frames3::W + 40 + 496, 0xFF202020u);
+            }
+        };
+        band(1);
+        g_sim_now_us += 10000;
+        Ps4Hook::Pump();
+        Check(!same(1), "a thin band between the probe rows is not found by a repair round (the known limit of the probes)");
+        const auto before_flip = Ps4Hook::GetKeepAliveStats();
+        __wrap_sceVideoOutSubmitFlip(26, 1, 1, 0);
+        Check(same(1), "...but the flip writes the whole HUD again");
+        Check(Ps4Hook::GetKeepAliveStats().blind_flips == before_flip.blind_flips + 1 && Ps4Hook::GetKeepAliveStats().stamps_flip == before_flip.stamps_flip,
+              "...counted as a blind stamp, not as a frame that lacked its HUD (the probes had passed)");
+
+        g_sim_now_us += 1000;
+        std::fill(f.buf[1].begin(), f.buf[1].end(), 0xFF202020u); // the game paints over the buffer that is now on screen
+        const auto before_look = Ps4Hook::GetKeepAliveStats();
+        Ps4Hook::Pump();
+        Check(Ps4Hook::GetKeepAliveStats().erased_after_flip == before_look.erased_after_flip + 1 && f.Has(1, HudSpot),
+              "the first round after a flip counts a buffer that lost its HUD while on screen, and puts it back");
+
+        band(1);
+        g_sim_now_us += 5000;
+        Ps4Hook::Pump();
+        Check(same(1) && Ps4Hook::GetKeepAliveStats().restamps > before_look.restamps,
+              "within 40 ms of the flip the buffer on screen is written again every 4 ms: the band is gone");
+        g_sim_now_us += 50000;
+        band(1);
+        Ps4Hook::Pump();
+        Check(!same(1), "...and not for ever: later the probes are all there is");
+        Ps4Hook::SetClockForTest(nullptr);
+    }
+    {
         // A second set of buffers (the swapchain was made again): the HUD goes into the new ones.
         Ps4Hook::Settings s;
         s.hud = true;
