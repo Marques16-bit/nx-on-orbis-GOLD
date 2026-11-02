@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // eden-ps4: the console-facing pieces of the frontend. See ps4_platform.h.
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <pthread.h>
 #include <fcntl.h>
@@ -61,6 +63,7 @@ std::mutex g_log_mutex;
 std::atomic<const char*> g_phase{"start"};
 std::atomic<std::uint64_t> g_frames{0};
 std::atomic<unsigned> g_hang_seconds{0};
+std::atomic<std::uint64_t> g_hang_armed_at{0}; // 0.7.8: when the watch was last armed; a stall is counted from here at the earliest
 // Written only by VulkanWorker; the crash report reads scalars without dereferencing handles.
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 std::atomic<std::uint64_t> g_last_renderpass{0}, g_last_framebuffer{0}, g_last_pass_image{0};
@@ -364,7 +367,12 @@ void Watchdog() {
         if (limit == 0) {
             continue;
         }
-        const std::uint64_t still = NowUs() - still_since;
+        // 0.7.8: the menu draws a frame only when something changes, so the last frame was long ago when the
+        // game starts; 0.7.7's run reported "no new frame for 15 s" 3 s after "running" began. A stall is
+        // counted from the moment the watch was armed at the earliest.
+        const std::uint64_t armed_at = g_hang_armed_at.load();
+        const std::uint64_t since = still_since > armed_at ? still_since : armed_at;
+        const std::uint64_t still = NowUs() - since;
         // Two dumps: when frames stop, and 30 s later (what moved in between is the clue).
         if (!reported && still > std::uint64_t(limit) * 1000000) {
             const auto stats = Common::Orbis::GetStats();
@@ -561,6 +569,49 @@ std::string PrepareDataDir() {
 
 namespace Ps4 {
 
+/// 0.7.9: boot.old.log is about to be replaced; every process start (the menu, each game, each Exit or
+/// Restart) rotates the logs, so after two starts the log of the game was gone. It is moved to
+/// logs/boot_YYYYMMDD-HHMMSS.log first (the time of its last line), and the newest 8 are kept.
+static void ArchiveOldLog(const std::string& old) {
+    struct stat st;
+    if (stat(old.c_str(), &st) != 0 || st.st_size <= 0) {
+        return;
+    }
+    const std::string dir = std::string(DataDir) + "/logs";
+    mkdir(dir.c_str(), 0777);
+    char stamp[40] = "unknown";
+    const time_t when = st.st_mtime;
+    if (when > 1000000000) {
+        if (const struct tm* t = std::gmtime(&when)) {
+            std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", t);
+        }
+    } else {
+        std::snprintf(stamp, sizeof(stamp), "t%lld", static_cast<long long>(when));
+    }
+    std::string target = dir + "/boot_" + stamp + ".log";
+    for (int n = 2; n < 100 && stat(target.c_str(), &st) == 0; ++n) {
+        target = dir + "/boot_" + stamp + "_" + std::to_string(n) + ".log";
+    }
+    if (std::rename(old.c_str(), target.c_str()) != 0) {
+        return;
+    }
+    std::vector<std::string> names;
+    if (DIR* d = opendir(dir.c_str())) {
+        while (const struct dirent* e = readdir(d)) {
+            const std::string name = e->d_name;
+            if (name.compare(0, 5, "boot_") == 0) {
+                names.push_back(name);
+            }
+        }
+        closedir(d);
+    }
+    std::sort(names.begin(), names.end()); // the time is in the name
+    while (names.size() > 8) {
+        std::remove((dir + "/" + names.front()).c_str());
+        names.erase(names.begin());
+    }
+}
+
 void OpenBootLog() {
     static bool done = false;
     if (done) {
@@ -571,6 +622,7 @@ void OpenBootLog() {
     const std::string path = std::string(DataDir) + "/boot.log";
     // Keep the previous session's log next to the new one.
     const std::string old = std::string(DataDir) + "/boot.old.log";
+    ArchiveOldLog(old);
     std::remove(old.c_str());
     std::rename(path.c_str(), old.c_str());
     g_log = std::fopen(path.c_str(), "w");
@@ -579,6 +631,16 @@ void OpenBootLog() {
         chmod(path.c_str(), 0666);
     }
     Log("data folder %s: %s", DataDir, report.c_str());
+    {
+        const time_t now = std::time(nullptr);
+        char text[40] = "the console clock is not set";
+        if (now > 1000000000) {
+            if (const struct tm* t = std::gmtime(&now)) {
+                std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S UTC", t);
+            }
+        }
+        Log("this run started at %s; the logs of the last runs are in logs/ (boot_<time of the last line>.log)", text);
+    }
 }
 
 std::vector<std::string> RecentLog(size_t max_lines) {
@@ -658,6 +720,7 @@ void SetPhase(const char* phase) {
 }
 
 void ArmHangWatch(unsigned seconds) {
+    g_hang_armed_at.store(NowUs());
     g_hang_seconds.store(seconds);
 }
 

@@ -2,6 +2,104 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.9] - Covers in the games list, and a log that tells a slow game from a stuttering one
+
+**Not built or run on a console by the author of this change.** Everything below passes the host tests
+(`menu_test`, `video_hook_test`, `image_decode_test` with sanitizers); `main.cpp` is checked only by the
+GitHub build, and `ps4_platform.cpp` was only syntax-checked. Everything in 0.7.8 (L3 + TouchPad picture) is included.
+
+**New: covers.** The JOGOS / GAMES tab is a two-pane screen: the list on the left with a thumbnail for each
+game, and on the right a card with the selected game's big cover, its title, its size and its title id. A game
+with no picture gets a coloured tile with its initials (the same colours every time), so the list is never bare.
+- Put pictures in `/data/edenps4/covers/` (the folder is created at the first start). The name is the **title
+  id** (`01009B90006DC000.png`), the dump's **file name** (`Super Mario Maker 2 [01009B90006DC000][v0].jpg`) or the
+  **title** (`Super Mario Maker 2.png`). PNG, JPG and BMP; upper/lower case does not matter.
+- boot.log says what happened: `covers: N picture(s) in covers/, M of K game(s) got one, F failed (first: file: why) ...`.
+- Limits so a wrong folder cannot stall the start: 12 MiB a file, 4096 px a side, 64 MiB of covers (past that
+  only thumbnails), 8 s of decoding.
+
+**New: a log built to answer the open problems.**
+- `tl:` lines every 2 s: flips in the window, the average and longest interval between flips, and how many were
+  longer than 34 / 50 / 100 / 250 ms. 9 fps made of a steady 110 ms is a slow game; 9 fps made of 30 fps and
+  long stalls is a stutter. (For the Mario Maker 2 editor speed and the HUD.)
+- `logs/boot_YYYYMMDD-HHMMSS.log`: the logs of the last 8 runs are kept (every Exit, Restart and game start
+  rotated the log, so the game's log was lost after two starts), and the start of each run is stamped with the date and time.
+- Still there from before: `status:` every 10 s (fps, speed, memory), the hook line, the heap census, the Mesa
+  log's BUDGET lines.
+
+**Still open (honest):** the HUD "blinking", the Mario Maker 2 theme graphics, the memory use and the speed in the
+editor are **not fixed** in this version, only better measured. To go further I need, from one run: boot.log and the
+`logs/` folder, `mesa.log`, `log/eden_log.txt`, 2-3 pictures from `shots/` of the glitch, and the ELF (the
+`NX-on-Orbis-elf` artifact of the build) to turn the profile addresses into function names.
+
+## [0.7.8] - "Print screen" inside the app, and a false "no new frame" alarm gone
+
+**Not built or run on a console by the author of this change.** The host tests pass (every file under
+`tests/`, with new cases in `video_hook_test` for the picture file); `main.cpp` is checked only by the
+GitHub build, and the new `ps4_platform.cpp` lines are two small changes to an existing function.
+
+What the 0.7.7-fix run on the console showed (boot.log, boot.old.log, eden_log, mesa.log of 2026-11-01):
+- **"Exit game" works.** `exit chosen in the pause menu` -> `sceSystemServiceLoadExec("/app0/eboot.bin", {NULL})`
+  -> the next start logs `restart: way 0 (/app0/eboot.bin) brought the app back by itself in 3 s` (and 2 s the
+  time after) and opens on the game list. So the first way of the ladder works on this console. "Restart game"
+  does not appear in these logs: it is still unseen.
+- The shader cache works: `148 pipelines loaded in 0.5 s`, no stall, nothing crashed.
+- The HUD was in the buffer on screen at every one of 3,467 flips (`0 overlays found missing right after a
+  flip`, 23,475 rewrites while shown). Nothing in any log shows the HUD missing. In the phone video of 0.7.6
+  the HUD box is present in all 125 frames; what changes is the brightness of the **whole picture** (a patch of
+  sky goes between 87 and 190 on a 0 to 255 scale about once a second), which a phone camera on a TV can do by
+  itself. A video cannot tell the two apart, which is why this version adds a way to look at the real pixels.
+- Super Mario Maker 2 runs at about 38 fps in its menus, then 9 to 13 fps once the editor is used. Over those
+  seconds the Vulkan driver reports 105 to 119 render passes and 500 to 850 draws per frame (against 4 to 6
+  passes before), the game's main CPU core (`CPUCore_1`) is 92 to 96% busy in translated game code, and the
+  CPU waited 0 ms for the GPU. `shaders built` stays at 187 from 182 s on while the speed stays at 12 to 13,
+  so it is not shader compiling. Asynchronous shaders were off in this run (the 0.7.7-fix default), so whether
+  the theme graphics are still wrong is not something these logs can answer.
+- The driver's `THE GPU HAS NOT FINISHED submit #7423` message came with a dump of the command stream (about
+  8,500 lines of `mesa.log`). The frame did finish and the game went on; the dump is the driver's own
+  diagnostic and not something this app prints.
+
+### Added: L3 + TouchPad saves a picture of the screen
+- Press **L3 + TouchPad** (not R3, not Options) while the game runs: the game pauses for a moment (a 0.3 s wait
+  for the frames already in flight, then the copy), the picture on screen is saved as
+  `/data/edenps4/shots/shot_0001.bmp` (then `_0002`, and so on; nothing is overwritten) and the game goes on.
+  A line in the bottom left says where it went for four seconds, and `boot.log` has a `screenshot:` line.
+- It is the buffer that was flipped last, **with the HUD as it is in that buffer**. The colours are read the
+  way the console reads the buffer (the same way the HUD's own colours are chosen: its dark blue box is
+  dark blue on the TV), so the picture looks like the TV. 24-bit BMP, 1920x1080, about 6 MB each; every
+  viewer opens it.
+- Use: press it **while the glitch is on screen** (a Mario Maker 2 theme with flat silhouettes, the HUD
+  "fading"), and send the files from `shots/` with the logs. A picture that shows the HUD missing would
+  settle that question; a picture with the HUD intact while the phone video "blinks" would settle it the
+  other way.
+- Not known: how long the copy takes on the console (the buffers can be slow memory to read; the time is in
+  the `screenshot:` line), and whether L3 + TouchPad collides with anything a game does with those buttons.
+
+### Fixed: a "no new frame for 15 s" alarm 3 s after the game started
+- The menu draws a frame only when something changes, so the last frame counted was old when the game began,
+  and the watch (15 s) reported a stall, with a dump of every thread, 0.6 s after `== running`. A stall is
+  now counted from the moment the watch is armed at the earliest. Mario Maker 2 does take about 30 s to its
+  first frame, so a dump at 15 s of that is still possible and still honest.
+
+### Not changed, and why
+- **The HUD**: the cause is not known. 0.7.7-fix writes it at every flip and again for 40 ms; the next
+  logs and pictures say whether anything is left.
+- **Mario Maker 2 themes**: see above; no new evidence either way. With the pictures it can be seen.
+- **Speed in the editor** (9 to 13 fps): the game's main thread is the limit. Making it faster is a job on the
+  CPU emulation (Eden's own code), which needs the build's ELF to read the profile addresses
+  (`v0.7.7-fix-20261101T124718Z-03796441cd1e`); the logs print addresses like `0x790c00` that mean nothing
+  without its symbols.
+- **RAM**: unchanged; the largest free block ended at 561 MiB with the game's committed memory at 1,486 MiB,
+  and nothing crashed. The 1,280 MiB driver arena, the game's memory and the heap are all in use.
+- **`env=ORBIS_VRAM_GARLIC=0`** is still in the `settings.txt` of the run. The driver prints that it "cost
+  this title two thirds of its frame rate" and is "for comparison runs only". One run without it, with a
+  picture taken while the HUD is on screen, would show if the HUD still holds in the faster memory.
+
+### How to read the next boot.log
+- `screenshot: saved ...` / `screenshot: NOT saved (...)` with the time it took.
+- `restart:` lines (the ladder) when "Restart game" is used.
+- The `video hook:` line as before (`erased after a flip`, `rewrites while shown`).
+
 ## [0.7.7-fix] - "Exit game" and "Restart game" that start the app again, the HUD written at every flip, no skipped draws
 
 **Not built or run on a console by the author of this change.** The host tests pass (every file under

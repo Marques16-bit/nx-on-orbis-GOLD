@@ -41,6 +41,11 @@ struct Canvas {
     /// Ring between the two radii, anti-aliased, source-over.
     void Ring(float cx, float cy, float outer, float inner, std::uint32_t color);
     void Disc(float cx, float cy, float radius, std::uint32_t color);
+    /// 0.7.9: rounded rectangle filled with a vertical gradient (anti-aliased corners, source-over).
+    void RoundRectGradient(int x, int y, int w, int h, int radius, std::uint32_t top, std::uint32_t bottom);
+    /// 0.7.9: a picture (0xAARRGGBB, `w` x `h`, row by row) at (x, y), source-over, with the corners rounded
+    /// when `radius` > 0 (a game cover).
+    void DrawImage(int x, int y, const std::uint32_t* pixels, int w, int h, int radius = 0);
     /// UTF-8 text in the menu font (20x40 cells; `scale` multiplies the cell). Characters the
     /// font does not have are drawn as '?'. Returns the width drawn, in pixels.
     int Print(int x, int y, std::string_view text, std::uint32_t color, int scale = 1);

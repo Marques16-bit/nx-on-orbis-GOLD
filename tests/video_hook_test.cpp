@@ -7,9 +7,11 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <thread>
 #include <vector>
 
+#include "screenshot.h"
 #include "video_hook.h"
 
 static int g_pending = 0;
@@ -640,6 +642,69 @@ int main() {
         }
         Ps4Hook::SetClockForTest(nullptr);
     }
+    {
+        // 0.7.8: SaveScreenshot writes what is on screen as a 24-bit BMP, whichever way the colours are
+        // stored, and says why when it cannot.
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / "eden_ps4_shot_test";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        const auto read_file = [](const fs::path& p) {
+            std::vector<unsigned char> v;
+            if (std::FILE* f = std::fopen(p.string().c_str(), "rb")) {
+                unsigned char buf[65536];
+                std::size_t n;
+                while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+                    v.insert(v.end(), buf, buf + n);
+                }
+                std::fclose(f);
+            }
+            return v;
+        };
+        const auto le32 = [](const std::vector<unsigned char>& v, std::size_t at) {
+            return std::uint32_t(v[at]) | (std::uint32_t(v[at + 1]) << 8) | (std::uint32_t(v[at + 2]) << 16) | (std::uint32_t(v[at + 3]) << 24);
+        };
+        const std::size_t row = 1920 * 3, H = 1080;
+        for (int swap = 0; swap < 2; ++swap) {
+            Ps4Hook::Settings s;
+            s.keepalive = false;
+            s.hud = false;
+            s.swap_colours = swap != 0;
+            Ps4Hook::Arm(s, false);
+            Frames f(ABGR); // the game's pixels: bytes R G B A, so the word reads 0xAABBGGRR
+            // With the swap on the buffers are registered as A8R8G8B8 (the colour_swap trick), and the game's
+            // bytes are then shown with red and blue exchanged; the picture must show what the screen shows.
+            f.a[0] = 0xFF332211u;                // red 0x11, green 0x22, blue 0x33 as the game wrote it
+            f.a[2 * 1920 + 5] = 0xFF665544u;     // (5, 2): red 0x44, green 0x55, blue 0x66
+            __wrap_sceVideoOutRegisterBuffers(9, 0, f.ptrs, 2, f.attr);
+            std::string why;
+            const fs::path path0 = fs::path(Ps4Shot::NextPath(dir));
+            Check(!Ps4Hook::SaveScreenshot(path0.string(), &why) && !why.empty(), "screenshot before any flip: refused, with a reason");
+            __wrap_sceVideoOutSubmitFlip(9, 0, 1, 0);
+            Ps4Hook::Pump();
+            const fs::path path = fs::path(Ps4Shot::NextPath(dir));
+            Check(Ps4Hook::SaveScreenshot(path.string(), &why), "screenshot after a flip: saved");
+            const auto v = read_file(path);
+            Check(v.size() == 54 + row * H && v[0] == 'B' && v[1] == 'M', "BMP: the size is the header plus 1920 x 1080 x 3, and it starts with BM");
+            Check(v.size() > 54 && le32(v, 18) == 1920 && le32(v, 22) == 1080 && v[28] == 24, "BMP: 1920 x 1080, 24 bits");
+            if (v.size() == 54 + row * H) {
+                // Bottom-up: the top left pixel is in the last row of the data. BMP bytes are B, G, R.
+                const std::size_t p0 = 54 + (H - 1) * row, p1 = 54 + (H - 1 - 2) * row + 5 * 3;
+                // swap off: the screen reads the buffer as the game wrote it (R G B A). swap on: the buffer
+                // is read as A8R8G8B8, so the screen shows red and blue exchanged.
+                const unsigned char r0 = swap ? 0x33 : 0x11, b0 = swap ? 0x11 : 0x33;
+                const unsigned char r1 = swap ? 0x66 : 0x44, b1 = swap ? 0x44 : 0x66;
+                Check(v[p0] == b0 && v[p0 + 1] == 0x22 && v[p0 + 2] == r0,
+                      swap ? "BMP colours (swap on): top left pixel as the screen shows it" : "BMP colours (swap off): top left pixel as the screen shows it");
+                Check(v[p1] == b1 && v[p1 + 1] == 0x55 && v[p1 + 2] == r1, "BMP colours: a pixel further in, a row down, is in the right place");
+            }
+        }
+        Check(Ps4Shot::NextPath(dir).find("shot_0003.bmp") != std::string::npos, "NextPath: the next free number follows the files saved");
+        std::string why;
+        Check(!Ps4Hook::SaveScreenshot((dir / "no" / "such" / "folder.bmp").string(), &why) && !why.empty(),
+              "a path that cannot be created: refused, with a reason");
+        fs::remove_all(dir, ec);
+    }
     // The only worker thread of the whole program (it is started once and runs to the end), so these
     // cases come last: the ones above call Pump() by hand and must not have a worker racing them.
     {
@@ -663,6 +728,34 @@ int main() {
         Check(g_flip_checks > checks_before, "first registration of the buffers: the worker starts");
         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
         Check(g_memory_calls == memory_before, "HUD off: no memory or temperature calls at all");
+    }
+
+    {
+        // 0.7.9: the flip timeline (how many flips and how far apart) for the "tl:" log line
+        constexpr std::uint32_t ARGB = 0x80000000u;
+        static Frames t(ARGB);
+        Ps4Hook::Settings s;
+        s.keepalive = false;
+        s.hud = false;
+        s.swap_colours = false;
+        Ps4Hook::Arm(s, false);
+        Ps4Hook::SetClockForTest(&SimClock);
+        __wrap_sceVideoOutRegisterBuffers(21, 0, t.ptrs, 2, t.attr);
+        g_sim_now_us = 5000000;
+        __wrap_sceVideoOutSubmitFlip(21, 0, 1, 0);
+        (void)Ps4Hook::TakeTimeline(); // the first flip's interval is measured from an older test: discard
+        const int gaps_ms[] = {16, 16, 40, 120, 300, 16};
+        int n = 0;
+        for (const int gap : gaps_ms) {
+            g_sim_now_us += std::uint64_t(gap) * 1000;
+            __wrap_sceVideoOutSubmitFlip(21, ++n % 2, 1, 0);
+        }
+        const Ps4Hook::Timeline tl = Ps4Hook::TakeTimeline();
+        Check(tl.flips == 6, "timeline: six flips counted");
+        Check(tl.gap_sum_us == 508000 && tl.gap_max_us == 300000, "timeline: the sum and the longest interval");
+        Check(tl.over_34ms == 3 && tl.over_50ms == 2 && tl.over_100ms == 2 && tl.over_250ms == 1, "timeline: the stutter buckets");
+        const Ps4Hook::Timeline again = Ps4Hook::TakeTimeline();
+        Check(again.flips == 0 && again.gap_max_us == 0 && again.flips_total >= 7, "timeline: taking it resets the window, not the total");
     }
 
     std::printf(g_failures == 0 ? "video hook test: PASSED\n" : "video hook test: FAILED\n");

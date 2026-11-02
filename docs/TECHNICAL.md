@@ -146,3 +146,28 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - Asynchronous shaders: `PipelineCache::BuiltPipeline` returns null for an unbuilt pipeline when they are on,
   and `RasterizerVulkan::PrepareDraw` skips the draw; the port's default is now off, as Eden's.
 
+## The picture of the screen (0.7.8; not yet seen on a console)
+
+- `Ps4Hook::SaveScreenshot()` copies the buffer flipped last (`last_index`), row by row and in order, under the
+  hook's lock, and writes it as a 24-bit BMP after the lock is released (`screenshot.h`, header only so the
+  workflow's fixed test command line still links). The words are read the way the console reads them
+  (`format_used`), as the HUD's `Pixel()` writes them.
+- `main.cpp` calls it on L3 + TouchPad (edge) with the game paused (`system.Pause()`, 300 ms, copy,
+  `system.Run()`), into `/data/edenps4/shots/`.
+- The hang watch counts a stall from `max(last frame, when the watch was armed)`.
+
+## Covers and the extra log (0.7.9; not yet seen on a console)
+
+- `menu/image_decode.h` (header only) decodes PNG (every colour type and bit depth, interlaced too, a
+  hand-written inflate), baseline and progressive JPEG (4:4:4, 4:2:2, 4:2:0, grey; bilinear chroma) and BMP
+  (24 and 32 bit, palettes). Limits: 4096 px a side, 16 Mpixels; damaged files return false. `tests/image_decode_test.cpp`
+  compares the pixels with Pillow's (`tests/data/*.raw`) and feeds it truncated and scrambled copies, under
+  ASAN and UBSAN. That test is not in the GitHub workflow (a workflow cannot be changed by an update zip): run it by hand.
+- `menu/cover_loader.h` (header only) matches `covers/*.png|jpg|jpeg|bmp` to the games by title id, by file
+  name or by the title without its tags (case ignored), decodes with limits (12 MiB a file, 64 MiB of big covers,
+  an 8 s budget) and keeps a 400-pixel cover and a 44-pixel thumbnail per game. `GameEntry` carries them; with
+  none the menu draws a gradient tile whose colours come from a hash of the title id.
+- `Ps4Hook::TakeTimeline()`: the wrapped flip counts flips and the intervals between them (sum, longest, and how
+  many were over 34, 50, 100 and 250 ms) under the hook's lock; `main.cpp` writes `tl: ...` every 2 s.
+- `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
+  last line) before the usual rename, and keeps the newest 8.

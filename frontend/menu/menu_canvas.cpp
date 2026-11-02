@@ -126,6 +126,53 @@ void Canvas::RoundRect(int x, int y, int w, int h, int radius, std::uint32_t col
     }
 }
 
+namespace {
+/// Coverage (0..1) of pixel (i, j) of a w x h rectangle with rounded corners of `radius`.
+float CornerCoverage(int i, int j, int w, int h, int radius) {
+    const float cx = i < radius ? radius - 0.5f : (i >= w - radius ? w - radius - 0.5f : -1.0f);
+    const float cy = j < radius ? radius - 0.5f : (j >= h - radius ? h - radius - 0.5f : -1.0f);
+    if (cx < 0.0f || cy < 0.0f) {
+        return 1.0f;
+    }
+    const float d = std::sqrt((i - cx) * (i - cx) + (j - cy) * (j - cy));
+    return Clamp01(float(radius) - d + 0.5f);
+}
+} // namespace
+
+void Canvas::RoundRectGradient(int x, int y, int w, int h, int radius, std::uint32_t top, std::uint32_t bottom) {
+    radius = std::min({radius, w / 2, h / 2});
+    for (int j = 0; j < h; ++j) {
+        const float t = h > 1 ? float(j) / float(h - 1) : 0.0f;
+        const auto mix = [&](int shift) {
+            const float a = float((top >> shift) & 0xFF), b = float((bottom >> shift) & 0xFF);
+            return std::uint32_t(a + (b - a) * t + 0.5f) & 0xFF;
+        };
+        const std::uint32_t row = 0xFF000000u | (mix(16) << 16) | (mix(8) << 8) | mix(0);
+        for (int i = 0; i < w; ++i) {
+            Blend(x + i, y + j, WithAlpha(row, CornerCoverage(i, j, w, h, radius)));
+        }
+    }
+}
+
+void Canvas::DrawImage(int x, int y, const std::uint32_t* pixels, int w, int h, int radius) {
+    if (pixels == nullptr || w <= 0 || h <= 0) {
+        return;
+    }
+    radius = std::min({std::max(radius, 0), w / 2, h / 2});
+    for (int j = 0; j < h; ++j) {
+        if (y + j < 0 || y + j >= height) {
+            continue;
+        }
+        for (int i = 0; i < w; ++i) {
+            const std::uint32_t p = pixels[std::size_t(j) * std::size_t(w) + std::size_t(i)];
+            if ((p >> 24) == 0) {
+                continue;
+            }
+            Blend(x + i, y + j, radius > 0 ? WithAlpha(p, CornerCoverage(i, j, w, h, radius)) : p);
+        }
+    }
+}
+
 void Canvas::Ring(float cx, float cy, float outer, float inner, std::uint32_t color) {
     for (int j = int(cy - outer - 1); j <= int(cy + outer + 1); ++j) {
         for (int i = int(cx - outer - 1); i <= int(cx + outer + 1); ++i) {

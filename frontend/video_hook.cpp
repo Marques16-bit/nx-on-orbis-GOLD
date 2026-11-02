@@ -17,6 +17,7 @@
 #endif
 
 #include "menu/menu_canvas.h"
+#include "screenshot.h"
 #include "video_hook.h"
 
 #include "ps4_platform.h"
@@ -79,6 +80,8 @@ struct State {
     // on screen yet, so no flicker) and once more when the flip is over (in case the GPU wrote over it late).
     std::uint64_t hidden_flips = 0, shown_flips = 0;
     std::uint64_t submit_us = 0;       // when the last flip was queued
+    Timeline tl;                       // 0.7.9: flip intervals since the last TakeTimeline()
+    std::uint64_t tl_prev_us = 0;      // when the flip before was queued
     std::uint64_t draws_hidden = 0, draws_late = 0;
     int delay_us = 2000;               // classic: the GPU gets this long to finish a frame before it is drawn in
     // The notice in the bottom left corner (the shader counter, memory warnings).
@@ -710,6 +713,38 @@ bool Ready() {
     return s.armed && s.settings.draw && s.linear && s.handle >= 0 && s.count > 0 && s.last_index >= 0;
 }
 
+bool SaveScreenshot(const std::string& path, std::string* why) {
+    State& s = S();
+    std::vector<std::uint32_t> copy;
+    bool red_low = false;
+    int width = 0, height = 0, index = -1;
+    {
+        // Only the copy is done under the lock; the file is written after it, so the worker and the
+        // flip call are never held up by the disk.
+        std::lock_guard lock{s.mutex};
+        if (!s.armed || !s.linear || s.handle < 0 || s.count <= 0 || s.last_index < 0 || s.last_index >= s.count ||
+            s.address[s.last_index] == nullptr || s.width == 0 || s.height == 0) {
+            if (why != nullptr) {
+                *why = "no frame on screen yet (the video buffers are not known or not linear)";
+            }
+            return false;
+        }
+        width = static_cast<int>(s.width);
+        height = static_cast<int>(s.height);
+        index = s.last_index;
+        red_low = s.format_used == FormatA8B8G8R8;
+        copy.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+        const std::uint32_t* src = s.address[index];
+        // Row by row and in order: the buffers may be write-combined memory, which is slow to read
+        // but fine when it is read front to back.
+        for (int y = 0; y < height; ++y) {
+            std::memcpy(copy.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width),
+                        src + static_cast<std::size_t>(y) * s.pitch, static_cast<std::size_t>(width) * sizeof(std::uint32_t));
+        }
+    }
+    return Ps4Shot::WriteBmp(path, copy.data(), width, height, red_low, why);
+}
+
 void SetHud(bool on) {
     State& s = S();
     std::lock_guard lock{s.mutex};
@@ -779,6 +814,15 @@ KeepAliveStats GetKeepAliveStats() {
     State& s = S();
     std::lock_guard lock{s.mutex};
     return s.ka;
+}
+
+Timeline TakeTimeline() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    Timeline out = s.tl;
+    out.flips_total = s.flips;
+    s.tl = Timeline{};
+    return out;
 }
 
 void SetClockForTest(std::uint64_t (*now_micros)()) {
@@ -887,6 +931,17 @@ extern "C" int32_t __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t index, u
             s.last_index = index;
             ++s.flips;
             s.submit_us = NowMicros();
+            if (s.tl_prev_us != 0 && s.submit_us >= s.tl_prev_us) {
+                const std::uint64_t gap = s.submit_us - s.tl_prev_us;
+                s.tl.gap_sum_us += gap;
+                s.tl.gap_max_us = std::max(s.tl.gap_max_us, gap);
+                s.tl.over_34ms += gap > 34000;
+                s.tl.over_50ms += gap > 50000;
+                s.tl.over_100ms += gap > 100000;
+                s.tl.over_250ms += gap > 250000;
+            }
+            s.tl_prev_us = s.submit_us;
+            ++s.tl.flips;
             // Keep-alive: the frame is stamped before the real flip. If the game's GPU is already done
             // with it this is its final overlay; if not, the worker puts the overlay back within a
             // millisecond of the game painting over it. Only bitmaps that already exist are copied

@@ -2,9 +2,13 @@
 // eden-ps4: the menu. See menu_ui.h.
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
 
 #include "menu/menu_ui.h"
+
+#include "menu/cover_loader.h"
 
 namespace Menu {
 
@@ -21,35 +25,8 @@ constexpr int FooterCells = (1920 - 2 * Margin) / 20;
 
 constexpr int TabGames = 0, TabVideo = 1, TabCpu = 2, TabAdvanced = 3, TabSystem = 4, TabLog = 5, TabPerf = 6;
 
-/// The title in a dump's file name: no extension, no [tags] or (tags) ("Super Mario Maker 2
-/// [01009B90006DC000][v0] (US).nsp" -> "Super Mario Maker 2"), '_' as spaces, spaces tidied.
-std::string DisplayName(const std::string& file) {
-    std::string name = file;
-    if (const auto dot = name.find_last_of('.'); dot != std::string::npos && dot > 0) {
-        name.erase(dot);
-    }
-    std::string title;
-    int depth = 0;
-    for (const char ch : name) {
-        if (ch == '[' || ch == '(') {
-            ++depth;
-        } else if ((ch == ']' || ch == ')') && depth > 0) {
-            --depth;
-        } else if (depth == 0) {
-            title += ch == '_' ? ' ' : ch;
-        }
-    }
-    std::string tidy;
-    for (const char ch : title) {
-        if (!(ch == ' ' && (tidy.empty() || tidy.back() == ' '))) {
-            tidy += ch;
-        }
-    }
-    while (!tidy.empty() && (tidy.back() == ' ' || tidy.back() == '-')) {
-        tidy.pop_back();
-    }
-    return tidy.empty() ? name : tidy;
-}
+using Covers::DisplayName;
+using Covers::TitleIdOf;
 
 std::string FormatSize(std::uint64_t bytes, Lang lang) {
     char text[32];
@@ -115,6 +92,72 @@ std::vector<std::string> Wrap(const std::string& text, int cells, size_t max_lin
         lines.back() = Clip(lines.back() + " …", cells);
     }
     return lines;
+}
+
+/// The first letters of the first two words of a title, upper case ("Super Mario Maker 2" -> "SM").
+std::string Initials(const std::string& title, int count) {
+    std::string out;
+    bool word_start = true;
+    int words = 0;
+    for (size_t i = 0; i < title.size() && words < count;) {
+        size_t len = 1;
+        const unsigned char ch = static_cast<unsigned char>(title[i]);
+        if (ch >= 0xF0) len = 4; else if (ch >= 0xE0) len = 3; else if (ch >= 0xC0) len = 2;
+        if (ch == ' ' || ch == '-' || ch == ':') {
+            word_start = true;
+        } else if (word_start) {
+            out += ch < 0x80 ? std::string(1, char(std::toupper(ch))) : title.substr(i, len);
+            ++words;
+            word_start = false;
+        }
+        i += len;
+    }
+    return out;
+}
+
+/// Hue (0..1) from the title: the same game always gets the same colours.
+float HueOf(const std::string& key) {
+    std::uint32_t h = 2166136261u;
+    for (const char ch : key) {
+        h = (h ^ static_cast<unsigned char>(ch)) * 16777619u;
+    }
+    return float(h % 3600u) / 3600.0f;
+}
+
+std::uint32_t FromHsv(float h, float s, float v) {
+    const float f = h * 6.0f - std::floor(h * 6.0f);
+    const float p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+    float r = v, g = t, b = p;
+    switch (int(std::floor(h * 6.0f)) % 6) {
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    case 5: r = v; g = p; b = q; break;
+    default: break;
+    }
+    return 0xFF000000u | (std::uint32_t(r * 255.0f + 0.5f) << 16) | (std::uint32_t(g * 255.0f + 0.5f) << 8) | std::uint32_t(b * 255.0f + 0.5f);
+}
+
+/// A game's picture in a size x size box at (x, y): its cover, or a tile (a gradient with the initials)
+/// when it has none. `image` is the cover or the thumbnail, already fitted to the box.
+void DrawCover(Canvas& c, int x, int y, int size, const Image::Pixels& image, const std::string& title, const std::string& key) {
+    const int radius = std::max(6, size / 14);
+    if (image.Ok()) {
+        c.RoundRect(x, y, size, size, radius, 0xFF0E1530);
+        const int ix = x + (size - image.w) / 2, iy = y + (size - image.h) / 2;
+        const bool fills = image.w >= size - 1 && image.h >= size - 1;
+        c.DrawImage(ix, iy, image.px.data(), image.w, image.h, fills ? radius : std::max(2, radius / 3));
+        return;
+    }
+    const float hue = HueOf(key);
+    c.RoundRectGradient(x, y, size, size, radius, FromHsv(hue, 0.55f, 0.82f), FromHsv(std::fmod(hue + 0.07f, 1.0f), 0.70f, 0.38f));
+    const std::string letters = Initials(title, size >= 200 ? 2 : 1);
+    const int scale = size >= 300 ? 4 : (size >= 120 ? 2 : 1);
+    const int w = TextWidth(letters, scale), h = GlyphHeight * scale;
+    if (w <= size && h <= size) {
+        c.Print(x + (size - w) / 2, y + (size - h) / 2 - (size >= 120 ? 4 : 0), letters, 0xFFFFFFFF, scale);
+    }
 }
 
 void DrawRow(Canvas& c, int y, bool selected, bool modified, const std::string& label,
@@ -402,6 +445,50 @@ void MenuUi::DrawTabs(Canvas& c) const {
     }
 }
 
+void MenuUi::DrawGameCard(Canvas& c, int index) const {
+    // The right-hand card: the cover of the selected game, its title and what is known about it.
+    constexpr int CardX = 1040, CardW = 1920 - Margin - CardX, CardY = ContentTop - 10, CardH = HelpTop - 12 - CardY;
+    c.RoundRect(CardX, CardY, CardW, CardH, 16, Color::Panel);
+    const bool is_game = index >= 0 && index < int(games_.size());
+    const GameEntry* game = is_game ? &games_[size_t(index)] : nullptr;
+    const std::string title = is_game ? DisplayName(game->name) : std::string(T("Teste do emulador", "Emulator test"));
+    const std::string id = is_game ? TitleIdOf(game->name) : std::string();
+    const int cover_x = CardX + (CardW - CoverSize) / 2, cover_y = CardY + 22;
+    if (is_game && game->cover.Ok()) {
+        // The frame hugs the picture, whatever its proportions (a portrait box art, a wide banner).
+        const Image::Pixels& img = game->cover;
+        const int ix = cover_x + (CoverSize - img.w) / 2, iy = cover_y + (CoverSize - img.h) / 2;
+        c.RoundRect(ix - 6, iy - 6, img.w + 12, img.h + 12, 20, Color::Accent);
+        c.DrawImage(ix, iy, img.px.data(), img.w, img.h, 14);
+    } else {
+        // a soft frame behind the generated tile
+        c.RoundRect(cover_x - 6, cover_y - 6, CoverSize + 12, CoverSize + 12, 22, Color::Accent);
+        DrawCover(c, cover_x, cover_y, CoverSize, Image::Pixels{}, title, id.empty() ? title : id);
+    }
+    constexpr int CardCells = (CardW - 60) / GlyphWidth;
+    const std::vector<std::string> lines = Wrap(title, CardCells, 2);
+    int y = cover_y + CoverSize + 22;
+    for (const std::string& line : lines) {
+        c.Print(CardX + (CardW - TextWidth(line)) / 2, y, line, 0xFFFFFFFF);
+        y += 40;
+    }
+    std::string info;
+    if (is_game) {
+        info = FormatSize(game->bytes, lang());
+        if (!id.empty()) {
+            info += "   ·   " + id;
+        }
+    } else {
+        info = T("Homebrew Menu (teste interno)", "Homebrew Menu (built-in test)");
+    }
+    info = Clip(info, CardCells);
+    c.Print(CardX + (CardW - TextWidth(info)) / 2, y + 6, info, Color::Dim);
+    if (is_game && !game->cover.Ok()) {
+        const std::string hint = Clip(T("Sem capa: ponha uma imagem em covers/", "No cover: put a picture in covers/"), CardCells);
+        c.Print(CardX + (CardW - TextWidth(hint)) / 2, CardY + CardH - 46, hint, Color::Dim);
+    }
+}
+
 void MenuUi::DrawGames(Canvas& c) const {
     const Lang l = lang();
     int top = ContentTop;
@@ -416,7 +503,11 @@ void MenuUi::DrawGames(Canvas& c) const {
                   "and open the app again. See the SYSTEM tab to check keys and firmware."),
                 Color::Dim);
         top += 3 * RowHeight + 14;
+    } else {
+        DrawGameCard(c, selected_[TabGames]);
     }
+    // The list narrows when the card takes the right-hand side.
+    const int list_w = games_.empty() ? 1920 - 2 * Margin : 1040 - 30 - Margin;
     const int count = RowCount(TabGames);
     const int rows = games_.empty() ? VisibleRows - 3 : VisibleRows;
     const int first = std::clamp(scroll_[TabGames], 0, std::max(count - rows, 0));
@@ -424,25 +515,29 @@ void MenuUi::DrawGames(Canvas& c) const {
         const int index = first + r;
         const bool is_game = index < int(games_.size());
         const std::string size = is_game ? FormatSize(games_[size_t(index)].bytes, l) : std::string();
-        const int name_cells = (1920 - 2 * Margin - 46 - 30 - 40) / GlyphWidth - TextCells(size) - 1;
-        const std::string name = is_game ? Clip(DisplayName(games_[size_t(index)].name), name_cells)
-                                         : std::string(T("Teste do emulador (Homebrew Menu)", "Emulator test (Homebrew Menu)"));
+        const int text_x = Margin + 20 + ThumbSize + 18;
+        const int name_cells = (list_w - (text_x - Margin) - 24 - TextWidth(size)) / GlyphWidth - 1;
+        const std::string title = is_game ? DisplayName(games_[size_t(index)].name) : std::string(T("Teste do emulador (Homebrew Menu)", "Emulator test (Homebrew Menu)"));
+        const std::string name = Clip(title, name_cells);
         const bool selected = index == selected_[TabGames];
         const int y = top + r * RowHeight;
         if (selected) {
-            c.RoundRect(Margin, y - 4, 1920 - 2 * Margin, RowHeight - 4, 10, Color::Selected);
+            c.RoundRect(Margin, y - 4, list_w, RowHeight - 4, 10, Color::Selected);
             c.Fill(Margin, y + 6, 6, RowHeight - 24, Color::Teal);
         }
-        c.Print(Margin + 46, y, name, selected ? 0xFFFFFFFF : (is_game ? Color::Text : Color::Dim));
+        const std::string id = is_game ? TitleIdOf(games_[size_t(index)].name) : std::string();
+        DrawCover(c, Margin + 20, y - 1, ThumbSize, is_game ? games_[size_t(index)].thumb : Image::Pixels{}, title,
+                  id.empty() ? title : id);
+        c.Print(text_x, y, name, selected ? 0xFFFFFFFF : (is_game ? Color::Text : Color::Dim));
         if (is_game) {
-            c.Print(1920 - Margin - 30 - TextWidth(size), y, size, Color::Dim);
+            c.Print(Margin + list_w - 24 - TextWidth(size), y, size, Color::Dim);
         }
     }
     if (first > 0) {
-        c.Print(1920 - Margin - GlyphWidth, top - 36, "▲", Color::Dim);
+        c.Print(Margin + list_w - GlyphWidth - 4, top - 36, "▲", Color::Dim);
     }
     if (first + rows < count) {
-        c.Print(1920 - Margin - GlyphWidth, top + rows * RowHeight, "▼", Color::Dim);
+        c.Print(Margin + list_w - GlyphWidth - 4, top + rows * RowHeight, "▼", Color::Dim);
     }
 }
 
@@ -626,8 +721,8 @@ void MenuUi::Draw(Canvas& c) const {
         help = Wrap(on_homebrew
                         ? T("Teste interno. A mensagem \"launchInit() failed\" é ESPERADA (o Homebrew Menu precisa do nx-hbloader): se ela aparece, o emulador roda. OPTIONS sai.",
                             "Built-in test. The message \"launchInit() failed\" is EXPECTED (the Homebrew Menu needs nx-hbloader): if it shows, the emulator runs. OPTIONS quits.")
-                        : T("Escolha um jogo e aperte X. As opções das outras abas valem na hora de iniciar.",
-                            "Pick a game and press X. The options in the other tabs apply when it starts."),
+                        : T("Escolha um jogo e aperte X. As opções das outras abas valem ao iniciar. Capas: PNG/JPG/BMP em covers/ com o ID do título ou o nome do jogo.",
+                            "Pick a game and press X. The options in the other tabs apply at start. Covers: PNG/JPG/BMP in covers/, named by title id or game file name."),
                     HelpCells, 2);
     } else if (tab_ == TabLog) {
         DrawLog(c);

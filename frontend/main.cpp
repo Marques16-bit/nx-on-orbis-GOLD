@@ -34,6 +34,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "common/fs/path_util.h"
@@ -64,7 +65,9 @@
 #include "eden_settings.h"
 #include "firmware_zip.h"
 #include "memory_guard.h"
+#include "menu/cover_loader.h"
 #include "menu/menu_ui.h"
+#include "screenshot.h"
 #include "video_hook.h"
 #include "menu/rom_menu.h"
 #include "ps4_platform.h"
@@ -289,7 +292,22 @@ std::string FindGame() {
             std::error_code size_ec;
             entries.push_back({game.filename().string(), std::uint64_t(fs::file_size(game, size_ec))});
         }
-        const MenuOutcome outcome = RunMainMenu(entries, int(index), CollectSystemInfo());
+        {
+            // 0.7.9: the covers of the games list (covers/<title id>.png, <file name>.jpg, ...).
+            const fs::path covers_dir = data / "covers";
+            const Menu::Covers::Report covers = Menu::Covers::Load(covers_dir, entries);
+            if (!covers.dir_found) {
+                std::error_code mk_ec;
+                fs::create_directories(covers_dir, mk_ec);
+                Ps4::Log("covers: no covers/ folder yet (%s); made one. Put PNG, JPG or BMP pictures there, named by title id or game file name", covers_dir.string().c_str());
+            } else {
+                Ps4::Log("covers: %d picture(s) in covers/, %d of %zu game(s) got one, %d failed%s%s, %d without the big picture (memory cap), %d not tried (time); %lu MiB, %lld ms",
+                         covers.dir_pictures, covers.found, entries.size(), covers.failed, covers.first_error.empty() ? "" : " (first: ",
+                         covers.first_error.empty() ? "" : (covers.first_error + ")").c_str(), covers.thumbs_only, covers.skipped_time,
+                         static_cast<unsigned long>(covers.cover_bytes >> 20), covers.ms);
+            }
+        }
+        const MenuOutcome outcome = RunMainMenu(std::move(entries), int(index), CollectSystemInfo());
         if (outcome.choice == MenuChoice::Homebrew) {
             // The Homebrew Menu (switchbrew/nx-hbmenu, ISC) that ships in the package: a test of
             // CPU, GPU and presentation that needs no game.
@@ -796,6 +814,10 @@ int main() {
                    "firmware/   os arquivos .nca do firmware do SEU Switch\n"
                    "            the .nca files of YOUR Switch's firmware\n"
                    "roms/       seus jogos .nsp ou .xci / your .nsp or .xci games\n"
+                   "covers/     capas: PNG, JPG ou BMP com o ID do titulo (01009B90006DC000.png) ou o nome do jogo\n"
+                   "            covers: PNG, JPG or BMP named by title id or by the game's file name\n"
+                   "shots/      capturas de tela (L3 + TouchPad) / screenshots (L3 + TouchPad)\n"
+                   "logs/       os ultimos 8 boot.log / the last 8 boot logs\n"
                    "updates/    atualizacoes e DLC (.nsp) / updates and DLC (.nsp)\n"
                    "nand/ sdmc/ saves e dados do emulador / saves and the emulator's data\n"
                    "settings.txt  as opcoes do menu / the menu's options\n"
@@ -877,6 +899,7 @@ int main() {
             Ps4::Log("overlay: classic drawing (0.7.3), %d ms wait", hook.draw_delay_ms);
         }
         Ps4Hook::Arm(Ps4Hook::Pending());
+        Ps4::Log("screenshot: L3 + TouchPad saves the screen (HUD included) as %s/shots/shot_NNNN.bmp; the game pauses for a moment", Ps4::DataDir);
     } else {
         Ps4::Log("overlay off: no HUD, no pause menu, no colour swap");
     }
@@ -1055,12 +1078,39 @@ int main() {
         Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu", lines, menu_sel,
                            pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
     };
-    std::uint64_t last_status = Ps4::NowUs(), last_notice = 0, last_mem_check = 0;
+    std::uint64_t last_status = Ps4::NowUs(), last_notice = 0, last_mem_check = 0, last_timeline = Ps4::NowUs();
     unsigned status_count = 0;
     int shaders_last = 0, shaders_total = 0;
     std::uint64_t free_mib = Ps4::FreeDirectMemory() >> 20;
     const auto stage_name = [](Ps4Memory::Stage stage) {
         return stage == Ps4Memory::Stage::Ok ? "ok" : stage == Ps4Memory::Stage::Low ? "low" : "critical";
+    };
+    // 0.7.8: L3 + TouchPad saves what is on the screen as shots/shot_NNNN.bmp (HUD included), so a graphics
+    // fault can be looked at as it is, not through a phone camera. The game is paused for the copy.
+    bool shot_before = false;
+    std::uint64_t shot_until = 0;
+    const auto take_shot = [&] {
+        if (!Ps4Hook::Ready()) {
+            Ps4::Log("screenshot: not available yet (%s)", Ps4Hook::Describe().c_str());
+            return;
+        }
+        system.Pause();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300)); // frames already in flight reach the screen first
+        const std::string path = Ps4Shot::NextPath(fs::path{Ps4::DataDir} / "shots");
+        const std::uint64_t t0 = Ps4::NowUs();
+        std::string why;
+        const bool ok = Ps4Hook::SaveScreenshot(path, &why);
+        const unsigned long ms = static_cast<unsigned long>((Ps4::NowUs() - t0) / 1000);
+        system.Run();
+        const std::string name = fs::path{path}.filename().string();
+        if (ok) {
+            Ps4::Log("screenshot: saved %s in %lu ms (the picture on screen, HUD included)", path.c_str(), ms);
+        } else {
+            Ps4::Log("screenshot: NOT saved (%s)", why.c_str());
+        }
+        Ps4Hook::SetNotice(ok ? std::string(pt ? "Print salvo: shots/" : "Screenshot saved: shots/") + name
+                              : std::string(pt ? "Print nao salvo: " : "Screenshot failed: ") + why);
+        shot_until = Ps4::NowUs() + 4000000;
     };
     const char* leave_reason = "the game exited";
     for (;;) {
@@ -1150,6 +1200,14 @@ int main() {
             }
         }
         combo_before = menu_combo;
+        {
+            const bool shot_combo = (pad.buttons & Ps4::Button::L3) && (pad.buttons & Ps4::Button::TouchPad) &&
+                                    !(pad.buttons & Ps4::Button::R3) && !(pad.buttons & Ps4::Button::Options);
+            if (shot_combo && !shot_before) {
+                take_shot();
+            }
+            shot_before = shot_combo;
+        }
         if (pad.connected && gamepad != nullptr) {
             PollPad(*gamepad, pad);
         }
@@ -1192,7 +1250,14 @@ int main() {
         }
         // The shader counter (Cemu's "compiling shaders"): what Eden's own notifier says is being
         // built, kept as a running total, with the memory watch's warning after it. Every 250 ms.
-        if (notice_on && Ps4::NowUs() - last_notice > 250000) {
+        if (shot_until != 0 && Ps4::NowUs() >= shot_until) {
+            shot_until = 0; // the screenshot message has been up long enough
+            last_notice = 0;
+            if (!notice_on) {
+                Ps4Hook::SetNotice({});
+            }
+        }
+        if (notice_on && shot_until == 0 && Ps4::NowUs() - last_notice > 250000) {
             last_notice = Ps4::NowUs();
             Ps4Shader::CountBuilding(system.GPU().ShaderNotify().ShadersBuilding(), &shaders_last, &shaders_total);
             // The memory warning comes from the watch above (with the speed of the fall), not from the
@@ -1218,6 +1283,20 @@ int main() {
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
                 Ps4::Log("%s", Ps4Hook::Describe().c_str());
+            }
+        }
+        // 0.7.9: the frame pacing the game really delivered to the screen, every 2 s: flips, the average and
+        // longest interval, and how many intervals were longer than 34 / 50 / 100 / 250 ms. A speed of 9 fps
+        // with a steady 110 ms interval is a slow game; a speed of 9 fps made of 30 fps and long stalls is
+        // something else (a stutter), and this line tells them apart. Lines are skipped while no flip happens.
+        if (Ps4::NowUs() - last_timeline > 2000000) {
+            last_timeline = Ps4::NowUs();
+            const Ps4Hook::Timeline tl = Ps4Hook::TakeTimeline();
+            if (tl.flips > 0) {
+                Ps4::Log("tl: %lu flips/2s, interval avg %.1f ms max %.0f ms, longer than 34/50/100/250 ms: %lu/%lu/%lu/%lu",
+                         static_cast<unsigned long>(tl.flips), tl.flips > 1 ? double(tl.gap_sum_us) / double(tl.flips - 1) / 1000.0 : 0.0,
+                         double(tl.gap_max_us) / 1000.0, static_cast<unsigned long>(tl.over_34ms), static_cast<unsigned long>(tl.over_50ms),
+                         static_cast<unsigned long>(tl.over_100ms), static_cast<unsigned long>(tl.over_250ms));
             }
         }
     }

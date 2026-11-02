@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <sys/mman.h>
@@ -121,7 +122,7 @@ bool WriteSettings(const std::string& text) {
 
 } // Anonymous namespace
 
-MenuOutcome RunMainMenu(const std::vector<Menu::GameEntry>& games, int initial,
+MenuOutcome RunMainMenu(std::vector<Menu::GameEntry> games, int initial,
                         const Menu::SystemInfo& info) {
     off_t phys = 0;
     if (int rc = sceKernelAllocateDirectMemory(0, off_t(sceKernelGetDirectMemorySize()),
@@ -156,9 +157,10 @@ MenuOutcome RunMainMenu(const std::vector<Menu::GameEntry>& games, int initial,
         sceKernelReleaseDirectMemory(phys, TotalBytes);
         return {};
     }
-    Ps4::Log("menu: %zu games listed", games.size());
+    const size_t game_count = games.size(); // `games` is moved into the menu below
+    Ps4::Log("menu: %zu games listed", game_count);
 
-    Menu::MenuUi ui{games, initial, info, ReadSettings(), WriteSettings};
+    Menu::MenuUi ui{std::move(games), initial, info, ReadSettings(), WriteSettings}; // moved: the covers are not copied
     std::vector<std::uint32_t> scratch(size_t(Width) * Height);
     int back = 0;
     const auto present = [&] {
@@ -206,7 +208,7 @@ MenuOutcome RunMainMenu(const std::vector<Menu::GameEntry>& games, int initial,
     if (ui.Result().kind == Menu::MenuResult::Kind::Play) {
         outcome = {MenuChoice::Game, ui.Result().game};
         Ps4::Log("menu: game %d of %zu chosen, display closed (0x%x); framebuffers kept",
-                 outcome.game + 1, games.size(), unsigned(closed));
+                 outcome.game + 1, game_count, unsigned(closed));
     } else {
         outcome = {MenuChoice::Homebrew, -1};
         Ps4::Log("menu: the Homebrew Menu chosen, display closed (0x%x); framebuffers kept",

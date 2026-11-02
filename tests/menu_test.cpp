@@ -398,8 +398,10 @@ void TestNavigation() {
             }
             return total;
         };
-        Check(frame("Super Mario Maker 2 [01009B90006DC000][v0] (US).nsp") == frame("Super Mario Maker 2.xci"),
+        Check(frame("Super Mario Maker 2 [01009B90006DC000][v0] (US).nsp") == frame("Super Mario Maker 2 [01009B90006DC000].xci"),
               "the title in the list has no [tags], (tags) or extension");
+        Check(frame("Super Mario Maker 2 [01009B90006DC000].nsp") != frame("Super Mario Maker 2.nsp"),
+              "the card shows the title id when the file name has one");
         Check(frame("Super_Mario_Maker_2.nsp") == frame("Super Mario Maker 2.nsp"), "underscores read as spaces");
         Check(frame("Celeste.nsp") != frame("Super Mario Maker 2.nsp"), "different titles draw differently");
     }
@@ -474,6 +476,69 @@ void TestDrawing(const char* render_dir) {
                     WritePpm(name, frame);
                 }
             }
+        }
+    }
+    // 0.7.9 covers: a game with a picture draws it (big in the card, small in the list); one without gets a tile.
+    {
+        auto make_cover = [](int w, int h, std::uint32_t a, std::uint32_t b) {
+            Image::Pixels img;
+            img.w = w;
+            img.h = h;
+            img.px.resize(size_t(w) * size_t(h));
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const bool stripe = ((x + y) / 24) % 2 == 0;
+                    img.px[size_t(y) * size_t(w) + size_t(x)] = stripe ? a : b;
+                }
+            }
+            return img;
+        };
+        auto games_with = [&](bool covers) {
+            std::vector<GameEntry> games = {{"Super Mario Odyssey [0100000000010000].nsp", 5800ull << 20},
+                                            {"Celeste.nsp", 1200ull << 20},
+                                            {"Hollow Knight [0100633007D48000].nsp", 3ull << 30}};
+            if (covers) {
+                games[0].cover = Image::Fit(make_cover(300, 420, 0xFFD02828, 0xFFF8D030), CoverSize, CoverSize, true);
+                games[0].thumb = Image::Fit(games[0].cover, ThumbSize, ThumbSize);
+                games[1].cover = Image::Fit(make_cover(512, 512, 0xFF2878D0, 0xFF103060), CoverSize, CoverSize, true);
+                games[1].thumb = Image::Fit(games[1].cover, ThumbSize, ThumbSize);
+            }
+            return games;
+        };
+        Check(games_with(true)[0].cover.h == CoverSize && games_with(true)[0].cover.w < CoverSize,
+              "a portrait cover is fitted to the card keeping its proportions");
+        Check(games_with(true)[0].thumb.h == ThumbSize, "the list thumbnail is ThumbSize high");
+        auto draw = [&](bool covers, int select) {
+            MenuUi ui(games_with(covers), select, Rig::MakeInfo(3), "", nullptr);
+            Frame frame;
+            Canvas canvas = frame.Canvas_();
+            ui.Draw(canvas);
+            return frame;
+        };
+        const Frame with = draw(true, 0), without = draw(false, 0);
+        size_t different = 0;
+        for (size_t i = 0; i < with.pixels.size(); ++i) {
+            different += with.pixels[i] != without.pixels[i];
+        }
+        Check(different > 30000, "a cover changes the card and the list");
+        // The middle of the card shows the cover's own colours (red or yellow stripes), not the tile's gradient.
+        const std::uint32_t mid = with.pixels[size_t(220 + 200) * 1920 + 1420];
+        Check((mid & 0xFFFFFF) == 0xD02828 || (mid & 0xFFFFFF) == 0xF8D030, "the card draws the picture's pixels");
+        const Frame second = draw(true, 1);
+        Check(second.pixels != with.pixels, "selecting another game changes the card");
+        // A cover that fails to load leaves the entry empty: the tile is drawn and nothing crashes.
+        std::vector<GameEntry> broken = {{"Broken.nsp", 1ull << 20}};
+        broken[0].cover.w = 10;
+        broken[0].cover.h = 10; // pixels missing: Ok() is false
+        MenuUi ui(broken, 0, Rig::MakeInfo(1), "", nullptr);
+        Frame frame;
+        Canvas canvas = frame.Canvas_();
+        ui.Draw(canvas);
+        Check(true, "an inconsistent cover is ignored");
+        if (render_dir != nullptr) {
+            char name[256];
+            std::snprintf(name, sizeof(name), "%s/menu-pt-0-covers.ppm", render_dir);
+            WritePpm(name, with);
         }
     }
     // Text drawing: UTF-8 is decoded, an unknown character is a '?', nothing is drawn out of bounds.

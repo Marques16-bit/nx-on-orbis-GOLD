@@ -55,6 +55,10 @@ void Arm(const Settings& settings, bool start_worker = true);
 void Pump();
 /// The game's buffers are known and linear, so drawing over it works.
 bool Ready();
+/// 0.7.8: saves the picture on screen (the buffer flipped last, with the HUD as it is there) as a
+/// 24-bit BMP. Call it with the game paused, so the buffer is not being rewritten while it is read.
+/// False, with `why` filled in, when there is no frame yet or the file cannot be written.
+bool SaveScreenshot(const std::string& path, std::string* why);
 void SetHud(bool on);
 bool HudOn();
 /// A panel over the middle of the screen: a title, lines (one highlighted, -1 for none) and a footer.
@@ -83,6 +87,20 @@ struct KeepAliveStats {
     std::uint64_t erased_after_flip = 0; // the first look after a flip found the overlay no longer in that buffer
 };
 KeepAliveStats GetKeepAliveStats();
+
+/// 0.7.9: what the flips did since the last call (then reset): how many, and how far apart. Over a
+/// window of a few seconds this is the frame pacing the game actually delivered to the screen.
+struct Timeline {
+    std::uint64_t flips = 0;         // flips queued in the window
+    std::uint64_t gap_sum_us = 0;    // sum of the intervals between consecutive flips
+    std::uint64_t gap_max_us = 0;    // the longest interval
+    std::uint64_t over_34ms = 0;     // intervals longer than 34 ms (a missed frame at 30 fps)
+    std::uint64_t over_50ms = 0;
+    std::uint64_t over_100ms = 0;
+    std::uint64_t over_250ms = 0;
+    std::uint64_t flips_total = 0;   // since the hook was armed (not reset)
+};
+Timeline TakeTimeline();
 
 /// Test seam: replaces the clock (microseconds); nullptr puts the real one back.
 void SetClockForTest(std::uint64_t (*now_micros)());

@@ -21,5 +21,5 @@ struct MenuOutcome {
 
 /// Shows the menu until a game (or the Homebrew Menu) is picked. Options changed in it are saved
 /// to settings.txt as they change, so they apply to the game that is about to start.
-MenuOutcome RunMainMenu(const std::vector<Menu::GameEntry>& games, int initial,
+MenuOutcome RunMainMenu(std::vector<Menu::GameEntry> games, int initial,
                         const Menu::SystemInfo& info);

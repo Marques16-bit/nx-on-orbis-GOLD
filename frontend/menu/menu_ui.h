@@ -10,8 +10,10 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "menu/image_decode.h"
 #include "menu/menu_canvas.h"
 #include "menu/settings_model.h"
 
@@ -34,7 +36,16 @@ inline constexpr std::uint32_t Cross = 0x4000;
 struct GameEntry {
     std::string name; // file name
     std::uint64_t bytes = 0;
+    // 0.7.9: the cover, read from covers/ by the console side. Both empty when there is none (the menu then
+    // draws a generated tile). `cover` fits in CoverSize x CoverSize, `thumb` in ThumbSize x ThumbSize.
+    Image::Pixels cover;
+    Image::Pixels thumb;
+
+    GameEntry() = default;
+    GameEntry(std::string file, std::uint64_t size) : name(std::move(file)), bytes(size) {}
 };
+inline constexpr int CoverSize = 400;
+inline constexpr int ThumbSize = 44;
 
 /// What the SYSTEM tab shows. Filled by the console side.
 struct SystemInfo {
@@ -102,6 +113,7 @@ private:
     void DrawHeader(Canvas& c) const;
     void DrawTabs(Canvas& c) const;
     void DrawGames(Canvas& c) const;
+    void DrawGameCard(Canvas& c, int index) const;
     void DrawOptions(Canvas& c) const;
     void DrawSystem(Canvas& c) const;
     void DrawLog(Canvas& c) const;
