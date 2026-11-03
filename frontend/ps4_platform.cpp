@@ -569,12 +569,14 @@ std::string PrepareDataDir() {
 
 namespace Ps4 {
 
-/// 0.7.9: boot.old.log is about to be replaced; every process start (the menu, each game, each Exit or
-/// Restart) rotates the logs, so after two starts the log of the game was gone. It is moved to
-/// logs/boot_YYYYMMDD-HHMMSS.log first (the time of its last line), and the newest 8 are kept.
-static void ArchiveOldLog(const std::string& old) {
+/// 0.7.9/0.7.10: every process start (the menu, each game, each Exit or Restart) rotates the logs, so after
+/// two starts the log of the game was gone (0.7.9: Super Mario Maker 2's eden_log was lost that way). A
+/// log that is about to be replaced is first moved to logs/<prefix>_YYYYMMDD-HHMMSS.log (the time of its
+/// last line), and the newest 8 of each kind are kept. Logs under `min_bytes` (a menu-only run) are not
+/// worth a slot and are left to the normal rotation.
+static void ArchiveLog(const std::string& src, const char* prefix, long long min_bytes) {
     struct stat st;
-    if (stat(old.c_str(), &st) != 0 || st.st_size <= 0) {
+    if (stat(src.c_str(), &st) != 0 || st.st_size < min_bytes || st.st_size <= 0) {
         return;
     }
     const std::string dir = std::string(DataDir) + "/logs";
@@ -588,18 +590,19 @@ static void ArchiveOldLog(const std::string& old) {
     } else {
         std::snprintf(stamp, sizeof(stamp), "t%lld", static_cast<long long>(when));
     }
-    std::string target = dir + "/boot_" + stamp + ".log";
+    const std::string head = std::string(prefix) + "_";
+    std::string target = dir + "/" + head + stamp + ".log";
     for (int n = 2; n < 100 && stat(target.c_str(), &st) == 0; ++n) {
-        target = dir + "/boot_" + stamp + "_" + std::to_string(n) + ".log";
+        target = dir + "/" + head + stamp + "_" + std::to_string(n) + ".log";
     }
-    if (std::rename(old.c_str(), target.c_str()) != 0) {
+    if (std::rename(src.c_str(), target.c_str()) != 0) {
         return;
     }
     std::vector<std::string> names;
     if (DIR* d = opendir(dir.c_str())) {
         while (const struct dirent* e = readdir(d)) {
             const std::string name = e->d_name;
-            if (name.compare(0, 5, "boot_") == 0) {
+            if (name.compare(0, head.size(), head) == 0) {
                 names.push_back(name);
             }
         }
@@ -612,6 +615,16 @@ static void ArchiveOldLog(const std::string& old) {
     }
 }
 
+/// Runs before Eden's logger and the driver start, so nothing here is still being written.
+static void ArchiveOldLogs(const std::string& boot_old) {
+    ArchiveLog(boot_old, "boot", 1);
+    const std::string base = std::string(DataDir);
+    ArchiveLog(base + "/log/eden_log.txt", "eden", 2048);
+    ArchiveLog(base + "/log/eden_log.txt.old.txt", "eden", 2048);
+    ArchiveLog(base + "/mesa.log", "mesa", 2048);
+    ArchiveLog(base + "/mesa.old.log", "mesa", 2048);
+}
+
 void OpenBootLog() {
     static bool done = false;
     if (done) {
@@ -622,7 +635,7 @@ void OpenBootLog() {
     const std::string path = std::string(DataDir) + "/boot.log";
     // Keep the previous session's log next to the new one.
     const std::string old = std::string(DataDir) + "/boot.old.log";
-    ArchiveOldLog(old);
+    ArchiveOldLogs(old);
     std::remove(old.c_str());
     std::rename(path.c_str(), old.c_str());
     g_log = std::fopen(path.c_str(), "w");
@@ -639,7 +652,7 @@ void OpenBootLog() {
                 std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S UTC", t);
             }
         }
-        Log("this run started at %s; the logs of the last runs are in logs/ (boot_<time of the last line>.log)", text);
+        Log("this run started at %s; the logs of the last runs are in logs/ (boot_, eden_ and mesa_ followed by the time of the last line)", text);
     }
 }
 

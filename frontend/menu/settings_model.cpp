@@ -210,6 +210,11 @@ const std::vector<Option>& Catalog() {
         {"language", Group::System, "Idioma do menu", "Menu language",
          "Idioma dos textos deste menu.", "Language of this menu's texts.",
          {{"pt", "Português", "Português"}, {"en", "English", "English"}}, 0},
+        {"menu_theme", Group::System, "Cor do menu", "Menu colour",
+         "Cor do menu: azul (padrão), verde, roxo, laranja, rosa, vermelho ou cinza. Vale já, e também no HUD e no menu do jogo.",
+         "Colour of the menu: blue (default), green, purple, orange, pink, red or grey. Applies at once, and to the HUD and the in-game menu too.",
+         {{"blue", "Azul", "Blue"}, {"green", "Verde", "Green"}, {"purple", "Roxo", "Purple"}, {"orange", "Laranja", "Orange"},
+          {"pink", "Rosa", "Pink"}, {"red", "Vermelho", "Red"}, {"grey", "Cinza", "Grey"}}, 0},
     };
     return catalog;
 }

@@ -247,7 +247,8 @@ void TestNavigation() {
         r.Tap(Pad::Cross); // language
         Check(r.saved.find("language=en") != std::string::npos, "Cross on the language switches to English");
         Check(r.ui.Result().kind == MenuResult::Kind::None, "...and does not start a game");
-        r.Tap(Pad::Down);
+        r.Tap(Pad::Down); // the menu colour
+        r.Tap(Pad::Down); // restore defaults
         r.saves = 0;
         r.Tap(Pad::Cross);
         Check(r.saves == 0, "restore defaults asks for confirmation first");
@@ -257,6 +258,7 @@ void TestNavigation() {
     {
         Rig r("mode=docked\nastc=gpu\n");
         r.ui.SetTab(4);
+        r.Tap(Pad::Down);
         r.Tap(Pad::Down);
         r.Tap(Pad::Cross);
         r.Tap(Pad::Up); // moving cancels the confirmation
@@ -355,7 +357,7 @@ void TestNavigation() {
         Check(draw(r) != failed, "the screen tells a failed save from a good one");
     }
     {
-        // Clearing the shader cache asks twice, from the SYSTEM tab's third row.
+        // Clearing the shader cache asks twice, from the SYSTEM tab's fourth row.
         int cleared = 0;
         SystemInfo info = Rig::MakeInfo(1);
         info.shader_cache_games = 2;
@@ -372,6 +374,7 @@ void TestNavigation() {
             ui.Update(0, now);
             now += 50000;
         };
+        tap(Pad::Down);
         tap(Pad::Down);
         tap(Pad::Down);
         tap(Pad::Cross);
@@ -476,6 +479,60 @@ void TestDrawing(const char* render_dir) {
                     WritePpm(name, frame);
                 }
             }
+        }
+    }
+    // 0.7.10 themes: the colour is a setting, changes at once, survives "restore defaults", and every theme draws.
+    {
+        const Option* theme = FindOption("menu_theme");
+        Check(theme != nullptr && int(theme->choices.size()) == ThemeCount(), "the menu_theme choices match the themes in the canvas");
+        Rig r("");
+        r.ui.SetTab(4);
+        r.Tap(Pad::Down); // the colour row
+        r.Tap(Pad::Cross);
+        Check(r.saved.find("menu_theme=green") != std::string::npos, "Cross on the colour row picks the next theme and saves it");
+        Frame green;
+        Canvas canvas = green.Canvas_();
+        r.ui.Draw(canvas);
+        Check(Color::Accent != 0xFF4A86FF, "the theme's colours are applied when the menu draws");
+        Rig again("menu_theme=purple\n");
+        Frame purple;
+        Canvas c2 = purple.Canvas_();
+        again.ui.Draw(c2);
+        Check(purple.pixels != green.pixels, "a different theme draws a different screen");
+        again.ui.SetTab(4);
+        again.Tap(Pad::Down);
+        again.Tap(Pad::Down); // restore defaults
+        again.Tap(Pad::Cross);
+        again.Tap(Pad::Cross);
+        Check(again.saved.find("menu_theme=purple") != std::string::npos, "restore defaults keeps the colour (and the language)");
+        for (int i = 0; i < ThemeCount(); ++i) {
+            Rig each("menu_theme=" + std::string(theme->choices[size_t(i)].value) + "\n");
+            for (int tab = 0; tab < MenuUi::TabCount; ++tab) {
+                each.ui.SetTab(tab);
+                Frame f;
+                Canvas cv = f.Canvas_();
+                each.ui.Draw(cv);
+            }
+            Check(i == 0 || Color::Accent == ThemeAccent(i), "every theme: the accent is the one ThemeAccent reports");
+        }
+        ApplyTheme(0);
+        Check(Color::Accent == 0xFF4A86FF && Color::Panel == 0xFF1B2644 && Color::Teal == 0xFF2DD4C4, "theme 0 is the original blue, exactly");
+        // icons are drawn into the tab bar: the same tab strip differs from one with no icon room? at least they paint something
+        Frame f;
+        Canvas cv = f.Canvas_();
+        cv.Fill(0, 0, 1920, 1080, 0xFF000000);
+        for (int k = 0; k <= int(Icon::Play); ++k) {
+            DrawIcon(cv, Icon(k), 100.0f + 80.0f * float(k), 100.0f, 40.0f, 0xFFFFFFFF, 0xFF000000);
+        }
+        size_t lit = 0;
+        for (std::uint32_t p : f.pixels) {
+            lit += p != 0xFF000000;
+        }
+        Check(lit > 4000, "every icon paints pixels");
+        if (render_dir != nullptr) {
+            char name[256];
+            std::snprintf(name, sizeof(name), "%s/icons.ppm", render_dir);
+            WritePpm(name, f);
         }
     }
     // 0.7.9 covers: a game with a picture draws it (big in the card, small in the list); one without gets a tile.

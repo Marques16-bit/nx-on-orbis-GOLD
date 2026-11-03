@@ -114,6 +114,8 @@ private:
     void DrawTabs(Canvas& c) const;
     void DrawGames(Canvas& c) const;
     void DrawGameCard(Canvas& c, int index) const;
+    /// Index of the colour theme in settings.txt (menu_theme), 0 when absent.
+    int ThemeIndex() const;
     void DrawOptions(Canvas& c) const;
     void DrawSystem(Canvas& c) const;
     void DrawLog(Canvas& c) const;

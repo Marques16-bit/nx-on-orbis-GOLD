@@ -24,11 +24,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -44,7 +47,13 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/cpu_manager.h"
+#include "core/file_sys/card_image.h"
+#include "core/file_sys/common_funcs.h"
+#include "core/file_sys/content_archive.h"
+#include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/registered_cache.h"
+#include "core/file_sys/romfs.h"
+#include "core/file_sys/submission_package.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
@@ -226,6 +235,104 @@ Menu::SystemInfo CollectSystemInfo() {
     return info;
 }
 
+/// 0.7.10: the picture inside a game dump, for the menu's cover. The control NCA of an .nsp / .xci holds a RomFS
+/// with `icon_<language>.dat` (a 256 x 256 JPEG); it is found and decrypted with the user's keys through Eden's
+/// own NSP / XCI / NCA classes, with no emulator core running. Empty on any failure (`why` says what).
+std::vector<std::uint8_t> ReadGameIcon(const fs::path& path, std::string* why) {
+    std::vector<std::uint8_t> bytes;
+    const auto fail = [&](const char* text) {
+        if (why != nullptr) {
+            *why = text;
+        }
+        return std::vector<std::uint8_t>{};
+    };
+    try {
+        const auto vfs = std::make_shared<FileSys::RealVfsFilesystem>();
+        const FileSys::VirtualFile file = vfs->OpenFile(path.string(), FileSys::OpenMode::Read);
+        if (file == nullptr) {
+            return fail("cannot open the file");
+        }
+        std::string ext = path.extension().string();
+        for (char& ch : ext) {
+            ch = char(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        std::shared_ptr<FileSys::NCA> control;
+        if (ext == ".xci") {
+            const FileSys::XCI xci{file};
+            if (xci.GetStatus() != Loader::ResultStatus::Success) {
+                return fail("not a readable .xci");
+            }
+            control = xci.GetNCAByType(FileSys::NCAContentType::Control);
+        } else {
+            const FileSys::NSP nsp{file};
+            if (nsp.GetStatus() != Loader::ResultStatus::Success) {
+                return fail("not a readable .nsp");
+            }
+            control = nsp.GetNCA(FileSys::GetBaseTitleID(nsp.GetProgramTitleID()), FileSys::ContentRecordType::Control);
+        }
+        if (control == nullptr || control->GetStatus() != Loader::ResultStatus::Success) {
+            return fail("no control data (the keys cannot open it?)");
+        }
+        const FileSys::VirtualFile romfs = control->GetRomFS();
+        if (romfs == nullptr) {
+            return fail("the control data has no RomFS");
+        }
+        const FileSys::VirtualDir contents = FileSys::ExtractRomFS(romfs);
+        if (contents == nullptr) {
+            return fail("the control RomFS cannot be read");
+        }
+        FileSys::VirtualFile best;
+        for (const FileSys::VirtualFile& entry : contents->GetFiles()) {
+            const std::string name = entry == nullptr ? std::string{} : entry->GetName();
+            if (name.size() < 9 || name.compare(0, 5, "icon_") != 0 || name.compare(name.size() - 4, 4, ".dat") != 0) {
+                continue;
+            }
+            if (best == nullptr || name == "icon_AmericanEnglish.dat") {
+                best = entry;
+            }
+        }
+        if (best == nullptr) {
+            return fail("the control data has no icon");
+        }
+        bytes = best->ReadAllBytes();
+        if (bytes.size() < 16 || bytes.size() > (4u << 20)) {
+            return fail("the icon has an odd size");
+        }
+    } catch (...) {
+        return fail("an exception while reading the dump");
+    }
+    return bytes;
+}
+
+/// The icon of a dump, read once and kept in cache/icons/ (named by the dump's file name and size), so the next
+/// start of the menu does not open every game again.
+std::vector<std::uint8_t> CachedGameIcon(const fs::path& game, std::string* why, bool* from_cache) {
+    std::error_code ec;
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const char ch : game.filename().string()) {
+        hash = (hash ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+    }
+    hash = (hash ^ static_cast<std::uint64_t>(fs::file_size(game, ec))) * 1099511628211ull;
+    char name[40];
+    std::snprintf(name, sizeof(name), "%016llx.jpg", static_cast<unsigned long long>(hash));
+    const fs::path cached = fs::path{Ps4::DataDir} / "cache" / "icons" / name;
+    if (std::ifstream in{cached, std::ios::binary}; in) {
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (bytes.size() >= 16) {
+            *from_cache = true;
+            return bytes;
+        }
+    }
+    std::vector<std::uint8_t> bytes = ReadGameIcon(game, why);
+    if (!bytes.empty()) {
+        fs::create_directories(cached.parent_path(), ec);
+        if (std::ofstream out{cached, std::ios::binary}; out) {
+            out.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+        }
+    }
+    return bytes;
+}
+
 std::string FindGame() {
     const fs::path data{Ps4::DataDir};
     std::error_code ec;
@@ -293,7 +400,7 @@ std::string FindGame() {
             entries.push_back({game.filename().string(), std::uint64_t(fs::file_size(game, size_ec))});
         }
         {
-            // 0.7.9: the covers of the games list (covers/<title id>.png, <file name>.jpg, ...).
+            // 0.7.9: pictures the user put in covers/ (<title id>.png, <file name>.jpg, ...) come first.
             const fs::path covers_dir = data / "covers";
             const Menu::Covers::Report covers = Menu::Covers::Load(covers_dir, entries);
             if (!covers.dir_found) {
@@ -306,6 +413,47 @@ std::string FindGame() {
                          covers.first_error.empty() ? "" : (covers.first_error + ")").c_str(), covers.thumbs_only, covers.skipped_time,
                          static_cast<unsigned long>(covers.cover_bytes >> 20), covers.ms);
             }
+        }
+        {
+            // 0.7.10: the games the covers/ folder did not cover get the picture from inside the dump.
+            using Clock = std::chrono::steady_clock;
+            const auto began = Clock::now();
+            std::uint64_t kept = 0;
+            for (const Menu::GameEntry& entry : entries) {
+                kept += std::uint64_t(entry.cover.px.size()) * 4;
+            }
+            int got = 0, cached = 0, failed = 0, skipped = 0;
+            for (size_t i = 0; i < entries.size() && i < games.size(); ++i) {
+                if (entries[i].cover.Ok() || entries[i].thumb.Ok()) {
+                    continue;
+                }
+                if (Clock::now() - began > std::chrono::seconds(12)) {
+                    ++skipped;
+                    continue;
+                }
+                std::string why = "no picture";
+                bool from_cache = false;
+                const std::vector<std::uint8_t> bytes = CachedGameIcon(games[i], &why, &from_cache);
+                Menu::Image::Pixels full;
+                if (bytes.empty() || !Menu::Image::Decode(bytes.data(), bytes.size(), &full, &why)) {
+                    if (++failed <= 5) {
+                        Ps4::Log("cover of %s: %s", games[i].filename().string().c_str(), why.c_str());
+                    }
+                    continue;
+                }
+                Menu::Image::Pixels big = Menu::Image::Fit(full, Menu::CoverSize, Menu::CoverSize, true);
+                entries[i].thumb = Menu::Image::Fit(big.Ok() ? big : full, Menu::ThumbSize, Menu::ThumbSize);
+                const std::uint64_t cost = std::uint64_t(big.px.size()) * 4;
+                if (big.Ok() && kept + cost <= (64ull << 20)) {
+                    entries[i].cover = std::move(big);
+                    kept += cost;
+                }
+                ++got;
+                cached += from_cache ? 1 : 0;
+            }
+            Ps4::Log("covers from the games themselves: %d read (%d from cache/icons), %d failed, %d not tried (time), %lld ms",
+                     got, cached, failed, skipped,
+                     static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - began).count()));
         }
         const MenuOutcome outcome = RunMainMenu(std::move(entries), int(index), CollectSystemInfo());
         if (outcome.choice == MenuChoice::Homebrew) {
@@ -627,6 +775,15 @@ void ApplySettingsFile() {
             v.vram_usage_mode.SetValue(static_cast<Settings::VramUsageMode>(value == "aggressive" ? 1 : 0));
         } else if (key == "language" && (value == "pt" || value == "en")) {
             // Only the menu reads it.
+        } else if (key == "menu_theme" && Menu::FindOption("menu_theme") != nullptr && value.size() < 16) {
+            // The menu's colour (0.7.10). The menu applies it as it draws; this is for a start with no menu
+            // (nomenu.txt), so the HUD and the pause menu still get it.
+            const Menu::Option& theme = *Menu::FindOption("menu_theme");
+            for (size_t i = 0; i < theme.choices.size(); ++i) {
+                if (value == theme.choices[i].value) {
+                    Menu::ApplyTheme(int(i));
+                }
+            }
         } else if (key == "env" && value.find('=') != std::string::npos && value.find('=') > 0) {
             // A driver switch, e.g. env=ORBIS_GS_RING_SCALE=4 (read when Vulkan starts).
             const auto split = value.find('=');

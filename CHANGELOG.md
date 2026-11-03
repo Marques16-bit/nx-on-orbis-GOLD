@@ -2,6 +2,49 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.7.10] - A menu with colours and icons, covers from inside the games, logs that are not lost
+
+**Not built or run on a console by the author of this change.** The host tests pass (`menu_test`, `video_hook_test`,
+`image_decode_test` with sanitizers, and the rest). The new code in `main.cpp` that opens a game dump was checked only
+by compiling it against the headers of an Eden master (with stand-ins for `fmt`), not against the Eden the build pins,
+so the GitHub build is its first real compile.
+
+What the 0.7.9 run on the console showed (boot log of the Super Mario Maker 2 run, two screenshots, the driver's log):
+- The title screen runs at 29-39 fps; after a 3.4 s stall (a scene change) it drops to 9-13 fps. In that scene the driver
+  counts **28-34 render passes and 290-320 draws per frame** (against 6 passes and 16 draws before), waits **0 %** for
+  the GPU, and the busiest emulated CPU core is 88 % busy: the slow part is the game's own thread, not the GPU. This is
+  the "9-13 fps in the editor" and it is a CPU matter (the performance work comes next).
+- The two screenshots (L3 + TouchPad works; the picture shows the HUD and the "Print salvo" notice) show the same title
+  screen in two scenes. The airship scene is drawn right. In the other scene the **terrain is a flat dark grey** and the
+  **"Press ZL + ZR" text and "Ver. 1.0.0" are missing**; everything else (title, Mario, coins, clouds, door) is fine.
+  **The cause is not found yet**: the `eden_log.txt` that came with the run is the log of another game (SpongeBob), because
+  Eden's log was rotated twice at every start and the Mario Maker 2 one was overwritten. Nothing is changed in the
+  graphics in this version, on purpose: a guess without that log would be a coin toss.
+- That SpongeBob log has 2,756 "Unmapped Read/Write" lines at the start (the game writing into its own heap, which is
+  not mapped). Not looked at yet; noted for later.
+
+**New: the menu.**
+- Seven colour themes (blue, green, purple, orange, pink, red, grey): SYSTEM tab, "Cor do menu" / "Menu colour", applied at
+  once and kept by "restore defaults". The HUD and the pause menu use the same colours. Saved as `menu_theme=` in settings.txt.
+- Icons drawn in code (no image files): controller, monitor, chip, sliders, gear, document, gauge on the tabs.
+- The tab bar and the title line follow the theme.
+
+**New: covers from the games themselves.** At the start the menu opens each `.nsp` / `.xci` with Eden's own classes,
+finds the control data and takes the icon (a 256 x 256 JPEG) out of it with your `prod.keys`; no emulator core runs.
+- The first read of each game is kept in `cache/icons/`, so the next start does not open the games again.
+- A picture in `covers/` (title id, file name or title) still wins, to replace a cover.
+- boot.log: `covers from the games themselves: N read (M from cache/icons), F failed, ...`, and `cover of <file>: <why>` for
+  the first failures (no keys, an update-only file, an unreadable dump). A game with no cover gets the coloured tile.
+- Limits: 12 s for all the games, 64 MiB of covers.
+
+**New: logs that are not lost.** Besides `boot.log`, the logs of Eden (`log/eden_log.txt`) and of the driver (`mesa.log`)
+of the run before are moved to `logs/` before they are replaced: `logs/eden_<time>.log`, `logs/mesa_<time>.log`, `logs/boot_<time>.log`,
+the newest 8 of each. (Smaller than 2 KiB, a menu-only run, they are not kept.)
+
+**Still open (honest):** the grey terrain and the missing text in Mario Maker 2, the speed in the editor, the memory use.
+To go on with the graphics I need the `logs/eden_*.log` and `logs/mesa_*.log` of **one run of Mario Maker 2 that shows the
+grey terrain**, and the picture from `shots/`.
+
 ## [0.7.9] - Covers in the games list, and a log that tells a slow game from a stuttering one
 
 **Not built or run on a console by the author of this change.** Everything below passes the host tests

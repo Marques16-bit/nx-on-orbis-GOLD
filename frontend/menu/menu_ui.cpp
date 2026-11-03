@@ -219,7 +219,7 @@ int MenuUi::RowCount(int tab) const {
     case TabGames:
         return int(games_.size()) + 1; // the games, then the Homebrew Menu
     case TabSystem:
-        return 3; // language, restore defaults, clear the shader cache
+        return int(options_[TabSystem].size()) + 2; // language, colour, then restore defaults and clear the shader cache
     case TabVideo:
         return int(options_[tab].size()) + 1; // the quick profile, then the options
     default:
@@ -305,7 +305,8 @@ void MenuUi::Activate() {
         result_.game = row < int(games_.size()) ? row : -1;
         return;
     }
-    if (tab_ == TabSystem && selected_[TabSystem] == 2) {
+    const int system_options = int(options_[TabSystem].size());
+    if (tab_ == TabSystem && selected_[TabSystem] == system_options + 1) {
         if (!confirm_clear_) {
             confirm_clear_ = true;
         } else {
@@ -319,7 +320,7 @@ void MenuUi::Activate() {
         dirty_ = true;
         return;
     }
-    if (tab_ == TabSystem && selected_[TabSystem] == 1) {
+    if (tab_ == TabSystem && selected_[TabSystem] == system_options) {
         if (!confirm_reset_) {
             confirm_reset_ = true;
         } else {
@@ -425,22 +426,27 @@ void MenuUi::DrawHeader(Canvas& c) const {
         c.Print(1920 - Margin - TextWidth(status), 84, status, save_state_ == 1 ? Color::Good : Color::Bad);
     }
     c.Fill(Margin, 130, 1920 - 2 * Margin, 3, Color::Panel);
+    c.Fill(Margin, 130, 260, 3, Color::Accent); // a stretch of the theme colour under the title
+}
+
+int MenuUi::ThemeIndex() const {
+    const Option* option = FindOption("menu_theme");
+    return option != nullptr ? file_.ChoiceIndex(*option) : 0;
 }
 
 void MenuUi::DrawTabs(Canvas& c) const {
     const char* names_pt[TabCount] = {"JOGOS", "VÍDEO", "CPU E MEMÓRIA", "AVANÇADO", "SISTEMA", "LOG", "DESEMPENHO"};
     const char* names_en[TabCount] = {"GAMES", "VIDEO", "CPU & MEMORY", "ADVANCED", "SYSTEM", "LOG", "PERFORMANCE"};
+    const Icon icons[TabCount] = {Icon::Gamepad, Icon::Monitor, Icon::Chip, Icon::Sliders, Icon::Gear, Icon::Document, Icon::Gauge};
     int x = Margin;
     for (int i = 0; i < TabCount; ++i) {
         const std::string name = lang() == Lang::Pt ? names_pt[i] : names_en[i];
-        const int w = TextWidth(name) + 56;
-        if (i == tab_) {
-            c.RoundRect(x, 148, w, 56, 12, Color::Accent);
-            c.Print(x + 28, 156, name, 0xFFFFFFFF);
-        } else {
-            c.RoundRect(x, 148, w, 56, 12, Color::Panel);
-            c.Print(x + 28, 156, name, Color::Dim);
-        }
+        const int w = TextWidth(name) + 76;
+        const bool current = i == tab_;
+        const std::uint32_t back = current ? Color::Accent : Color::Panel;
+        c.RoundRect(x, 148, w, 56, 12, back);
+        DrawIcon(c, icons[i], float(x + 18 + 15), 176.0f, 30.0f, current ? 0xFFFFFFFF : Color::Dim, back);
+        c.Print(x + 18 + 30 + 10, 156, name, current ? 0xFFFFFFFF : Color::Dim);
         x += w + 14;
     }
 }
@@ -484,7 +490,7 @@ void MenuUi::DrawGameCard(Canvas& c, int index) const {
     info = Clip(info, CardCells);
     c.Print(CardX + (CardW - TextWidth(info)) / 2, y + 6, info, Color::Dim);
     if (is_game && !game->cover.Ok()) {
-        const std::string hint = Clip(T("Sem capa: ponha uma imagem em covers/", "No cover: put a picture in covers/"), CardCells);
+        const std::string hint = Clip(T("Sem capa no jogo: use covers/", "No cover in the game: use covers/"), CardCells);
         c.Print(CardX + (CardW - TextWidth(hint)) / 2, CardY + CardH - 46, hint, Color::Dim);
     }
 }
@@ -599,15 +605,24 @@ void MenuUi::DrawLog(Canvas& c) const {
 
 void MenuUi::DrawSystem(Canvas& c) const {
     const Lang l = lang();
-    const Option& language = *options_[TabSystem][0];
-    DrawRow(c, ContentTop, selected_[TabSystem] == 0, !file_.IsDefault(language), language.Label(l),
-            language.ChoiceLabel(file_.ChoiceIndex(language), l),
-            file_.IsDefault(language) ? Color::Text : Color::Teal, selected_[TabSystem] == 0);
+    const int system_options = int(options_[TabSystem].size());
+    for (int i = 0; i < system_options; ++i) {
+        const Option& option = *options_[TabSystem][size_t(i)];
+        const int y = ContentTop + i * RowHeight;
+        const int choice = file_.ChoiceIndex(option);
+        DrawRow(c, y, selected_[TabSystem] == i, !file_.IsDefault(option), option.Label(l), option.ChoiceLabel(choice, l),
+                file_.IsDefault(option) ? Color::Text : Color::Teal, selected_[TabSystem] == i);
+        if (std::string_view(option.key) == "menu_theme") {
+            // a swatch of the colour on the left of the value
+            const std::string shown = "◀ " + std::string(option.ChoiceLabel(choice, l)) + " ▶";
+            c.Disc(float(1920 - Margin - 30 - TextWidth(shown) - 30), float(y + 18), 13.0f, ThemeAccent(choice));
+        }
+    }
     const std::string reset = confirm_reset_ ? T("Aperte X de novo para confirmar", "Press X again to confirm")
                                              : T("Restaurar todos os padrões", "Restore all defaults");
     {
-        const bool selected = selected_[TabSystem] == 1;
-        const int y = ContentTop + RowHeight;
+        const bool selected = selected_[TabSystem] == system_options;
+        const int y = ContentTop + system_options * RowHeight;
         if (selected) {
             c.RoundRect(Margin, y - 4, 1920 - 2 * Margin, RowHeight - 4, 10, Color::Selected);
             c.Fill(Margin, y + 6, 6, RowHeight - 24, Color::Teal);
@@ -616,8 +631,8 @@ void MenuUi::DrawSystem(Canvas& c) const {
     }
 
     {
-        const bool selected = selected_[TabSystem] == 2;
-        const int y = ContentTop + 2 * RowHeight;
+        const bool selected = selected_[TabSystem] == system_options + 1;
+        const int y = ContentTop + (system_options + 1) * RowHeight;
         const std::string text = confirm_clear_ ? T("Aperte X de novo: apagar o cache de shaders de todos os jogos", "Press X again: delete every game's shader cache")
                                                 : T("Limpar o cache de shaders (se um jogo não abre)", "Clear the shader cache (if a game will not open)");
         if (selected) {
@@ -629,12 +644,12 @@ void MenuUi::DrawSystem(Canvas& c) const {
     // Read-only facts.
     const int label_x = Margin + 46, value_x = Margin + 46 + 24 * GlyphWidth;
     const int max_cells = (1920 - Margin - value_x) / GlyphWidth;
-    int y = ContentTop + 3 * RowHeight + 30;
-    c.Fill(Margin, y - 22, 1920 - 2 * Margin, 2, Color::Panel);
+    int y = ContentTop + (system_options + 2) * RowHeight + 24;
+    c.Fill(Margin, y - 18, 1920 - 2 * Margin, 2, Color::Panel);
     const auto row = [&](const char* label, const std::string& value, std::uint32_t color) {
         c.Print(label_x, y, label, Color::Dim);
         c.Print(value_x, y, Clip(value, max_cells), color);
-        y += 44;
+        y += 38;
     };
     row(T("Versão", "Version"), info_.build_id, Color::Text);
     {
@@ -711,6 +726,7 @@ void MenuUi::DrawFooter(Canvas& c) const {
 }
 
 void MenuUi::Draw(Canvas& c) const {
+    ApplyTheme(ThemeIndex());
     DrawHeader(c);
     DrawTabs(c);
     std::vector<std::string> help;
@@ -721,8 +737,8 @@ void MenuUi::Draw(Canvas& c) const {
         help = Wrap(on_homebrew
                         ? T("Teste interno. A mensagem \"launchInit() failed\" é ESPERADA (o Homebrew Menu precisa do nx-hbloader): se ela aparece, o emulador roda. OPTIONS sai.",
                             "Built-in test. The message \"launchInit() failed\" is EXPECTED (the Homebrew Menu needs nx-hbloader): if it shows, the emulator runs. OPTIONS quits.")
-                        : T("Escolha um jogo e aperte X. As opções das outras abas valem ao iniciar. Capas: PNG/JPG/BMP em covers/ com o ID do título ou o nome do jogo.",
-                            "Pick a game and press X. The options in the other tabs apply at start. Covers: PNG/JPG/BMP in covers/, named by title id or game file name."),
+                        : T("Escolha um jogo e aperte X. As opções das outras abas valem ao iniciar. A capa vem do próprio jogo; para trocar, ponha uma imagem em covers/ (ID do título ou nome do jogo).",
+                            "Pick a game and press X. The options in the other tabs apply at start. The cover comes from the game itself; to replace it, put a picture in covers/ (title id or game file name)."),
                     HelpCells, 2);
     } else if (tab_ == TabLog) {
         DrawLog(c);

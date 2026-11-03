@@ -171,3 +171,19 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
   many were over 34, 50, 100 and 250 ms) under the hook's lock; `main.cpp` writes `tl: ...` every 2 s.
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
+
+## Themes, icons and covers from the game (0.7.10; not yet seen on a console)
+
+- `Color::BackgroundTop/BackgroundBottom/Panel/Selected/Accent/Teal` are now plain (non-const) values set by
+  `ApplyTheme(index)` (`menu_canvas.cpp`); theme 0 restores the original constants exactly, the others are made from
+  a hue (HSV). The order of `Themes[]` must match the choices of the `menu_theme` option (a test checks the count).
+  `MenuUi::Draw` applies the theme read from the settings file, so the in-game HUD and pause menu, drawn later in the
+  same process, keep it. `main.cpp` also applies it when the menu is skipped (nomenu.txt).
+- `DrawIcon()` draws the tab icons from rounded rectangles, discs and `Canvas::Line` (a capsule with anti-aliasing).
+- `ReadGameIcon()` (`main.cpp`): `FileSys::NSP` / `FileSys::XCI` -> control `NCA` -> `GetRomFS()` -> `ExtractRomFS()` ->
+  the first `icon_*.dat` (`icon_AmericanEnglish.dat` preferred). It needs the keys, not the firmware, and no `Core::System`
+  (`PatchManager::ParseControlNCA` needs the file-system controller, so it is not used; the base game's control data is
+  read, not an update's). The JPEG is decoded by `menu/image_decode.h`.
+- `ArchiveLog()` (`ps4_platform.cpp`) runs in `OpenBootLog`, before Eden's logger and the driver start: it moves
+  `log/eden_log.txt`, `log/eden_log.txt.old.txt`, `mesa.log`, `mesa.old.log` (when at least 2 KiB) and the old boot log to `logs/`.
+
