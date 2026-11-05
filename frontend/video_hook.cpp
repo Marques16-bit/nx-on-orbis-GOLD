@@ -82,6 +82,7 @@ struct State {
     std::uint64_t submit_us = 0;       // when the last flip was queued
     Timeline tl;                       // 0.7.9: flip intervals since the last TakeTimeline()
     std::uint64_t tl_prev_us = 0;      // when the flip before was queued
+    Stall stall;                       // 0.8.0: the last freeze of the picture (StallGapUs or longer)
     std::uint64_t draws_hidden = 0, draws_late = 0;
     int delay_us = 2000;               // classic: the GPU gets this long to finish a frame before it is drawn in
     // The notice in the bottom left corner (the shader counter, memory warnings).
@@ -816,6 +817,12 @@ KeepAliveStats GetKeepAliveStats() {
     return s.ka;
 }
 
+Stall LastStall() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    return s.stall;
+}
+
 Timeline TakeTimeline() {
     State& s = S();
     std::lock_guard lock{s.mutex};
@@ -939,6 +946,12 @@ extern "C" int32_t __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t index, u
                 s.tl.over_50ms += gap > 50000;
                 s.tl.over_100ms += gap > 100000;
                 s.tl.over_250ms += gap > 250000;
+                if (gap >= StallGapUs) {
+                    ++s.stall.count;
+                    s.stall.gap_us = gap;
+                    s.stall.end_us = s.submit_us;
+                    s.stall.flip = s.flips;
+                }
             }
             s.tl_prev_us = s.submit_us;
             ++s.tl.flips;

@@ -756,6 +756,20 @@ int main() {
         Check(tl.over_34ms == 3 && tl.over_50ms == 2 && tl.over_100ms == 2 && tl.over_250ms == 1, "timeline: the stutter buckets");
         const Ps4Hook::Timeline again = Ps4Hook::TakeTimeline();
         Check(again.flips == 0 && again.gap_max_us == 0 && again.flips_total >= 7, "timeline: taking it resets the window, not the total");
+
+        // 0.8.0: a freeze of one second or more is remembered with its length, its end and its flip number.
+        const Ps4Hook::Stall before = Ps4Hook::LastStall();
+        g_sim_now_us += 999000;
+        __wrap_sceVideoOutSubmitFlip(21, 0, 1, 0);
+        Check(Ps4Hook::LastStall().count == before.count, "stall: 999 ms is not a stall");
+        g_sim_now_us += 3400000;
+        __wrap_sceVideoOutSubmitFlip(21, 1, 1, 0);
+        const Ps4Hook::Stall st = Ps4Hook::LastStall();
+        Check(st.count == before.count + 1 && st.gap_us == 3400000, "stall: 3.4 s counted with its length");
+        Check(st.end_us == g_sim_now_us && st.flip == Ps4Hook::TakeTimeline().flips_total, "stall: ends on the flip that finished it");
+        g_sim_now_us += 16000;
+        __wrap_sceVideoOutSubmitFlip(21, 0, 1, 0);
+        Check(Ps4Hook::LastStall().count == st.count, "stall: normal flips after it change nothing");
     }
 
     std::printf(g_failures == 0 ? "video hook test: PASSED\n" : "video hook test: FAILED\n");

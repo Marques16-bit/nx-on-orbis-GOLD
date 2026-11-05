@@ -2,6 +2,52 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.8.0] - What the Mario Maker 2 logs show, and a freeze detector with automatic screenshots
+
+**Not built or run on a console by the author of this change.** The host tests pass (all of them, `video_hook_test` with
+the new stall checks). The new code in `main.cpp` was checked by compiling it on its own with warnings on, not inside the
+whole program, so the GitHub build is its first real compile. **The grey terrain of Super Mario Maker 2 is NOT fixed in
+this version**: its cause is not proven, and a change made without proof would be a guess. What is proven is below, and
+this version adds the way to settle the rest in one run.
+
+What the Mario Maker 2 run of 0.7.10 showed (boot log, `eden_` and `mesa_` logs of that run, and the two screenshots of
+the run before). Archiving the logs per run (0.7.10) worked: this time the Eden log of the right game arrived.
+- **The defect is of the first seconds of a scene, and it goes away by itself.** The two screenshots show the same title
+  demo with the course timer at **500** (terrain flat grey, no "Press ZL + ZR", no "Ver. 1.0.0") and, 3.2 s later, at
+  **499** (everything right). The grey is the dark shadow layer of the terrain; the textured layers (the tiles and the
+  text) are the ones missing. At 10 fps, 3 s is only 30 frames of the game, so the defect is visible 6 times longer than
+  it would be at 60 fps.
+- **It is not only the asynchronous shaders.** That run had `async_shaders=on` (chosen in the menu): the scene change
+  created **55 pipelines in 0.16 s** and, with the builder threads competing with the game for the 8 cores, they were all
+  built only after about 35 s (shaders built 3, 35, 60, 80). Draws wait for their pipeline with that setting, so missing
+  layers are expected with it on (the menu text says so). But the earlier run with it **off** and 187 shaders already built
+  showed the same defect, so it is not the only cause. Off stays the default.
+- **A 3.4 s stall comes with the scene change, and the driver log says where.** boot.log measures it twice: 3.45 s (the
+  run of the two screenshots) and 3.40 s (this run). In the two driver logs that cover a scene change in full (the run of
+  1 November and this one) the same lines appear close together: `GS ring 1048576 B requested -> 16777216 B allocated`
+  (the first geometry shader of the process; two more logs show the same ring lines), then `THE GPU HAS NOT FINISHED submit
+  #7423` (`#7627` in this run): the command buffer stays unfinished for 4 submissions. The Eden log shows **6 pipelines
+  with a geometry shader (points)** created at the same instant. So the stall is in the first use of the geometry-shader
+  path of the driver, which is not in this repository. Whether the missing layers are drawn by those pipelines is a
+  hypothesis, not a finding.
+- Nothing else is wrong in the logs: no Eden error, no shader compile error, the texture self-tests (BGRA, R8G8, A2B10G10R10)
+  pass. Memory: the largest free block fell to 80 MiB ("low") in the editor and stayed there (-2 MiB/min at the end), the
+  game's own memory peaked at 1519 MiB: tight, not leaking.
+- `no new frame for 15 s during running` at the start is the game loading (46 s with no picture); the thread dump it
+  prints is expected there.
+
+**New: freeze detector and automatic screenshots.**
+- `Ps4Hook::LastStall()` remembers the last time two flips were 1 s or more apart (length, end time, flip number).
+- boot.log gets `stall: the picture froze for N s and came back on flip #F`. The driver log counts the same frames in its
+  `scan-out copy ... over N frames` lines, so the two logs can be lined up, and its last `GPU HAS NOT FINISHED` line
+  belongs to that freeze. A gap made by the pause menu or by a screenshot says so and is not counted as a freeze.
+- After each of the first **three** freezes of a run, three screenshots are taken by themselves, 0.4 s, 2.5 s and 6 s after
+  it (`shots/shot_NNNN.bmp`, no notice drawn on them). They show how the start-of-scene defect evolves without anyone
+  pressing L3 + TouchPad at the right moment. `autoshot=off` in settings.txt turns it off.
+
+**What to send next:** play Super Mario Maker 2 up to the title screen and wait for the demo to restart (about a minute),
+then send `shots/`, `boot.log` and the newest `logs/eden_*` and `logs/mesa_*`. With `async_shaders` off.
+
 ## [0.7.10] - A menu with colours and icons, covers from inside the games, logs that are not lost
 
 **Not built or run on a console by the author of this change.** The host tests pass (`menu_test`, `video_hook_test`,

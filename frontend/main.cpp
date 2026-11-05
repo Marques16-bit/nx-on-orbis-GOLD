@@ -580,6 +580,9 @@ void ApplyPs4Settings() {
 
 /// What to do when the memory watch reaches its critical level (settings.txt: memory_action).
 Ps4Memory::Action g_memory_action = Ps4Memory::Action::Warn;
+// 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
+// settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
+bool g_autoshot = true;
 
 /// 0.7.6: the memory-related defaults for THIS console, set before settings.txt is applied (so a
 /// line in settings.txt still wins). Everything here equals the 0.7.3 / 0.7.4 values on a console
@@ -748,6 +751,8 @@ void ApplySettingsFile() {
             Ps4Hook::Pending().flip_stamp = value == "on";
         } else if (key == "memory_profile" && (value == "auto" || value == "roomy" || value == "standard" || value == "tight" || value == "strict")) {
             // Already applied by ApplyMemoryPlan(), before this file's other lines.
+        } else if (key == "autoshot" && (value == "on" || value == "off")) {
+            g_autoshot = value == "on";
         } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
             g_memory_action = value == "pause" ? Ps4Memory::Action::Pause : Ps4Memory::Action::Warn;
         } else if (key == "driver_cache" && (value == "on" || value == "off")) {
@@ -973,7 +978,7 @@ int main() {
                    "roms/       seus jogos .nsp ou .xci / your .nsp or .xci games\n"
                    "covers/     capas: PNG, JPG ou BMP com o ID do titulo (01009B90006DC000.png) ou o nome do jogo\n"
                    "            covers: PNG, JPG or BMP named by title id or by the game's file name\n"
-                   "shots/      capturas de tela (L3 + TouchPad) / screenshots (L3 + TouchPad)\n"
+                   "shots/      capturas de tela (L3 + TouchPad; e 3 depois de cada travada de 1 s ou mais) / screenshots (L3 + TouchPad; and 3 after each freeze of 1 s or more)\n"
                    "logs/       os ultimos 8 boot.log / the last 8 boot logs\n"
                    "updates/    atualizacoes e DLC (.nsp) / updates and DLC (.nsp)\n"
                    "nand/ sdmc/ saves e dados do emulador / saves and the emulator's data\n"
@@ -1246,7 +1251,12 @@ int main() {
     // fault can be looked at as it is, not through a phone camera. The game is paused for the copy.
     bool shot_before = false;
     std::uint64_t shot_until = 0;
-    const auto take_shot = [&] {
+    // 0.8.0: freezes of the picture. last_pause_us is the last time the game was paused on purpose (the pause menu
+    // or a screenshot), so a gap made by that is not mistaken for a freeze of the game itself.
+    std::uint64_t stall_seen = Ps4Hook::LastStall().count, last_pause_us = 0;
+    int stalls_shot = 0;
+    std::uint64_t auto_shot_due[3] = {0, 0, 0}; // 0 = nothing waiting
+    const auto take_shot = [&](bool automatic = false) {
         if (!Ps4Hook::Ready()) {
             Ps4::Log("screenshot: not available yet (%s)", Ps4Hook::Describe().c_str());
             return;
@@ -1259,11 +1269,16 @@ int main() {
         const bool ok = Ps4Hook::SaveScreenshot(path, &why);
         const unsigned long ms = static_cast<unsigned long>((Ps4::NowUs() - t0) / 1000);
         system.Run();
+        last_pause_us = Ps4::NowUs();
         const std::string name = fs::path{path}.filename().string();
         if (ok) {
-            Ps4::Log("screenshot: saved %s in %lu ms (the picture on screen, HUD included)", path.c_str(), ms);
+            Ps4::Log("screenshot: saved %s in %lu ms (the picture on screen, HUD included%s)", path.c_str(), ms,
+                     automatic ? ", taken by itself after a freeze" : "");
         } else {
             Ps4::Log("screenshot: NOT saved (%s)", why.c_str());
+        }
+        if (automatic) {
+            return; // no notice: it would be drawn into the next pictures and hide what is being looked at
         }
         Ps4Hook::SetNotice(ok ? std::string(pt ? "Print salvo: shots/" : "Screenshot saved: shots/") + name
                               : std::string(pt ? "Print nao salvo: " : "Screenshot failed: ") + why);
@@ -1364,6 +1379,38 @@ int main() {
                 take_shot();
             }
             shot_before = shot_combo;
+        }
+        // 0.8.0: a freeze of the picture (one second or more) is logged, with its flip number, the moment it ends,
+        // and up to three freezes per run are followed by three screenshots (0.4 s, 2.5 s and 6 s later). Super
+        // Mario Maker 2 shows its flat grey terrain and missing text only for the first seconds after a stall like
+        // this one, so the pictures show how the defect evolves without anyone pressing the buttons at the right moment.
+        {
+            if (in_menu) {
+                last_pause_us = Ps4::NowUs();
+            }
+            const Ps4Hook::Stall st = Ps4Hook::LastStall();
+            if (st.count != stall_seen) {
+                stall_seen = st.count;
+                const std::uint64_t now = Ps4::NowUs();
+                const bool by_pause = last_pause_us != 0 && now - last_pause_us < st.gap_us + 300000;
+                Ps4::Log("stall: the picture froze for %.2f s and came back on flip #%lu%s; the Mesa log counts these frames in its "
+                         "\"scan-out copy ... over N frames\" lines, and its last \"GPU HAS NOT FINISHED\" line (if any) belongs here",
+                         double(st.gap_us) / 1e6, static_cast<unsigned long>(st.flip), by_pause ? " (the game was paused: not a freeze)" : "");
+                if (g_autoshot && !by_pause && stalls_shot < 3) {
+                    ++stalls_shot;
+                    auto_shot_due[0] = now + 400000;
+                    auto_shot_due[1] = now + 2500000;
+                    auto_shot_due[2] = now + 6000000;
+                }
+            }
+            for (std::uint64_t& due : auto_shot_due) {
+                if (due != 0 && Ps4::NowUs() >= due) {
+                    due = 0;
+                    if (!in_menu) {
+                        take_shot(true);
+                    }
+                }
+            }
         }
         if (pad.connected && gamepad != nullptr) {
             PollPad(*gamepad, pad);

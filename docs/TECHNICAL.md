@@ -172,6 +172,17 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
 
+## Freezes of the picture (0.8.0; not yet seen on a console)
+
+- `Ps4Hook::LastStall()` (`video_hook.cpp`): in the wrapped `sceVideoOutSubmitFlip`, an interval of `StallGapUs` (1 s) or
+  more bumps a counter and records its length, the time and the flip number. Not reset by `TakeTimeline()`.
+- `main.cpp` polls it every 8 ms in the game loop. A new stall is logged; if `autoshot` is on, fewer than three freezes
+  have been shot and the gap was not made by a pause (`last_pause_us`: the pause menu, or the 0.3 s of a screenshot),
+  three timed `take_shot(true)` calls follow (0.4, 2.5 and 6 s). The automatic shot draws no notice.
+- How the logs line up: the driver prints `scan-out copy ... over N frames` every 64 frames; the boot log's `stall:` line
+  has the flip number. In the 0.7.10 Mario Maker 2 run the freeze ended near flip 2,500 and the driver dumped
+  `submit #7627` right after allocating the geometry-shader rings (1 MiB -> 16 MiB, 1.5 MiB -> 24 MiB).
+
 ## Themes, icons and covers from the game (0.7.10; not yet seen on a console)
 
 - `Color::BackgroundTop/BackgroundBottom/Panel/Selected/Accent/Teal` are now plain (non-const) values set by

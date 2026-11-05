@@ -102,6 +102,19 @@ struct Timeline {
 };
 Timeline TakeTimeline();
 
+/// 0.8.0: the last time two flips were more than StallGapUs apart (the picture froze), and how many times
+/// that happened since the hook was armed. Unlike the timeline it is never reset, so a polling loop can
+/// notice a stall the moment it ends, and the log can name the flip it ended on (the Mesa log counts the
+/// same frames: "scan-out copy ... over N frames").
+constexpr std::uint64_t StallGapUs = 1000000;
+struct Stall {
+    std::uint64_t count = 0;   // stalls since the hook was armed
+    std::uint64_t gap_us = 0;  // how long the last one lasted
+    std::uint64_t end_us = 0;  // when it ended (the flip that finished it was queued)
+    std::uint64_t flip = 0;    // the number of that flip
+};
+Stall LastStall();
+
 /// Test seam: replaces the clock (microseconds); nullptr puts the real one back.
 void SetClockForTest(std::uint64_t (*now_micros)());
 
