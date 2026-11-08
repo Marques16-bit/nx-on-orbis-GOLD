@@ -321,6 +321,7 @@ void TestNavigation() {
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 7 && r.saved.find("resolution=0.5") != std::string::npos &&
                   r.saved.find("shader_preload=256") != std::string::npos && r.saved.find("covers=thumbs") != std::string::npos &&
+                  r.saved.find("astc_recompress=bc3") != std::string::npos &&
                   r.saved.find("memory_profile=tight") != std::string::npos && r.saved.find("skip_cpu_invalidation") == std::string::npos &&
                   r.saved.find("async_presentation") == std::string::npos,
               "profile Minimum RAM (test): small resolution, small shader preload, thumbnails only, tight profile; the FPS profile's options gone");

@@ -62,6 +62,9 @@ inline bool IsExperimental(std::string_view key, std::string_view value) {
     if (key == "astc") {
         return value != "cpu";
     }
+    if (key == "astc_recompress") {
+        return value != "off";
+    }
     if (key == "dma_accuracy") {
         return value == "unsafe";
     }

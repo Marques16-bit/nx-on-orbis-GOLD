@@ -152,6 +152,19 @@ Result SetCpuClock(S& s, const std::string& value) {
     return Result::Missing;
 }
 
+template <typename S>
+Result SetAstcRecompression(S& s, const std::string& value) {
+    using E = std::remove_cvref_t<decltype(s.GetValue())>;
+    if (value == "off") {
+        PS4_EDEN_SET_ENUM(s, Uncompressed)
+    } else if (value == "bc1") {
+        PS4_EDEN_SET_ENUM(s, Bc1)
+    } else if (value == "bc3") {
+        PS4_EDEN_SET_ENUM(s, Bc3)
+    }
+    return Result::Missing;
+}
+
 /// A number into a numeric setting.
 template <typename S>
 void SetNumber(S& s, int number) {
@@ -199,6 +212,7 @@ bool OneOf(const std::string& value, Words... words) {
 ///   cpu_clock=normal|boost|overclock            0.8.2: the clock the GAME sees for the emulated CPU (default normal)
 ///   cpu_ticks=off|1000|4000|16000|21000         0.8.2: Eden's "custom CPU ticks" (default off)
 ///   async_presentation=on|off                   0.8.2: present frames from a separate thread (default off)
+///   astc_recompress=off|bc3|bc1                 0.8.3: keep ASTC textures as BC3 / BC1 instead of RGBA8 (default off)
 template <typename Values>
 Result Apply(Values& v, const std::string& key, const std::string& value) {
     if (key == "vsync" && detail::OneOf(value, "fifo", "mailbox", "immediate", "relaxed")) {
@@ -298,6 +312,12 @@ Result Apply(Values& v, const std::string& key, const std::string& value) {
                 v.use_custom_cpu_ticks.SetValue(true);
             }
             return Result::Applied;
+        } else {
+            return Result::Missing;
+        }
+    } else if (key == "astc_recompress" && detail::OneOf(value, "off", "bc3", "bc1")) {
+        if constexpr (requires { v.astc_recompression.SetValue(v.astc_recompression.GetValue()); }) {
+            return detail::SetAstcRecompression(v.astc_recompression, value);
         } else {
             return Result::Missing;
         }

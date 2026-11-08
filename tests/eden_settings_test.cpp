@@ -35,6 +35,7 @@ enum class Gpu { Low, Medium, High };
 enum class Res { Res1_4X, Res1_2X, Res3_4X, Res1X, Res5_4X, Res3_2X, Res2X };
 enum class Clock { Normal, Boost, Overclock };
 enum class ClockOld { Normal, Boost, Fast }; // an older spelling of the top step
+enum class Recomp { Uncompressed, Bc1, Bc3 };
 
 struct ValuesNew {
     Setting<VSyncNew> vsync_mode{VSyncNew::Fifo};
@@ -53,6 +54,7 @@ struct ValuesNew {
     Setting<bool> use_custom_cpu_ticks{false};
     Setting<unsigned> cpu_ticks{16000};
     Setting<bool> async_presentation{false};
+    Setting<Recomp> astc_recompression{Recomp::Uncompressed};
 };
 
 // An Eden with the old vsync spelling, no Medium accuracy, no 1/4x or 5/4x, and only some settings.
@@ -120,6 +122,12 @@ int main() {
         Check(Apply(v, "async_presentation", "on") == Result::Applied && v.async_presentation.value, "async_presentation=on");
         Check(Apply(v, "async_presentation", "off") == Result::Applied && !v.async_presentation.value, "async_presentation=off");
         Check(Apply(v, "async_presentation", "maybe") == Result::NotMine, "async_presentation=maybe is NotMine");
+        // 0.8.3
+        Check(Apply(v, "astc_recompress", "bc3") == Result::Applied && v.astc_recompression.value == Recomp::Bc3, "astc_recompress=bc3");
+        Check(Apply(v, "astc_recompress", "bc1") == Result::Applied && v.astc_recompression.value == Recomp::Bc1, "astc_recompress=bc1");
+        Check(Apply(v, "astc_recompress", "off") == Result::Applied && v.astc_recompression.value == Recomp::Uncompressed,
+              "astc_recompress=off goes back to RGBA8");
+        Check(Apply(v, "astc_recompress", "bc7") == Result::NotMine, "astc_recompress=bc7 is not a menu value");
     }
     {
         ValuesClockOld v;
@@ -142,6 +150,7 @@ int main() {
         Check(Apply(v, "speed_percent", "100") == Result::Missing, "no speed_limit setting: Missing");
         Check(Apply(v, "cpu_clock", "boost") == Result::Missing && Apply(v, "cpu_ticks", "off") == Result::Missing,
               "no cpu_clock or ticks settings: Missing");
+        Check(Apply(v, "astc_recompress", "bc3") == Result::Missing, "no astc_recompression setting: Missing");
     }
     {
         ValuesEmpty v;

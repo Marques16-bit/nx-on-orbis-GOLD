@@ -258,7 +258,9 @@ const char* NameOf(pthread_t thread) {
 // A sampler thread raises SigDump on one profiled thread at a time; when the handler sees the
 // request is for itself it counts its rip (64-byte buckets) instead of logging a stack. Every
 // 30 s each thread's busy share and hottest buckets go to boot.log (symbolize the eboot offsets).
-constexpr int ProfiledMax = 8;
+// 0.8.3: 24 (was 8): every thread Eden names is sampled except the audio ones, so the busy share of each can be added up and
+// compared with the "N cores busy" the driver reports (0.8.2's run: 3.1-3.6 cores burned, and the 8 threads seen explained 2).
+constexpr int ProfiledMax = 24;
 constexpr int ProfileBuckets = 2048;
 struct ProfileTable {
     char name[40];
@@ -401,14 +403,51 @@ void ProfileClear() {
 // 0.8.1: 1 = start a new window, 2 = report the window and start another (see ProfileWindow in the header).
 std::atomic<int> g_profile_command{0};
 
+// The threads whose detail (the two lines with hot code) is always written; the others only when they are busy.
+bool CoreProfileThread(const char* name) {
+    return std::strcmp(name, "GPU") == 0 || std::strcmp(name, "VulkanWorker") == 0 || std::strncmp(name, "CPUCore_", 8) == 0 ||
+           std::strcmp(name, "FS") == 0 || std::strcmp(name, "nvservices") == 0;
+}
+
 void ProfileReport() {
     const int n = g_profile_count.load();
+    // 0.8.3: one line first that adds the busy shares up (cores busy in the sampled threads) and names the busy ones.
+    {
+        double cores = 0;
+        char who[600];
+        int who_len = 0;
+        who[0] = 0;
+        int counted = 0;
+        for (int i = 0; i < n; ++i) {
+            const ProfileTable& t = g_profile[i];
+            if (t.samples == 0) {
+                continue;
+            }
+            ++counted;
+            const double share = static_cast<double>(t.samples - t.waiting) / static_cast<double>(t.samples);
+            cores += share;
+            if (share >= 0.03 && who_len < static_cast<int>(sizeof(who)) - 60) {
+                who_len += std::snprintf(who + who_len, sizeof(who) - static_cast<size_t>(who_len), "%s%s %.0f%%",
+                                         who_len ? ", " : "", t.name, share * 100.0);
+            }
+        }
+        if (counted > 0) {
+            Log("profile total: %.1f cores busy in the %d threads sampled (%s)", cores, counted, who_len ? who : "none above 3%");
+        }
+    }
     for (int i = 0; i < n; ++i) {
         ProfileTable& t = g_profile[i];
         if (t.samples == 0) {
             continue;
         }
         const std::uint32_t busy = t.samples - t.waiting;
+        if (!CoreProfileThread(t.name) && busy * 100 < t.samples * 5) {
+            // A thread that was idle in this window: nothing to say (0.8.3 samples many more of them).
+            std::memset(t.keys, 0, sizeof(t.keys));
+            std::memset(t.counts, 0, sizeof(t.counts));
+            t.samples = t.waiting = t.jit = 0;
+            continue;
+        }
         Log("profile [%s]: %u samples, busy %u%% (jit %u%% of busy), waiting %u%%", t.name, t.samples,
             busy * 100 / t.samples, busy ? t.jit * 100 / busy : 0u, t.waiting * 100 / t.samples);
         char line[900];
@@ -727,12 +766,19 @@ void RegisterThread(const char* name) {
     }
     // The threads the frame rate depends on are also sampled by the profiler.
     // 0.8.1: also "FS" (the file system service: reads and decrypts the game's files) and "nvservices" (the GPU driver
-    // service), so a stall that is loading shows where it loads. The table holds eight threads: six plus these two.
-    const bool profiled = std::strcmp(name, "GPU") == 0 || std::strcmp(name, "VulkanWorker") == 0 ||
-                          std::strncmp(name, "CPUCore_", 8) == 0 || std::strcmp(name, "FS") == 0 ||
-                          std::strcmp(name, "nvservices") == 0;
+    // service), so a stall that is loading shows where it loads.
+    // 0.8.3: every named thread but the audio ones (a sample is a signal; an audio thread is the one place where an
+    // interrupted wait could be heard) and the cemuhook motion client, so the cores can be accounted for.
+    const bool excluded = std::strncmp(name, "audio", 5) == 0 || std::strncmp(name, "Audio", 5) == 0 ||
+                          std::strncmp(name, "DSP_", 4) == 0 || std::strncmp(name, "cemuhook", 8) == 0 ||
+                          std::strcmp(name, "main") == 0;
+    // The core threads always find a slot: the others take at most ProfiledMax - 10 of them (g_named_mutex is held).
+    static int others = 0;
+    const bool core = CoreProfileThread(name);
+    const bool profiled = !excluded && (core || others < ProfiledMax - 10);
     const int p = g_profile_count.load();
     if (profiled && p < ProfiledMax) {
+        others += core ? 0 : 1;
         g_profile[p].thread = pthread_self();
         std::snprintf(g_profile[p].name, sizeof(g_profile[p].name), "%s", name);
         g_profile_count.store(p + 1);

@@ -2,6 +2,53 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.8.3] - What the 0.8.2 run says about the CPU, ASTC textures kept compressed, and a profile that adds up the cores
+
+**Not built or run on a console by the author of this change.** All host tests pass; `ps4_platform.cpp` was syntax-checked
+against stand-ins for the SDK (only the errors that were already there). Every new option is off by default.
+
+**What the 0.8.2 run shows (Eden and driver logs of the run; its own boot.log was not among the files: the one sent is the
+next start, which stops at the menu).**
+- **There is no error of the emulated CPU in it.** The lines marked Error in the Eden log are three `BSD_USA: Network isn't
+  initialized`, two `Unknown engine name: joycon` (a controller driver this build does not have) and one `GetHostIPv4Address:
+  no interface` (the game looks for a network the console has not given it). None of them touches the CPU emulation or the
+  speed, and nothing like an unmapped read or write, a JIT failure or a crash is there.
+- **The limit is still the speed of the emulated CPU.** The driver's own accounting over the last 5 s windows: 3.1-3.6 cores
+  burned, **0 ms waited for the GPU**, 462-503 draws and 105-125 render passes a frame, a frame of 75-139 ms. Nothing in the
+  files says the GPU is late; everything says the processor is busy. It is not a fault that can be fixed by correcting a
+  line: the guest's own code, run by the JIT, is what takes the time (earlier profiles: one guest core 85-88 % busy, 90-95 %
+  of it inside JIT code).
+- **`THE GPU HAS NOT FINISHED submit #8800` was not a hang.** The driver's counters go on after the dump (2688 -> 2752
+  frames shown, further 5 s budget lines), so the GPU did finish. It is the driver's "four submissions waiting" rule firing
+  during the same scene change that freezes the picture for ~3.4 s.
+- **Where the 3.1-3.6 cores go is not known.** The profile of 0.8.0 explained about 2.0 cores (guest cores 25 + 88 + 77 %,
+  GPU 6 %, Vulkan worker 2 %) at 41 fps in the title; the driver's figures are for the slow scene, which no profile covered.
+
+**New: `profile total:`.** The sampling profiler used to look at 8 threads. It now samples every thread Eden names (24 slots;
+the guest cores, GPU, Vulkan, file system and GPU services always get a slot) except the audio threads and the motion client,
+and the report starts with one line that adds the busy shares up: `profile total: N.N cores busy in the M threads sampled
+(CPUCore_1 88%, VkPipelineBuilder 40%, ...)`. A thread that was idle in the window writes nothing else; a busy one writes its
+hot code as before. Compare that number with the driver's `BUDGET ... cores busy` for the same seconds: whatever the first
+leaves out is in a thread this still does not sample. Each thread is now sampled about 10 times a second instead of 30, which
+is plenty for a busy share.
+
+**New: ASTC textures kept compressed** (`astc_recompress=off|bc3|bc1`, Eden's `astc_recompression`). The PS4 cannot read ASTC,
+so Eden decodes every ASTC texture on the CPU and keeps it as RGBA8 (4 bytes a pixel). With BC3 it recompresses the decoded
+picture on the CPU (with `stb_dxt`, on Eden's worker threads) and keeps 1 byte a pixel; BC1 keeps half a byte (alpha becomes
+all-or-nothing). That is a quarter or an eighth of the texture memory, so the texture cache (a 1280 MiB arena that starts
+collecting at 704 MiB) holds four to eight times as many textures before it throws some away and has to decode them again. The
+cost: CPU time at each upload (the CPU is already the limit), and a little quality (gradients, BC1 alpha). Not tried on a
+console: it needs the PS4 driver's BC1/BC3 formats, which GCN supports, but this was not seen working here. The "Minimum RAM"
+profile now includes BC3. In safe mode (0.8.2) any BC setting is ignored for one start after a start that died.
+How much of SMM2 is ASTC is not known: the title's textures in this log are all small (at most 1280x720).
+
+**Asked for and not done.** A faster ASTC decoder or a GPU one: Eden's GPU decode (compute shaders) already lost the GPU twice on
+this console (see 0.4), and a faster CPU decoder is a change to Eden that cannot be checked against the pinned commit. **Fastmem**
+is still the one change that would lift the CPU limit, and it is not in this repository.
+
+**To test.** Run SMM2 once with the options as they are, to get the `profile total:` lines (send `boot.log` and `boot.old.log`),
+then once with `astc_recompress=bc3` and compare the title's fps and the `status:` memory lines.
+
 ## [0.8.2] - More options for speed and for memory, and a safe mode
 
 **Not built or run on a console by the author of this change.** All host tests pass (the menu test grew to 139 checks, the

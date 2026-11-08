@@ -46,6 +46,11 @@ const std::vector<Option>& Catalog() {
          "CPU é o modo mais estável no PS4. GPU e CPU assíncrona são experimentais.",
          "CPU is the most stable mode on the PS4. GPU and async CPU are experimental.",
          {{"cpu", "CPU (estável)", "CPU (stable)"}, {"gpu", "GPU", "GPU"}, {"async", "CPU assíncrona", "Async CPU"}}, 0},
+        // 0.8.3: Eden's own recompression (its settings.h: astc_recompression), applied only if this Eden has it.
+        {"astc_recompress", Group::Video, "Compressão das texturas ASTC", "ASTC texture compression",
+         "O PS4 não lê ASTC: as texturas são decodificadas e guardadas como RGBA8 (4 bytes por pixel). BC3 guarda 1 byte por pixel (1/4 da memória de textura) e BC1 meio byte (1/8, mas o alfa vira tudo-ou-nada). Quem faz a compressão é a CPU, uma vez por textura enviada, e perde um pouco de qualidade (degradês). Experimental: nunca foi tentado num console.",
+         "The PS4 cannot read ASTC: the textures are decoded and kept as RGBA8 (4 bytes a pixel). BC3 keeps 1 byte a pixel (1/4 of the texture memory) and BC1 half a byte (1/8, but alpha becomes all-or-nothing). The CPU does the compression, once per uploaded texture, and loses a little quality (gradients). Experimental: never tried on a console.",
+         {{"off", "Sem compressão (RGBA8)", "None (RGBA8)"}, {"bc3", "BC3 (1/4 da memória)", "BC3 (1/4 of the memory)"}, {"bc1", "BC1 (1/8 da memória)", "BC1 (1/8 of the memory)"}}, 0},
         {"shader_cache", Group::Video, "Cache de shaders no disco", "Shader cache on disk",
          "Guarda os shaders compilados para as próximas partidas. Desligue só se suspeitar de um cache corrompido.",
          "Keeps compiled shaders for the next runs. Turn it off only if you suspect a corrupt cache.",
@@ -281,10 +286,10 @@ const std::vector<Preset>& Presets() {
          {{"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"sync_memory", "off"}, {"skip_cpu_invalidation", "on"},
           {"async_presentation", "on"}, {"anti_aliasing", "none"}, {"anisotropy", "default"}, {"scaling_filter", "bilinear"}, {"astc", "cpu"}}},
         {"RAM mínima (teste)", "Minimum RAM (test)",
-         "O mais econômico que não deixa o jogo feio demais: resolução 0,5x (as imagens da GPU, que ficam fora da arena, ocupam um quarto), arena de vídeo de 1152 MiB, VRAM conservadora, cache de shaders carregado até ~8 MiB (o que passar é guardado, não apagado), sem cache do driver, perfil de memória apertado, pausa do jogo quando a memória ficar crítica e menu de jogos só com miniaturas. A imagem fica bem mais mole.",
-         "The most frugal setting that does not make the game too ugly: 0.5x resolution (GPU images, which live outside the arena, take a quarter), 1152 MiB video arena, conservative VRAM, shader cache loaded up to ~8 MiB (what is over is kept, not deleted), no driver cache, the tight memory profile, a pause when memory turns critical and the game list with thumbnails only. The picture gets much softer.",
+         "O mais econômico que não deixa o jogo feio demais: resolução 0,5x (as imagens da GPU, que ficam fora da arena, ocupam um quarto), texturas ASTC guardadas em BC3 (1/4 da memória), arena de vídeo de 1152 MiB, VRAM conservadora, cache de shaders carregado até ~8 MiB (o que passar é guardado, não apagado), sem cache do driver, perfil de memória apertado, pausa do jogo quando a memória ficar crítica e menu de jogos só com miniaturas. A imagem fica bem mais mole.",
+         "The most frugal setting that does not make the game too ugly: 0.5x resolution (GPU images, which live outside the arena, take a quarter), ASTC textures kept as BC3 (1/4 of the memory), 1152 MiB video arena, conservative VRAM, shader cache loaded up to ~8 MiB (what is over is kept, not deleted), no driver cache, the tight memory profile, a pause when memory turns critical and the game list with thumbnails only. The picture gets much softer.",
          {{"resolution", "0.5"}, {"env:ORBIS_ARENA_MIB", "1152"}, {"vram", "conservative"}, {"shader_preload", "256"}, {"driver_cache", "off"},
-          {"astc", "cpu"}, {"memory_profile", "tight"}, {"memory_action", "pause"}, {"covers", "thumbs"}}},
+          {"astc", "cpu"}, {"astc_recompress", "bc3"}, {"memory_profile", "tight"}, {"memory_action", "pause"}, {"covers", "thumbs"}}},
     };
     return presets;
 }

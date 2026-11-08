@@ -38,6 +38,8 @@ int main() {
     Check(IsExperimental("skip_cpu_invalidation", "on") && !IsExperimental("skip_cpu_invalidation", "off"), "skip_cpu_invalidation");
     Check(IsExperimental("auto_stub", "on") && !IsExperimental("auto_stub", "off"), "auto_stub");
     Check(IsExperimental("astc", "gpu") && IsExperimental("astc", "async") && !IsExperimental("astc", "cpu"), "astc: only the CPU mode is safe");
+    Check(IsExperimental("astc_recompress", "bc3") && IsExperimental("astc_recompress", "bc1") && !IsExperimental("astc_recompress", "off"),
+          "astc_recompress: BC1 and BC3 are experimental, off is not");
     Check(IsExperimental("dma_accuracy", "unsafe") && !IsExperimental("dma_accuracy", "default") && !IsExperimental("dma_accuracy", "safe"),
           "dma_accuracy: only unsafe");
     Check(IsExperimental("memory_profile", "strict") && !IsExperimental("memory_profile", "tight"), "memory_profile: only strict");

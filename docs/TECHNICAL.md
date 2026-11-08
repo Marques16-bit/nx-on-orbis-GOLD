@@ -172,6 +172,17 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
 
+## ASTC recompression and the whole-thread profile (0.8.3; not yet seen on a console)
+
+- `astc_recompression` (Eden `common/settings.h`): `Uncompressed` | `Bc1` | `Bc3`. With it not `Uncompressed`,
+  `texture_cache/util.cpp` decodes each ASTC level on the CPU (`ASTC::Decompress`) and encodes it with `BCN::CompressBC1/3`
+  (`stb_dxt`, rows spread over `GetThreadWorkers()`); `maxwell_to_vk.cpp` makes the image BC1/BC3 (sRGB variants too);
+  `vk_texture_cache.cpp` `WillUseAcceleratedAstcDecode` is false, so `astc=gpu` falls back to the CPU path. Sizes: RGBA8 = 4 B/px,
+  BC3 = 1 B/px, BC1 = 0.5 B/px (`TranscodedAstcSize`, `CalculateConvertedSizeBytes`).
+- The profiler (`ps4_platform.cpp`): 24 slots, `RegisterThread` gives the core threads (GPU, VulkanWorker, CPUCore_n, FS,
+  nvservices) a slot first and the others at most 14; audio threads (`audio*`, `Audio*`, `DSP_*`), `cemuhook*` and `main` are never
+  sampled. `ProfileReport` writes `profile total:` first, then the detail of the core threads and of any thread above 5 % busy.
+
 ## Speed and memory options (0.8.2; none run on a console)
 
 - `cpu_clock`: `CoreTiming::GetClockTicks()` multiplies the guest counter by target/1020 MHz (1734 boost, 2040 overclock).
