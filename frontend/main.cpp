@@ -591,7 +591,9 @@ void ApplyPs4Settings() {
 }
 
 /// What to do when the memory watch reaches its critical level (settings.txt: memory_action).
-Ps4Memory::Action g_memory_action = Ps4Memory::Action::Warn;
+// 0.8.4: pause is the default. A Super Mario Odyssey run fell from 1790 MiB to 58 MiB free and died 7 s after the
+// critical level; pausing there turns that crash into a choice (continue, restart, back to the list).
+Ps4Memory::Action g_memory_action = Ps4Memory::Action::Pause;
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
@@ -619,7 +621,7 @@ void ApplyMemoryPlan() {
     }
     const std::string action_text = file.Get("memory_action");
     if (!action_text.empty() && !Ps4Memory::ParseAction(action_text, &g_memory_action)) {
-        Ps4::Log("settings.txt: memory_action=%s (unknown, warn is used)", action_text.c_str());
+        Ps4::Log("settings.txt: memory_action=%s (unknown, pause is used)", action_text.c_str());
     }
 
     const std::uint64_t budget_mib = Ps4::DirectMemoryTotal() >> 20;
@@ -673,7 +675,7 @@ void ApplyMemoryPlan() {
 ///   overlay_delay=0|1|2|4|8     classic: ms the GPU gets to finish a frame before the HUD is drawn into it (default 2)
 ///   memory_profile=auto|roomy|standard|tight|strict  0.7.6: arena, shader preload and driver cache for this
 ///                               console's memory (default auto: chosen from the direct memory it gives; see memory_guard.h)
-///   memory_action=warn|pause    when the memory watch is critical: a warning on screen (default) or also pause the game
+///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
 ///   overlay_draw=on|off         draw the HUD and the pause menu over the game (default on)

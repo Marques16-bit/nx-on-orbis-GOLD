@@ -172,6 +172,19 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
 
+## Memory run of Super Mario Odyssey and the pause default (0.8.4; not yet seen on a console)
+
+- The memory watch (`memory_guard`) reports the LARGEST FREE BLOCK of direct memory. In the Odyssey run it fell from 1790 MiB
+  (59 s) to 58 MiB (228 s) while `guest+tables` went from 257 to 1687 MiB; the fall was 600-1100 MiB a minute while the game
+  loaded. Free fell 1732 MiB for 1430 MiB of guest growth: the other ~300 MiB are the C heap (heap census 429 -> 517 MiB in
+  big blocks), GPU images and JIT.
+- `memory_action` defaults to pause. `ApplySettingsFile`/the watch loop in `main.cpp` pause the game when the stage enters
+  Critical and the overlay is ready, and show the memory panel (continue, restart, back to the list).
+  `Option memory_action` has `default_index` 1, so the menu does not write the line when it is `pause`.
+- What the fixed part is made of (from the Odyssey boot.log): 4608 MiB direct memory - 1790 free - 257 guest = ~2560 MiB.
+  The known items are the driver arena (1280, 1152 in the tight profile), C-heap carve-outs (4 x 128 MiB by 57 s), a 256 MiB
+  GPU stream buffer (`BO 23 (262144 KiB)` in the driver log), JIT caches and fiber stacks.
+
 ## ASTC recompression and the whole-thread profile (0.8.3; not yet seen on a console)
 
 - `astc_recompression` (Eden `common/settings.h`): `Uncompressed` | `Bc1` | `Bc3`. With it not `Uncompressed`,

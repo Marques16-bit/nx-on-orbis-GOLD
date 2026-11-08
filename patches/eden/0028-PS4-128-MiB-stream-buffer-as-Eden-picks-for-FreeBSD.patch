@@ -1,0 +1,32 @@
+From 19049ce7a1cb0d31dc4e53229013b9583d8ad753 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 8 Nov 2026 15:59:51 -0300
+Subject: [PATCH 28/28] PS4: 128 MiB stream buffer, as Eden already picks for FreeBSD
+
+The driver log shows the stream buffer as BO 23 (262144 KiB) on GARLIC. That is Eden's own
+MAX_STREAM_BUFFER_SIZE (vk_staging_buffer_pool.cpp): 256 MiB everywhere except FreeBSD. The PS4 is
+FreeBSD-based but OpenOrbis does not define __FreeBSD__, so it got the PC size. 128 MiB is what
+upstream already uses for FreeBSD; it frees 128 MiB of the process's direct memory.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
+index 7b6571d..83d73e9 100644
+--- a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
++++ b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
+@@ -33,7 +33,8 @@ constexpr VkDeviceSize MAX_ALIGNMENT = 256;
+ // Windows ones however, can intake bigger buffers and generally do not OOM.
+ // - GTX 960 on Windows will not OOM with 256mib
+ // - GT 1030 on ^NIX will OOM with 256mib
+-#if defined(__FreeBSD__)
++// PS4 (OpenOrbis is FreeBSD-based but does not define __FreeBSD__): the 128 MiB buffer Eden already picks for FreeBSD.
++#if defined(__FreeBSD__) || defined(__ORBIS__)
+ constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 128_MiB;
+ #else
+ constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 256_MiB;
+-- 
+2.43.0
+

@@ -140,7 +140,7 @@ void TestSettingsFile() {
         check("overlay_poll", {"1", "2", "4", "8"}, "1");
         check("overlay_flip_stamp", {"on", "off"}, "on");
         check("memory_profile", {"auto", "roomy", "standard", "tight", "strict"}, "auto");
-        check("memory_action", {"warn", "pause"}, "warn");
+        check("memory_action", {"warn", "pause"}, "pause"); // 0.8.4: pause by default
         check("env:ORBIS_ARENA_MIB", {"1024", "1152", "1280", "1536", "1792"}, "1280");
         check("shader_preload", {"0", "128", "256", "1024", "4096", "all"}, "all"); // 0.7.7: no limit by default
         SettingsFile f("overlay_mode=classic\nmemory_profile=tight\nmemory_action=pause\n");
@@ -300,8 +300,8 @@ void TestNavigation() {
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 3 && r.saved.find("ORBIS_ARENA_MIB=1152") != std::string::npos && r.saved.find("shader_preload=1024") != std::string::npos &&
                   r.saved.find("driver_cache=off") != std::string::npos && r.saved.find("memory_profile=tight") != std::string::npos &&
-                  r.saved.find("memory_action=pause") != std::string::npos,
-              "profile Save RAM: 1152 MiB arena, no driver cache, tight memory profile and pause written");
+                  r.saved.find("memory_action") == std::string::npos && SettingsFile(r.saved).ChoiceIndex(*FindOption("memory_action")) == 1,
+              "profile Save RAM: 1152 MiB arena, no driver cache, tight memory profile, and pause (now the default, so no line)");
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 4 && r.saved.find("ORBIS_ARENA_MIB=1792") != std::string::npos &&
                   r.saved.find("driver_cache") == std::string::npos && r.saved.find("memory_profile") == std::string::npos &&

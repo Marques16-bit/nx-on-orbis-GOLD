@@ -2,6 +2,75 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.8.5] - The 256 MiB buffer found, and cut in half
+
+**Not built or run on a console by the author of this change.** The patch was applied with `git am --keep-cr` (the way
+`scripts/fetch-eden.sh` does) to a copy of the file taken from Eden's source; the lines it changes were also read at the
+pinned commit `5f142c79` and are the same. No other patch touches that file. The host tests pass.
+
+**Where the 256 MiB buffer comes from.** In the driver log of the Odyssey run, `BO 23 (262144 KiB, heap 0x6) is on GARLIC`
+is the largest single GPU allocation. It is Eden's own **stream buffer** (`StagingBufferPool`, `vk_staging_buffer_pool.cpp`):
+`MAX_STREAM_BUFFER_SIZE` is 256 MiB on every system except FreeBSD, where Eden uses 128 MiB (its comment says *NIX drivers
+are more sensitive to big stream buffers). The PS4 is FreeBSD-based but OpenOrbis does not define `__FreeBSD__`, so the port got
+the PC size. It is not in `orbis-compat`.
+
+**Changed: patch 0028** adds `|| defined(__ORBIS__)` to that condition, so the PS4 gets the 128 MiB buffer Eden already
+uses on FreeBSD: **128 MiB of direct memory back in every game**. The buffer is split into regions; a smaller one means a
+frame can queue less upload data before it waits for the GPU, which is what Eden accepts on FreeBSD. If a game shows more
+waiting on uploads than before (the driver's `WaitForFences` per-frame figure), say so and the size can be made a setting.
+
+## [0.8.4] - The renderer is Vulkan, why Odyssey ran out of memory, and the game pausing before it does
+
+**Not built or run on a console by the author of this change.** The host tests pass; the change to the program is one default
+and its text.
+
+**Which graphics API is it? Vulkan, and nothing else.** `ApplyPs4Settings()` sets `renderer_backend = Vulkan` before Eden
+starts, `configure-eden.sh` builds Eden with `-DENABLE_OPENGL=OFF` (no OpenGL renderer exists in the program), and every log of every run agrees: the Eden log names `Render.Vulkan` and the device
+"PlayStation 4 Liverpool (RADV ORBIS)", the driver log counts `QueueSubmit2`, `QueuePresentKHR`, `AcquireNextImage2` and
+`WaitForFences` (Vulkan calls) per frame, and the profiles show the threads `VulkanWorker`, `VkPipelineBuilder` and
+`VulkanPresent`. So the garbled pictures are not the OpenGL problems that emulators are known for; they come from the
+Vulkan driver on this GPU (see the 0.7.x/0.8.0 notes for the geometry that goes missing) or from options that skip draws
+(`async_shaders=on` skips a draw whose pipeline is not built yet: the Odyssey run had it on).
+
+**The vulkan-ps4 repository (`vulkan-ps4-main`).** A Vulkan 1.0 driver of about 11 000 lines of C that translates Vulkan to the
+console's GNM commands (PM4) over opengnm and a SPIR-V to GCN compiler (opengnm-psbc), MIT licensed. It is a different way
+to reach the same GPU, not an upgrade for this port: Eden needs Vulkan 1.1+ and a long list of extensions that it does not
+offer, while the driver already in use (Mesa RADV, Vulkan 1.3, found in the logs) offers them. Nothing in it is used by this
+release. Its memory handling (`VkDeviceMemory` straight on the console's direct memory, two heaps) is the same model as the
+arena in use here, so it does not show a way to need less.
+
+**Why Super Mario Odyssey closed (boot.log of the run, 0.8.3, with `astc_recompress=bc1`, `resolution=0.75`, arena 1280).**
+- At 59 s: guest 257 MiB, largest free direct block 1790 MiB. So about 2560 MiB are already taken before the game has used any
+  memory of its own (driver arena 1280, C heap in 128 MiB carve-outs 640+, a 256 MiB GPU stream buffer, JIT caches, stacks).
+- The guest then grew to 1687 MiB while the game loaded (+1430 MiB) and the free block fell to 58 MiB, at up to 1100 MiB a
+  minute. `memory watch: low -> critical` came at 228.8 s and `CRASH signal 11` at 235.7 s with `1 failed commits`: a 64 KiB
+  piece of guest memory could not be committed, because no direct memory was left.
+- `0 MiB given back` the whole run: the game never gave guest memory back (its own allocator keeps what it took), so the
+  give-back path (0.7.x) has nothing to return. Nothing was lost to it.
+- Super Mario Maker 2 does not get there: its lowest free block in the two 0.8.3 runs was 396 MiB (BC3) and 503 MiB (BC1),
+  the guest 1523 and 1288 MiB. Odyssey needs about 400-600 MiB more than this build leaves.
+
+**How the original Eden handles it: it does not.** On a PC the 4 GiB of guest memory, the driver's memory and Eden's caches live in
+the machine's RAM and, past that, in swap; the only thing Eden does by itself is the texture/buffer cache collector that keeps
+GPU memory under a budget (this port already ties that budget to the driver arena, patch 0025). A console process with a hard
+4608 MiB of direct memory and no swap has nothing to fall back on, so the way to run a game of that size is to take memory from
+the fixed part (the 2560 MiB above), not to wait for the game to give it back.
+
+**Changed: `memory_action` is now `pause` by default** (it was `warn`). When the largest free block falls below 64 MiB
+the game is paused with a choice (continue anyway, restart the game, back to the game list) instead of the app
+closing about 7 s later. `memory_action=warn` in settings.txt (or "Só avisar" in the menu) brings the old behaviour back. It
+falls back to the warning when the overlay is not ready. The Mario Maker 2 runs never went below 396 MiB, so they are not
+affected.
+
+**What to try for Odyssey now (nothing here is new code, only the settings that remove the most):** the "RAM mínima (teste)"
+profile (arena 1152 MiB, BC3, 0.5x, no driver cache, shader preload 256, thumbnails only), and `async_shaders=off` (the default) so
+no draw is skipped while a shader builds.
+
+**What is still needed to shrink the fixed 2560 MiB (not done, and why).** The heap census names its biggest owners only by
+addresses in the program (`eboot+0x67dc <- 0x61f1d7 <- 0x66448c`: 96 MiB in one block, 4 x 16 MiB twice, 24 MiB twice): turning
+those into names needs the matching ELF of the build, which the logs do not carry. The C heap's carve-out cap and the
+256 MiB stream buffer are in `orbis-compat` and in the driver, which are not in this repository.
+
 ## [0.8.3] - What the 0.8.2 run says about the CPU, ASTC textures kept compressed, and a profile that adds up the cores
 
 **Not built or run on a console by the author of this change.** All host tests pass; `ps4_platform.cpp` was syntax-checked
