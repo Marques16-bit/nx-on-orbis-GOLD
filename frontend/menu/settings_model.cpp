@@ -63,6 +63,11 @@ const std::vector<Option>& Catalog() {
          "O arquivo de cache do próprio driver de vídeo (vulkan_pipelines.bin). Desligar economiza memória e disco, e descarta uma fonte possível de falhas ao carregar shaders; os shaders compilam do zero.",
          "The video driver's own cache file (vulkan_pipelines.bin). Turning it off saves memory and disk and rules out one possible source of crashes while loading shaders; shaders compile from scratch.",
          {{"on", "Ligado", "On"}, {"off", "Desligado", "Off"}}, 0},
+        // 0.8.2: less heap while the menu is open (the pictures are decoded into the C heap before the game starts).
+        {"covers", Group::Perf, "Capas no menu de jogos", "Covers in the game list",
+         "As capas decodificadas ficam na memória (até 64 MiB) enquanto o menu de jogos está aberto, e parte dessa memória pode não voltar ao sistema depois. Só miniaturas guarda só os quadradinhos; Nenhuma não decodifica imagem nenhuma. Vale na próxima vez que o app abrir.",
+         "Decoded covers sit in memory (up to 64 MiB) while the game list is open, and part of that memory may not go back to the system afterwards. Thumbnails only keeps just the small tiles; None decodes no picture at all. Applies the next time the app opens.",
+         {{"full", "Completas (padrão)", "Full (default)"}, {"thumbs", "Só miniaturas", "Thumbnails only"}, {"off", "Nenhuma", "None"}}, 0},
         {"dyna_state", Group::Video, "Estado dinâmico do Vulkan", "Vulkan dynamic state",
          "Nível das extensões de estado dinâmico (0 a 3). Se o driver falhar, tente um valor menor.",
          "Level of the dynamic-state extensions (0 to 3). If the driver fails, try a lower value.",
@@ -103,6 +108,11 @@ const std::vector<Option>& Catalog() {
          "Velocidade máxima da emulação quando o limite de velocidade está ligado. 100% é o normal; menos deixa o jogo mais lento, mais deixa mais rápido.",
          "Top emulation speed while the speed limit is on. 100% is normal; lower slows the game, higher speeds it up.",
          {{"50", "50%", "50%"}, {"75", "75%", "75%"}, {"100", "100%", "100%"}, {"150", "150%", "150%"}, {"200", "200%", "200%"}}, 2},
+        // 0.8.2: Eden's own option, applied only if this Eden has the setting (eden_settings.h). Not tried on a console.
+        {"async_presentation", Group::Video, "Apresentação assíncrona", "Asynchronous presentation",
+         "Experimental. Mostra os quadros por uma thread separada (opção do Eden, desligada nos PCs): pode tirar um pouco de trabalho da thread da GPU. No PS4 a apresentação passa pelo driver de vídeo e pelo gancho do HUD, então pode causar piscar, quadros repetidos ou travar. Nunca foi testada num console: ligue só para comparar.",
+         "Experimental. Shows frames from a separate thread (an Eden option, off on PCs): it may take a little work off the GPU thread. On the PS4 presentation goes through the video driver and the HUD hook, so it may cause flicker, repeated frames or hangs. Never tried on a console: turn it on only to compare.",
+         {{"off", "Desligada", "Off"}, {"on", "Ligada (experimental)", "On (experimental)"}}, 0},
         // ---------------------------------------------------------------- CPU and memory
         {"cpu_accuracy", Group::Cpu, "Precisão da CPU", "CPU accuracy",
          "Rápida usa ponto flutuante reduzido (mais velocidade). Automática e Precisa são mais fiéis e mais lentas.",
@@ -138,6 +148,15 @@ const std::vector<Option>& Catalog() {
          "Ignora certas invalidações de cache do lado da CPU durante atualizações de memória: usa menos CPU (o ponto fraco do PS4), mas pode causar falhas ou travamentos em alguns jogos. Experimental.",
          "Skips some CPU-side cache invalidations during memory updates: uses less CPU (the PS4's weak point) but may cause glitches or hangs in some games. Experimental.",
          {{"off", "Desligado", "Off"}, {"on", "Ligado (experimental)", "On (experimental)"}}, 0},
+        // 0.8.2: two Eden options that change what the game READS from the emulated CPU, not how much CPU the PS4 has.
+        {"cpu_clock", Group::Cpu, "Relógio da CPU emulada", "Emulated CPU clock",
+         "Experimental. O relógio da CPU do Switch que o JOGO lê: Normal 1020 MHz, Impulso 1734 MHz, Overclock 2040 MHz (valores do Eden). NÃO dá mais CPU ao PS4: só muda a hora que o jogo enxerga. Jogos que limitam o próprio FPS por tempo podem rodar mais soltos; outros ficam com som ou física acelerados, ou travam. Teste jogo por jogo.",
+         "Experimental. The Switch CPU clock the GAME reads: Normal 1020 MHz, Boost 1734 MHz, Overclock 2040 MHz (Eden's values). It does NOT give the PS4 more CPU: it only changes the time the game sees. Games that cap their own FPS by time may run freer; others get fast audio or physics, or hang. Try it game by game.",
+         {{"normal", "Normal", "Normal"}, {"boost", "Impulso (experimental)", "Boost (experimental)"}, {"overclock", "Overclock (experimental)", "Overclock (experimental)"}}, 0},
+        {"cpu_ticks", Group::Cpu, "Ticks de CPU personalizados", "Custom CPU ticks",
+         "Experimental. Troca a contagem de ciclos que a CPU emulada soma a cada trecho de código por um número fixo (opção do Eden), o que muda de quanto em quanto tempo as threads do jogo voltam ao agendador. O Eden indica de 77 a 21000 e avisa que pode travar o jogo. Não se sabe qual valor ajuda neste PS4: teste um de cada vez e veja o FPS no HUD.",
+         "Experimental. Replaces the cycle count the emulated CPU adds after each stretch of code with a fixed number (an Eden option), which changes how often the game's threads return to the scheduler. Eden suggests 77 to 21000 and warns it may hang the game. Which value helps on this PS4 is not known: try one at a time and watch the FPS on the HUD.",
+         {{"off", "Desligado", "Off"}, {"1000", "1000", "1000"}, {"4000", "4000", "4000"}, {"16000", "16000 (padrão do Eden)", "16000 (Eden's default)"}, {"21000", "21000", "21000"}}, 0},
         // ---------------------------------------------------------------- Advanced
         {"bgra", Group::Advanced, "Correção de cor B8G8R8A8", "B8G8R8A8 colour fix",
          "Corrige vermelho e azul trocados nas texturas. Se as cores do jogo estiverem trocadas (céu rosa, chão azul), use Automático ou Desligado.",
@@ -254,6 +273,18 @@ const std::vector<Preset>& Presets() {
          "For wrong graphics (blurred or flat textures, as in Super Mario Maker 2's themes): high GPU accuracy, reactive flushing, safe DMA, synchronised memory, synchronous shaders and textures back outside the driver's arena. Slower. The cause is not confirmed yet; it is for comparing with the other profiles.",
          {{"gpu_accuracy", "high"}, {"reactive_flushing", "on"}, {"dma_accuracy", "safe"}, {"sync_memory", "on"}, {"async_shaders", "off"},
           {"env:ORBIS_VRAM_GARLIC", "1"}}},
+        // 0.8.2. Neither of these has been run on a console: they are lists of options picked for what each one should
+        // do (see the descriptions), to be compared with Default one game at a time.
+        {"Mais FPS (teste)", "More FPS (test)",
+         "Para jogos presos na CPU (o caso do Super Mario Maker 2): resolução 0,75x, GPU de precisão baixa, sem flush reativo nem memória sincronizada, ignora invalidações internas da CPU e mostra os quadros por uma thread separada. Sem filtros extras. Não promete mais FPS: GPU leve ajuda pouco quando a CPU é o limite. Se o jogo travar ao abrir, o modo seguro desliga o que é experimental na partida seguinte.",
+         "For CPU-bound games (Super Mario Maker 2's case): 0.75x resolution, low GPU accuracy, no reactive flushing or synchronised memory, skips inner CPU invalidations and shows frames from a separate thread. No extra filters. It does not promise more FPS: a light GPU helps little when the CPU is the limit. If the game hangs while opening, safe mode turns the experimental parts off for the next start.",
+         {{"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"sync_memory", "off"}, {"skip_cpu_invalidation", "on"},
+          {"async_presentation", "on"}, {"anti_aliasing", "none"}, {"anisotropy", "default"}, {"scaling_filter", "bilinear"}, {"astc", "cpu"}}},
+        {"RAM mínima (teste)", "Minimum RAM (test)",
+         "O mais econômico que não deixa o jogo feio demais: resolução 0,5x (as imagens da GPU, que ficam fora da arena, ocupam um quarto), arena de vídeo de 1152 MiB, VRAM conservadora, cache de shaders carregado até ~8 MiB (o que passar é guardado, não apagado), sem cache do driver, perfil de memória apertado, pausa do jogo quando a memória ficar crítica e menu de jogos só com miniaturas. A imagem fica bem mais mole.",
+         "The most frugal setting that does not make the game too ugly: 0.5x resolution (GPU images, which live outside the arena, take a quarter), 1152 MiB video arena, conservative VRAM, shader cache loaded up to ~8 MiB (what is over is kept, not deleted), no driver cache, the tight memory profile, a pause when memory turns critical and the game list with thumbnails only. The picture gets much softer.",
+         {{"resolution", "0.5"}, {"env:ORBIS_ARENA_MIB", "1152"}, {"vram", "conservative"}, {"shader_preload", "256"}, {"driver_cache", "off"},
+          {"astc", "cpu"}, {"memory_profile", "tight"}, {"memory_action", "pause"}, {"covers", "thumbs"}}},
     };
     return presets;
 }

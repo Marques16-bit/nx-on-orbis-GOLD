@@ -18,6 +18,8 @@
 //   settings.txt                      "key=value" per line; written by the menu's settings tabs
 //                                     and still fine to edit by hand (see ApplySettingsFile)
 //   boot.log                         this frontend's log; log/eden_log.txt is Eden's
+//   safe_start.txt                   exists while a started game has not drawn yet; a start that finds it
+//                                    runs without the experimental lines of settings.txt (safe_mode.h)
 //
 // Controls (Switch layout by position): Circle=A Cross=B Triangle=X Square=Y, L1/R1=L/R,
 // L2/R2=ZL/ZR, Options=+, touch pad click=-, L3/R3 sticks. Options + touch pad for 2 s quits.
@@ -74,6 +76,7 @@
 #include "eden_settings.h"
 #include "firmware_zip.h"
 #include "memory_guard.h"
+#include "safe_mode.h"
 #include "menu/cover_loader.h"
 #include "menu/menu_ui.h"
 #include "screenshot.h"
@@ -399,10 +402,19 @@ std::string FindGame() {
             std::error_code size_ec;
             entries.push_back({game.filename().string(), std::uint64_t(fs::file_size(game, size_ec))});
         }
-        {
+        // 0.8.2: covers=full|thumbs|off. The decoded pictures sit in the C heap while the menu is open; thumbs keeps only
+        // the small tiles (no 400x400 pictures, up to 64 MiB less), off decodes nothing. Read when the app starts.
+        const std::string covers_mode = LoadSettingsFile().Get("covers");
+        const std::uint64_t cover_cap = covers_mode == "thumbs" ? 0 : (64ull << 20);
+        if (covers_mode == "off") {
+            Ps4::Log("covers: off (settings.txt covers=off): no picture is decoded for the menu");
+        }
+        if (covers_mode != "off") {
             // 0.7.9: pictures the user put in covers/ (<title id>.png, <file name>.jpg, ...) come first.
             const fs::path covers_dir = data / "covers";
-            const Menu::Covers::Report covers = Menu::Covers::Load(covers_dir, entries);
+            Menu::Covers::Options cover_options;
+            cover_options.max_cover_bytes = cover_cap;
+            const Menu::Covers::Report covers = Menu::Covers::Load(covers_dir, entries, cover_options);
             if (!covers.dir_found) {
                 std::error_code mk_ec;
                 fs::create_directories(covers_dir, mk_ec);
@@ -414,7 +426,7 @@ std::string FindGame() {
                          static_cast<unsigned long>(covers.cover_bytes >> 20), covers.ms);
             }
         }
-        {
+        if (covers_mode != "off") {
             // 0.7.10: the games the covers/ folder did not cover get the picture from inside the dump.
             using Clock = std::chrono::steady_clock;
             const auto began = Clock::now();
@@ -444,7 +456,7 @@ std::string FindGame() {
                 Menu::Image::Pixels big = Menu::Image::Fit(full, Menu::CoverSize, Menu::CoverSize, true);
                 entries[i].thumb = Menu::Image::Fit(big.Ok() ? big : full, Menu::ThumbSize, Menu::ThumbSize);
                 const std::uint64_t cost = std::uint64_t(big.px.size()) * 4;
-                if (big.Ok() && kept + cost <= (64ull << 20)) {
+                if (big.Ok() && kept + cost <= cover_cap) {
                     entries[i].cover = std::move(big);
                     kept += cost;
                 }
@@ -583,6 +595,12 @@ Ps4Memory::Action g_memory_action = Ps4Memory::Action::Warn;
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
+// 0.8.2: the last start died before the game drew anything, so the experimental lines of settings.txt are ignored for this
+// one start (safe_mode.h). Set in main() before the memory plan and settings.txt are read.
+bool g_safe_mode = false;
+std::string SafeStartFile() {
+    return (fs::path{Ps4::DataDir} / "safe_start.txt").string();
+}
 
 /// 0.7.6: the memory-related defaults for THIS console, set before settings.txt is applied (so a
 /// line in settings.txt still wins). Everything here equals the 0.7.3 / 0.7.4 values on a console
@@ -594,6 +612,10 @@ void ApplyMemoryPlan() {
     const std::string profile_text = file.Get("memory_profile");
     if (!profile_text.empty() && !Ps4Memory::ParseProfile(profile_text, &profile)) {
         Ps4::Log("settings.txt: memory_profile=%s (unknown, auto is used)", profile_text.c_str());
+    }
+    if (g_safe_mode && profile == Ps4Memory::Profile::Strict) {
+        Ps4::Log("safe mode: memory_profile=strict is experimental, the tight profile is used for this start");
+        profile = Ps4Memory::Profile::Tight;
     }
     const std::string action_text = file.Get("memory_action");
     if (!action_text.empty() && !Ps4Memory::ParseAction(action_text, &g_memory_action)) {
@@ -663,6 +685,9 @@ void ApplyMemoryPlan() {
 ///   anti_aliasing=none|fxaa|smaa, dma_accuracy=default|unsafe|safe, anisotropy=default|auto|2|4|8|16,
 ///   gpu_accuracy=medium, resolution=0.25|1.25, sync_memory=on|off, skip_cpu_invalidation=on|off,
 ///   auto_stub=on|off, speed_percent=50|75|100|150|200, region=japan|usa|europe|australia|china|korea|taiwan
+///   covers=full|thumbs|off      0.8.2: the menu's game pictures: full (default), only the small tiles, or none (less heap)
+///   0.8.2 (eden_settings.h, each only if this Eden has the setting): cpu_clock=normal|boost|overclock,
+///   cpu_ticks=off|1000|4000|16000|21000, async_presentation=on|off
 ///   language=pt|en              the menu's language (read by the menu only)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
 void ApplySettingsFile() {
@@ -683,6 +708,10 @@ void ApplySettingsFile() {
         }
         const std::string key = line.substr(0, eq);
         const std::string value = line.substr(eq + 1);
+        if (g_safe_mode && Ps4Safe::IsExperimental(key, value)) {
+            Ps4::Log("settings.txt: %s=%s (ignored for this start: safe mode)", key.c_str(), value.c_str());
+            continue;
+        }
         bool known = true;
         bool missing = false; // a 0.7.4 option this Eden has no setting for
         if (key == "cpu_accuracy" && (value == "unsafe" || value == "auto" || value == "accurate")) {
@@ -778,6 +807,8 @@ void ApplySettingsFile() {
         } else if (key == "vram" && (value == "conservative" || value == "aggressive") &&
                    static_cast<int>(Settings::VramUsageMode::Conservative) == 0) {
             v.vram_usage_mode.SetValue(static_cast<Settings::VramUsageMode>(value == "aggressive" ? 1 : 0));
+        } else if (key == "covers" && (value == "full" || value == "thumbs" || value == "off")) {
+            // Read by the menu code before the game list opens.
         } else if (key == "language" && (value == "pt" || value == "en")) {
             // Only the menu reads it.
         } else if (key == "menu_theme" && Menu::FindOption("menu_theme") != nullptr && value.size() < 16) {
@@ -1017,6 +1048,12 @@ int main() {
     InstallFirmware();
 
     Ps4::SetPhase("core init");
+    // 0.8.2: safe mode. If the previous start never got as far as drawing, its experimental options stay off for this one.
+    g_safe_mode = Ps4Safe::PreviousStartDied(SafeStartFile());
+    if (g_safe_mode) {
+        Ps4::Log("safe mode: the last start ended before the game drew anything; experimental lines of settings.txt are ignored for this start (settings.txt is not changed)");
+    }
+    Ps4Safe::MarkStart(SafeStartFile(), game);
     ApplyPs4Settings();
     ApplyMemoryPlan();
     ApplySettingsFile();
@@ -1241,6 +1278,9 @@ int main() {
                            pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
     };
     std::uint64_t last_status = Ps4::NowUs(), last_notice = 0, last_mem_check = 0, last_timeline = Ps4::NowUs();
+    // 0.8.2: safe mode says so on the screen for the first 15 s, and the file is cleared once the game has drawn.
+    const std::uint64_t safe_notice_until = g_safe_mode ? Ps4::NowUs() + 15000000 : 0;
+    bool safe_start_cleared = false;
     unsigned status_count = 0;
     int shaders_last = 0, shaders_total = 0;
     std::uint64_t free_mib = Ps4::FreeDirectMemory() >> 20;
@@ -1256,6 +1296,10 @@ int main() {
     std::uint64_t stall_seen = Ps4Hook::LastStall().count, last_pause_us = 0;
     int stalls_shot = 0;
     std::uint64_t auto_shot_due[3] = {0, 0, 0}; // 0 = nothing waiting
+    // 0.8.1: the profile of a freeze. 0.6 s after the flips stop, a fresh profiler window opens; when the picture
+    // comes back that window (the threads busy during the freeze) goes to the log. Three per run.
+    std::uint64_t stall_window = 0; // when the window was opened, 0 = none open
+    int stall_profiles = 0;
     const auto take_shot = [&](bool automatic = false) {
         if (!Ps4Hook::Ready()) {
             Ps4::Log("screenshot: not available yet (%s)", Ps4Hook::Describe().c_str());
@@ -1389,6 +1433,14 @@ int main() {
                 last_pause_us = Ps4::NowUs();
             }
             const Ps4Hook::Stall st = Ps4Hook::LastStall();
+            const std::uint64_t quiet_us = Ps4Hook::SinceLastFlipUs();
+            if (!in_menu && stall_window == 0 && stall_profiles < 3 && quiet_us >= 600000) {
+                stall_window = Ps4::NowUs();
+                Ps4::ProfileWindow(false);
+                Ps4::Log("stall: no new picture for %.1f s so far; sampling the busy threads until it ends", double(quiet_us) / 1e6);
+            } else if (stall_window != 0 && st.count == stall_seen && quiet_us < 100000) {
+                stall_window = 0; // the pictures came back after less than a second: not a freeze, drop the window
+            }
             if (st.count != stall_seen) {
                 stall_seen = st.count;
                 const std::uint64_t now = Ps4::NowUs();
@@ -1396,6 +1448,15 @@ int main() {
                 Ps4::Log("stall: the picture froze for %.2f s and came back on flip #%lu%s; the Mesa log counts these frames in its "
                          "\"scan-out copy ... over N frames\" lines, and its last \"GPU HAS NOT FINISHED\" line (if any) belongs here",
                          double(st.gap_us) / 1e6, static_cast<unsigned long>(st.flip), by_pause ? " (the game was paused: not a freeze)" : "");
+                if (stall_window != 0) {
+                    stall_window = 0;
+                    if (!by_pause) {
+                        ++stall_profiles;
+                        Ps4::Log("stall: the profile of the freeze follows (about the last %.1f s of it; busy = not waiting in the kernel)",
+                                 double(st.gap_us - 600000) / 1e6);
+                        Ps4::ProfileWindow(true);
+                    }
+                }
                 if (g_autoshot && !by_pause && stalls_shot < 3) {
                     ++stalls_shot;
                     auto_shot_due[0] = now + 400000;
@@ -1467,6 +1528,10 @@ int main() {
             // The memory warning comes from the watch above (with the speed of the fall), not from the
             // shader text: its own low-memory line is switched off by passing a huge free size.
             std::string text = Ps4Shader::NoticeText(shaders_last, shaders_total, std::uint64_t{1} << 40, pt);
+            if (safe_notice_until != 0 && Ps4::NowUs() < safe_notice_until) {
+                text = std::string(pt ? "Modo seguro: opcoes experimentais desligadas nesta partida" : "Safe mode: experimental options off for this start") +
+                       (text.empty() ? "" : "   ") + text;
+            }
             const std::string banner = Ps4Memory::BannerText(mem_status, pt);
             if (!banner.empty()) {
                 text += text.empty() ? "" : "   ";
@@ -1496,6 +1561,10 @@ int main() {
         if (Ps4::NowUs() - last_timeline > 2000000) {
             last_timeline = Ps4::NowUs();
             const Ps4Hook::Timeline tl = Ps4Hook::TakeTimeline();
+            if (!safe_start_cleared && tl.flips_total >= Ps4Safe::OpenedAfterFlips) {
+                safe_start_cleared = true;
+                Ps4Safe::MarkOpened(SafeStartFile()); // the game drew: this start is not a crash
+            }
             if (tl.flips > 0) {
                 Ps4::Log("tl: %lu flips/2s, interval avg %.1f ms max %.0f ms, longer than 34/50/100/250 ms: %lu/%lu/%lu/%lu",
                          static_cast<unsigned long>(tl.flips), tl.flips > 1 ? double(tl.gap_sum_us) / double(tl.flips - 1) / 1000.0 : 0.0,
@@ -1511,6 +1580,7 @@ int main() {
     // game itself; the logs are flushed line by line.
     Ps4::SetPhase("leaving");
     Ps4::ArmHangWatch(0);
+    Ps4Safe::MarkOpened(SafeStartFile()); // leaving on purpose is not a crash
     system.Pause();
     {
         const auto mem = Common::Orbis::GetStats();

@@ -823,6 +823,16 @@ Stall LastStall() {
     return s.stall;
 }
 
+std::uint64_t SinceLastFlipUs() {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    if (s.tl_prev_us == 0) {
+        return 0;
+    }
+    const std::uint64_t now = NowMicros();
+    return now > s.tl_prev_us ? now - s.tl_prev_us : 0;
+}
+
 Timeline TakeTimeline() {
     State& s = S();
     std::lock_guard lock{s.mutex};

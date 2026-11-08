@@ -172,6 +172,31 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
 
+## Speed and memory options (0.8.2; none run on a console)
+
+- `cpu_clock`: `CoreTiming::GetClockTicks()` multiplies the guest counter by target/1020 MHz (1734 boost, 2040 overclock).
+  In multicore the counter comes from the host wall clock, so this scales what the game reads, not what the host does.
+- `cpu_ticks`: `CoreTiming::AddTicks()` adds the setting instead of the ticks the JIT consumed; the downcount, which decides
+  when a core goes back to `Advance()`, falls by that number. Eden's range is 77-65535 (default 16000 when enabled).
+- `async_presentation`: Eden's separate presentation thread (default off outside Android).
+- `covers`: the cap of decoded cover pixels (64 MiB, 0 for thumbnails only, nothing for off), `main.cpp` before `RunMainMenu`.
+- Safe mode (`safe_mode.h`): a file written at the start of a game and removed after 120 flips or on a deliberate exit.
+- Not done on purpose: Eden's `gpu_unswizzle_*` and `frame_gen` settings (compute shaders: the least exercised path of the
+  PS4 driver, and ASTC decoding on the GPU already lost the GPU twice), any change to the 256 MiB stream buffer or to the
+  JIT cache sizes (patches that cannot be checked against the pinned Eden commit), and fastmem (not in this repository).
+
+## Profile of a freeze (0.8.1; not yet seen on a console)
+
+- `Ps4Hook::SinceLastFlipUs()` is the time since the last queued flip (0 before the first). `main.cpp` opens a profiler
+  window when it reaches 0.6 s outside the pause menu, and reports it when `LastStall()` says the freeze ended (dropped if
+  the pictures came back in under a second, or if a pause made the gap).
+- `Ps4::ProfileWindow(bool report)` only sets an atomic command; the profiler thread (`ps4_platform.cpp`) clears or reports
+  the tables itself, so nothing is read while a sample is written. The table holds eight threads: `CPUCore_0..3`,
+  `VulkanWorker`, `GPU`, `FS`, `nvservices`.
+- What the 0.8.0 run measured (see CHANGELOG 0.8.1): a 3.45 s freeze with 0 ms of GPU wait, 3.3 cores busy, no Eden log
+  line and no new pipeline during it; the text textures of the title first sampled 4 and 9 frames after the scene's first
+  frame. 0.8.0's text on the geometry-shader rings as the cause of the stall is withdrawn.
+
 ## Freezes of the picture (0.8.0; not yet seen on a console)
 
 - `Ps4Hook::LastStall()` (`video_hook.cpp`): in the wrapped `sceVideoOutSubmitFlip`, an interval of `StallGapUs` (1 s) or

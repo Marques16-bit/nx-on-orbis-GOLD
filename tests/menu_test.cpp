@@ -314,9 +314,22 @@ void TestNavigation() {
                   r.saved.find("ORBIS_VRAM_GARLIC") == std::string::npos,
               "profile Exact graphics (test): accuracy options written, the arena back to default");
         r.Tap(Pad::Right);
-        Check(r.saved.find("gpu_accuracy") == std::string::npos && SettingsFile(r.saved).MatchPreset() == 0, "wraps to Default: nothing written");
+        Check(SettingsFile(r.saved).MatchPreset() == 6 && r.saved.find("skip_cpu_invalidation=on") != std::string::npos &&
+                  r.saved.find("async_presentation=on") != std::string::npos && r.saved.find("resolution=0.75") != std::string::npos &&
+                  r.saved.find("dma_accuracy") == std::string::npos && r.saved.find("sync_memory") == std::string::npos,
+              "profile More FPS (test): CPU-saving options written, the accuracy ones of the previous profile gone");
+        r.Tap(Pad::Right);
+        Check(SettingsFile(r.saved).MatchPreset() == 7 && r.saved.find("resolution=0.5") != std::string::npos &&
+                  r.saved.find("shader_preload=256") != std::string::npos && r.saved.find("covers=thumbs") != std::string::npos &&
+                  r.saved.find("memory_profile=tight") != std::string::npos && r.saved.find("skip_cpu_invalidation") == std::string::npos &&
+                  r.saved.find("async_presentation") == std::string::npos,
+              "profile Minimum RAM (test): small resolution, small shader preload, thumbnails only, tight profile; the FPS profile's options gone");
+        r.Tap(Pad::Right);
+        Check(r.saved.find("gpu_accuracy") == std::string::npos && r.saved.find("covers") == std::string::npos &&
+                  SettingsFile(r.saved).MatchPreset() == 0,
+              "wraps to Default: nothing written");
         r.Tap(Pad::Left);
-        Check(SettingsFile(r.saved).MatchPreset() == 5, "Left from Default wraps to the last profile");
+        Check(SettingsFile(r.saved).MatchPreset() == 7, "Left from Default wraps to the last profile");
         r.Tap(Pad::Triangle);
         Check(SettingsFile(r.saved).MatchPreset() == 0, "Triangle on the profile row: Default");
     }
@@ -332,7 +345,7 @@ void TestNavigation() {
         Rig q("resolution=2\n");
         q.Tap(Pad::R1);
         q.Tap(Pad::Left);
-        Check(SettingsFile(q.saved).MatchPreset() == 5, "Left from a custom mix: the last profile");
+        Check(SettingsFile(q.saved).MatchPreset() == 7, "Left from a custom mix: the last profile");
     }
     {
         // A save that fails is shown, and a save that works is too.

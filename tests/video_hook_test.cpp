@@ -770,6 +770,12 @@ int main() {
         g_sim_now_us += 16000;
         __wrap_sceVideoOutSubmitFlip(21, 0, 1, 0);
         Check(Ps4Hook::LastStall().count == st.count, "stall: normal flips after it change nothing");
+
+        // 0.8.1: a freeze in progress is visible before it ends.
+        Check(Ps4Hook::SinceLastFlipUs() == 0, "since last flip: 0 right after a flip");
+        g_sim_now_us += 650000;
+        Check(Ps4Hook::SinceLastFlipUs() == 650000, "since last flip: counts the time with no flip");
+        Check(Ps4Hook::LastStall().count == st.count, "since last flip: a freeze that has not ended is not counted yet");
     }
 
     std::printf(g_failures == 0 ? "video hook test: PASSED\n" : "video hook test: FAILED\n");

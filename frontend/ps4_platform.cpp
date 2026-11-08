@@ -388,6 +388,19 @@ void Watchdog() {
     }
 }
 
+void ProfileClear() {
+    const int n = g_profile_count.load();
+    for (int i = 0; i < n; ++i) {
+        ProfileTable& t = g_profile[i];
+        std::memset(t.keys, 0, sizeof(t.keys));
+        std::memset(t.counts, 0, sizeof(t.counts));
+        t.samples = t.waiting = t.jit = 0;
+    }
+}
+
+// 0.8.1: 1 = start a new window, 2 = report the window and start another (see ProfileWindow in the header).
+std::atomic<int> g_profile_command{0};
+
 void ProfileReport() {
     const int n = g_profile_count.load();
     for (int i = 0; i < n; ++i) {
@@ -444,6 +457,16 @@ void Profiler() {
         g_profile_request.store(cursor, std::memory_order_release);
         if (sceKernelRaiseException(g_profile[cursor].thread, SigDump) != 0) {
             g_profile_request.store(-1);
+        }
+        const int command = g_profile_command.exchange(0);
+        if (command != 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5)); // let the in-flight sample land
+            g_profile_request.store(-1);
+            if (command == 2) {
+                ProfileReport();
+            } else {
+                ProfileClear();
+            }
         }
         if (NowUs() >= next_report) {
             // Let the in-flight sample land before reading the tables.
@@ -690,6 +713,10 @@ void Log(const char* fmt, ...) {
     va_end(ap);
 }
 
+void ProfileWindow(bool report) {
+    g_profile_command.store(report ? 2 : 1, std::memory_order_release);
+}
+
 void RegisterThread(const char* name) {
     std::lock_guard lock{g_named_mutex};
     const int n = g_named_count.load();
@@ -699,8 +726,11 @@ void RegisterThread(const char* name) {
         g_named_count.store(n + 1);
     }
     // The threads the frame rate depends on are also sampled by the profiler.
+    // 0.8.1: also "FS" (the file system service: reads and decrypts the game's files) and "nvservices" (the GPU driver
+    // service), so a stall that is loading shows where it loads. The table holds eight threads: six plus these two.
     const bool profiled = std::strcmp(name, "GPU") == 0 || std::strcmp(name, "VulkanWorker") == 0 ||
-                          std::strncmp(name, "CPUCore_", 8) == 0;
+                          std::strncmp(name, "CPUCore_", 8) == 0 || std::strcmp(name, "FS") == 0 ||
+                          std::strcmp(name, "nvservices") == 0;
     const int p = g_profile_count.load();
     if (profiled && p < ProfiledMax) {
         g_profile[p].thread = pthread_self();

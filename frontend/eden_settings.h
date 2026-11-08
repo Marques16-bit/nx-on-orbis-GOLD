@@ -138,6 +138,20 @@ Result SetResolutionStep(S& s, const std::string& value) {
     return Result::Missing;
 }
 
+template <typename S>
+Result SetCpuClock(S& s, const std::string& value) {
+    using E = std::remove_cvref_t<decltype(s.GetValue())>;
+    if (value == "normal") {
+        PS4_EDEN_SET_ENUM(s, Normal)
+    } else if (value == "boost") {
+        PS4_EDEN_SET_ENUM(s, Boost)
+    } else if (value == "overclock") {
+        PS4_EDEN_SET_ENUM(s, Overclock)
+        PS4_EDEN_SET_ENUM(s, Fast) // the spelling of an older Eden
+    }
+    return Result::Missing;
+}
+
 /// A number into a numeric setting.
 template <typename S>
 void SetNumber(S& s, int number) {
@@ -182,6 +196,9 @@ bool OneOf(const std::string& value, Words... words) {
 ///   auto_stub=on|off                            (default off)
 ///   speed_percent=50|75|100|150|200             (default 100)
 ///   region=japan|usa|europe|australia|china|korea|taiwan   (default usa)
+///   cpu_clock=normal|boost|overclock            0.8.2: the clock the GAME sees for the emulated CPU (default normal)
+///   cpu_ticks=off|1000|4000|16000|21000         0.8.2: Eden's "custom CPU ticks" (default off)
+///   async_presentation=on|off                   0.8.2: present frames from a separate thread (default off)
 template <typename Values>
 Result Apply(Values& v, const std::string& key, const std::string& value) {
     if (key == "vsync" && detail::OneOf(value, "fifo", "mailbox", "immediate", "relaxed")) {
@@ -258,6 +275,35 @@ Result Apply(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "region" && detail::RegionIndex(value) >= 0) {
         if constexpr (requires { v.region_index.SetValue(v.region_index.GetValue()); }) {
             detail::SetNumber(v.region_index, detail::RegionIndex(value));
+            return Result::Applied;
+        } else {
+            return Result::Missing;
+        }
+    } else if (key == "cpu_clock" && detail::OneOf(value, "normal", "boost", "overclock")) {
+        if constexpr (requires { v.cpu_clock.SetValue(v.cpu_clock.GetValue()); }) {
+            return detail::SetCpuClock(v.cpu_clock, value);
+        } else {
+            return Result::Missing;
+        }
+    } else if (key == "cpu_ticks" && detail::OneOf(value, "off", "1000", "4000", "16000", "21000")) {
+        // Two settings in Eden: the switch and the number. Both must exist, or neither is touched.
+        if constexpr (requires {
+                          v.use_custom_cpu_ticks.SetValue(true);
+                          v.cpu_ticks.SetValue(v.cpu_ticks.GetValue());
+                      }) {
+            if (value == "off") {
+                v.use_custom_cpu_ticks.SetValue(false);
+            } else {
+                detail::SetNumber(v.cpu_ticks, std::atoi(value.c_str()));
+                v.use_custom_cpu_ticks.SetValue(true);
+            }
+            return Result::Applied;
+        } else {
+            return Result::Missing;
+        }
+    } else if (key == "async_presentation" && detail::OnOff(value)) {
+        if constexpr (requires { v.async_presentation.SetValue(true); }) {
+            v.async_presentation.SetValue(value == "on");
             return Result::Applied;
         } else {
             return Result::Missing;

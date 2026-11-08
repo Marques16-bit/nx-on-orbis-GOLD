@@ -39,6 +39,10 @@ void ArmHangWatch(unsigned seconds);
 void RegisterThread(const char* name);
 /// Called by the presentation path for every frame shown.
 void NoteFrame();
+/// 0.8.1: the sampling profiler normally reports every 30 s. This asks it to start a fresh window (`report` false) or to
+/// write the window so far to boot.log and start another (`report` true), so a stall of a few seconds gets a profile of
+/// its own. Asynchronous: the profiler thread does it within a few milliseconds.
+void ProfileWindow(bool report);
 
 /// Starts the app again from its executable, so it opens on the game list (the way "Exit game" gets
 /// back to the menu: Eden cannot be torn down and rebuilt inside one run, a new process can). Returns

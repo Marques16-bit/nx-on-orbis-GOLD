@@ -33,6 +33,8 @@ enum class Dma { Default, Unsafe, Safe };
 enum class Aniso { Automatic, Default, X2, X4, X8, X16 };
 enum class Gpu { Low, Medium, High };
 enum class Res { Res1_4X, Res1_2X, Res3_4X, Res1X, Res5_4X, Res3_2X, Res2X };
+enum class Clock { Normal, Boost, Overclock };
+enum class ClockOld { Normal, Boost, Fast }; // an older spelling of the top step
 
 struct ValuesNew {
     Setting<VSyncNew> vsync_mode{VSyncNew::Fifo};
@@ -47,6 +49,10 @@ struct ValuesNew {
     Setting<bool> use_auto_stub{false};
     Setting<unsigned short> speed_limit{100};
     Setting<int> region_index{1};
+    Setting<Clock> cpu_clock{Clock::Normal};
+    Setting<bool> use_custom_cpu_ticks{false};
+    Setting<unsigned> cpu_ticks{16000};
+    Setting<bool> async_presentation{false};
 };
 
 // An Eden with the old vsync spelling, no Medium accuracy, no 1/4x or 5/4x, and only some settings.
@@ -57,6 +63,11 @@ struct ValuesOld {
     Setting<Dma> dma_accuracy{Dma::Default};
     Setting<GpuTwo> gpu_accuracy{GpuTwo::Low};
     Setting<ResOld> resolution_setup{ResOld::Res1X};
+};
+
+struct ValuesClockOld {
+    Setting<ClockOld> cpu_clock{ClockOld::Normal};
+    Setting<bool> use_custom_cpu_ticks{false}; // the switch without the number: nothing is touched
 };
 
 struct ValuesEmpty {};
@@ -96,6 +107,27 @@ int main() {
         Check(Apply(v, "region", "taiwan") == Result::Applied && v.region_index.value == 6, "region=taiwan is index 6");
         Check(Apply(v, "region", "mars") == Result::NotMine, "region=mars is NotMine");
         Check(Apply(v, "cpu_accuracy", "auto") == Result::NotMine, "a key of main.cpp is NotMine");
+        // 0.8.2
+        Check(Apply(v, "cpu_clock", "boost") == Result::Applied && v.cpu_clock.value == Clock::Boost, "cpu_clock=boost");
+        Check(Apply(v, "cpu_clock", "overclock") == Result::Applied && v.cpu_clock.value == Clock::Overclock, "cpu_clock=overclock");
+        Check(Apply(v, "cpu_clock", "normal") == Result::Applied && v.cpu_clock.value == Clock::Normal, "cpu_clock=normal");
+        Check(Apply(v, "cpu_clock", "turbo") == Result::NotMine, "cpu_clock=turbo is not a menu value");
+        Check(Apply(v, "cpu_ticks", "4000") == Result::Applied && v.use_custom_cpu_ticks.value && v.cpu_ticks.value == 4000,
+              "cpu_ticks=4000 sets the number and turns the switch on");
+        Check(Apply(v, "cpu_ticks", "off") == Result::Applied && !v.use_custom_cpu_ticks.value && v.cpu_ticks.value == 4000,
+              "cpu_ticks=off turns only the switch off");
+        Check(Apply(v, "cpu_ticks", "5") == Result::NotMine, "cpu_ticks=5 is not a menu value");
+        Check(Apply(v, "async_presentation", "on") == Result::Applied && v.async_presentation.value, "async_presentation=on");
+        Check(Apply(v, "async_presentation", "off") == Result::Applied && !v.async_presentation.value, "async_presentation=off");
+        Check(Apply(v, "async_presentation", "maybe") == Result::NotMine, "async_presentation=maybe is NotMine");
+    }
+    {
+        ValuesClockOld v;
+        Check(Apply(v, "cpu_clock", "overclock") == Result::Applied && v.cpu_clock.value == ClockOld::Fast, "old spelling: overclock -> Fast");
+        Check(Apply(v, "cpu_clock", "boost") == Result::Applied && v.cpu_clock.value == ClockOld::Boost, "old spelling: boost");
+        Check(Apply(v, "cpu_ticks", "4000") == Result::Missing && !v.use_custom_cpu_ticks.value,
+              "custom ticks without the number setting: Missing, the switch is left alone");
+        Check(Apply(v, "async_presentation", "on") == Result::Missing, "no async_presentation setting: Missing");
     }
     {
         ValuesOld v;
@@ -108,6 +140,8 @@ int main() {
         Check(Apply(v, "scaling_filter", "fsr") == Result::Missing, "no scaling_filter setting: Missing");
         Check(Apply(v, "region", "usa") == Result::Missing, "no region_index setting: Missing");
         Check(Apply(v, "speed_percent", "100") == Result::Missing, "no speed_limit setting: Missing");
+        Check(Apply(v, "cpu_clock", "boost") == Result::Missing && Apply(v, "cpu_ticks", "off") == Result::Missing,
+              "no cpu_clock or ticks settings: Missing");
     }
     {
         ValuesEmpty v;
@@ -120,7 +154,8 @@ int main() {
         // The menu and this header must agree: every value the menu can write for one of the 0.7.4
         // options is a value Apply() knows (never NotMine), and on a full Eden it is applied.
         const char* const keys[] = {"vsync", "scaling_filter", "anti_aliasing", "anisotropy", "dma_accuracy", "sync_memory",
-                                    "speed_percent", "skip_cpu_invalidation", "auto_stub", "region"};
+                                    "speed_percent", "skip_cpu_invalidation", "auto_stub", "region", "cpu_clock", "cpu_ticks",
+                                    "async_presentation"};
         bool all_found = true, all_known = true, all_applied = true;
         for (const char* key : keys) {
             const Menu::Option* option = Menu::FindOption(key);

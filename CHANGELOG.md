@@ -2,7 +2,100 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.8.2] - More options for speed and for memory, and a safe mode
+
+**Not built or run on a console by the author of this change.** All host tests pass (the menu test grew to 139 checks, the
+Eden-options test knows the three new settings, and `safe_mode_test` is new); the snippets of `main.cpp` that this version
+touches were compiled on their own with warnings on, so the GitHub build is their first real compile against Eden. **Every
+new option is off by default: a start with the settings of 0.8.1 behaves exactly like 0.8.1.**
+
+**What this version does NOT do, so nobody hopes for it.** The logs say Super Mario Maker 2 is limited by the emulated CPU
+(one guest core busy about 88 % of the time, the GPU never waited on). Nothing here gives the PS4 more CPU: the single
+change that would (fastmem, a direct window onto the game's memory) lives in a branch that is not in this repository and
+cannot be written blind. The GPU-side options below help a game that is limited by the GPU, and much less one that is
+limited by the CPU. Nothing in Eden's source of this version lets the port shrink the big buffers (the 256 MiB stream
+buffer, the driver's image memory) either: that needs a patch to Eden that could not be checked against the pinned commit,
+so none was written.
+
+**New options for speed** (each one is applied only if the pinned Eden has the setting, as in 0.7.4: otherwise `boot.log`
+says "this Eden has no such setting" and nothing breaks).
+- **Emulated CPU clock** (`cpu_clock=normal|boost|overclock`, Eden's `fast_cpu_time`). In Eden the guest's time counter is
+  multiplied by 1734/1020 (boost) or 2040/1020 (overclock). It changes the time the GAME reads, not the work the PS4 does:
+  a game that limits its own FPS with timers may run freer, another may run its audio or physics fast, or hang.
+- **Custom CPU ticks** (`cpu_ticks=off|1000|4000|16000|21000`, Eden's `use_custom_cpu_ticks` + `cpu_ticks`). Replaces the
+  cycle count the emulated CPU adds after each run of code with a fixed number, which changes how often the game's threads
+  go back to the scheduler. Eden suggests 77-21000 and warns of hangs. Which value helps on this PS4 is not known.
+- **Asynchronous presentation** (`async_presentation=on|off`). Presents frames from a separate thread (off on Eden for
+  PCs). On the PS4 presentation goes through the video driver and the HUD hook, so it may flicker or hang.
+- **Profile "More FPS (test)"**: 0.75x resolution, low GPU accuracy, no reactive flushing or synchronised memory, inner CPU
+  invalidations skipped, asynchronous presentation, no extra filters. A starting point to compare, not a promise.
+
+**New options for memory.**
+- **Covers in the game list** (`covers=full|thumbs|off`, read when the app starts). The decoded covers (up to 64 MiB) sit in
+  the C heap while the menu is open and part of it may stay mapped when the game starts; `thumbs` keeps only the small
+  tiles, `off` decodes nothing. This is the one memory saving that is entirely in the port's own code.
+- **Profile "Minimum RAM (test)"**: 0.5x resolution (the GPU images that live outside the driver's arena take a quarter of
+  the space), 1152 MiB arena, conservative VRAM, a shader cache loaded up to ~8 MiB (what is over is kept as
+  `vulkan.bin.bak`, never deleted), no driver cache, the tight memory profile, a pause when memory turns critical, and the
+  game list with thumbnails only. The picture gets much softer.
+- The options that already existed (arena size, memory profile, shader preload, driver cache, VRAM mode, the pause on
+  critical memory) are unchanged; the new profiles only combine them.
+
+**Safe mode.** `safe_start.txt` is written when a game starts and removed when the game has shown 120 pictures or when
+the game is left on purpose. A start that finds it knows the last one died before drawing anything, and for that one
+start ignores the experimental lines of settings.txt (`cpu_clock` above normal, `cpu_ticks`, `async_presentation=on`,
+`skip_cpu_invalidation=on`, `auto_stub=on`, `astc=gpu|async`, `dma_accuracy=unsafe`, `memory_profile=strict`, textures
+inside the arena). boot.log lists each ignored line, and the screen says so for 15 s. settings.txt is not changed: the
+next start that gets past the first pictures puts everything back. Known limit: a start ended by hand before the first
+picture looks like a crash, and costs one start without the experimental lines.
+
+**To test (one thing at a time, and send boot.log back).** Look at `tl:` and `status:` lines (FPS) and the "largest free
+direct block" in `status:` (memory). Compare Default, "More FPS" and each option alone; the HUD (L3 + R3) shows the FPS.
+
+## [0.8.1] - The scene-change stall is the game loading (0.8.0's guess withdrawn), and a profile of every freeze
+
+**Not built or run on a console by the author of this change.** The host tests pass (all of them, `video_hook_test` with
+the new `SinceLastFlipUs` checks); `ps4_platform.cpp` was syntax-checked against stand-ins for the SDK (only the errors that
+were already there), and the new loop code of `main.cpp` was compiled on its own with warnings on, so the GitHub build is
+its first real compile. **No graphics change was made, on purpose: the logs say the grey terrain / missing text of Super
+Mario Maker 2 is not a rendering error of the port, and the way to make it vanish is speed (the next versions).**
+
+What the 0.8.0 run showed (boot log, `eden_` and `mesa_` logs of that run; the three screenshots the version took by
+itself were not among the files, so the pictures have not been looked at). The automatic screenshots and the `stall:` lines
+worked on the console: a 3.45 s freeze ended on flip #2470, and the three pictures were saved 0.7, 2.8 and 6.3 s after it.
+- **The 0.8.0 guess is wrong.** 0.8.0 said the stall is the first use of the driver's geometry-shader path. This run says
+  otherwise: the 80 pipelines came from the shader cache and **no pipeline was created** from the 96th second to the end;
+  the driver says **it waited 0 ms for the GPU in every 5 s window**, and the window that holds the stall shows **3.3 cores
+  busy**; the Eden log has **no line at all between 96.3 s and 125.8 s** (no image, view or pipeline made while the picture
+  was frozen); the `GS ring ... allocated` lines of the driver come **after** the stall, at the first geometry-shader draw of
+  the new scene; and the `GPU HAS NOT FINISHED` dump of the earlier runs did not appear this time although the freeze did.
+  The freeze is CPU work of the game (it loads the next demo course: 43 MiB more memory committed, three cores busy), and
+  its length is the same each time (3.45 s, 3.40 s, 3.45 s) because it is the same amount of work. It is the speed of the
+  emulated CPU, not a fault.
+- **The missing layers appear when the game draws them.** Eden makes an image view the first time a draw samples a texture.
+  The text textures of the title ("Press ZL + ZR" and the version line: BC4 images of 370x100 and 512x32) get their first
+  view about **4 and 9 frames** after the first frame of the new scene, so nothing sampled them before: the game does not
+  draw that text in its first frames (the frames of that phase take 0.1-0.6 s each: 313 draws and 34 render passes per
+  frame, 115 ms just to record). At 60 fps the same 9 frames are 0.15 s, which nobody sees; at 5-10 fps they are 1-2 s.
+  So the grey terrain and the missing text are most likely the game's own order of drawing, slowed down, not something the
+  port draws wrongly. This is an inference from the logs, not a proof: the screenshots would confirm it.
+- **Memory is tight but steady.** The largest free block went from 1959 MiB at the start to 1124 MiB at 82 s and 508 MiB at
+  132 s (the game's memory 88 -> 1283 MiB, plus six 128 MiB carve-outs of the heap). The warning level is 160 MiB; the
+  editor took it to 80 MiB in an earlier run. Worth a look in the performance work.
+
+**New: a profile of every freeze.** 0.6 s after the flips stop (and not while the pause menu is open), a fresh window of
+the sampling profiler is opened (`Ps4::ProfileWindow(false)`); when the picture comes back the window is written to
+boot.log (`Ps4::ProfileWindow(true)`): `profile [CPUCore_n]`, `[VulkanWorker]`, `[GPU]`, and now also `[FS]` (the file
+system service: reads and decrypts the game's files) and `[nvservices]`, each with its busy share and hottest code buckets.
+Three per run; a gap made by the pause menu or a screenshot is not profiled. `stall:` lines say when it starts and ends.
+The profiler's usual 30 s report is unchanged, but it now samples eight threads instead of six.
+
+**What to send next (or not):** nothing is needed to go on with the performance work; the next stall profile in any boot.log
+says where the 3.4 s go. The `shots/` pictures of a stall would settle the pop-in inference.
+
 ## [0.8.0] - What the Mario Maker 2 logs show, and a freeze detector with automatic screenshots
+
+> **Corrected by 0.8.1:** the bullet below that blames the stall on the first use of the geometry-shader path is withdrawn.
 
 **Not built or run on a console by the author of this change.** The host tests pass (all of them, `video_hook_test` with
 the new stall checks). The new code in `main.cpp` was checked by compiling it on its own with warnings on, not inside the

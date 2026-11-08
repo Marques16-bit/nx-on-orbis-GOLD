@@ -114,6 +114,9 @@ struct Stall {
     std::uint64_t flip = 0;    // the number of that flip
 };
 Stall LastStall();
+/// 0.8.1: how long ago the last flip was queued, in microseconds; 0 when the hook has seen no flip yet. A freeze in
+/// progress shows up here a second before LastStall() can report it.
+std::uint64_t SinceLastFlipUs();
 
 /// Test seam: replaces the clock (microseconds); nullptr puts the real one back.
 void SetClockForTest(std::uint64_t (*now_micros)());
