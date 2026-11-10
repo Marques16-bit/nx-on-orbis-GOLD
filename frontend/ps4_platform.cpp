@@ -42,6 +42,10 @@ int32_t sceKernelAvailableDirectMemorySize(off_t start, off_t end, size_t align,
 size_t sceKernelGetDirectMemorySize(void);
 int32_t sceUserServiceInitialize(void* params);
 int32_t sceUserServiceGetInitialUser(int32_t* user);
+// 0.9.1: the users logged in right now (SCE_USER_SERVICE_MAX_LOGIN_USERS = 4 ids, -1 for an empty slot), one pad each.
+// Weak, as sceSystemServiceLoadExec above: if this SDK's stub library lacks it the link still works and the extra
+// controllers are reported as unavailable.
+int32_t sceUserServiceGetLoginUserIdList(int32_t* list_of_four) __attribute__((weak));
 int32_t sceSystemServiceHideSplashScreen(void);
 // Weak on purpose: if this SDK's stub library does not export it the link still works and the
 // pointer is null; RestartApp() then says so instead of the build failing.
@@ -80,6 +84,11 @@ std::atomic<std::uint64_t> g_last_pass_view{0};
 std::atomic<std::uint32_t> g_last_pass_guest_format{0}, g_last_pass_width{0},
     g_last_pass_height{0}, g_last_pass_samples{0};
 int32_t g_pad = -1;
+// 0.9.1: controllers 2-4 (slot 0 is g_pad, the first user's). -1 = not open.
+int32_t g_extra_pad[4] = {-1, -1, -1, -1};
+int32_t g_initial_user = -1;
+std::uint64_t g_extra_scan_us = 0;
+int32_t g_extra_user[4] = {-1, -1, -1, -1};
 
 // PS4 ucontext: 16-byte signal mask + 48 bytes of padding, then a FreeBSD amd64 mcontext.
 constexpr std::size_t Mc = 64;
@@ -1053,6 +1062,7 @@ bool OpenPad() {
         Log("sceUserServiceGetInitialUser failed");
         return false;
     }
+    g_initial_user = user;
     const int32_t init = scePadInit();
     if (init < 0) {
         Log("scePadInit: 0x%08x", static_cast<unsigned>(init));
@@ -1068,14 +1078,15 @@ bool OpenPad() {
     return true;
 }
 
-PadState ReadPad() {
+namespace {
+PadState ReadHandle(int32_t handle) {
     PadState state;
-    if (g_pad < 0) {
+    if (handle < 0) {
         return state;
     }
     OrbisPadData data;
     std::memset(&data, 0, sizeof(data));
-    if (scePadReadState(g_pad, &data) < 0 || !data.connected) {
+    if (scePadReadState(handle, &data) < 0 || !data.connected) {
         return state;
     }
     state.connected = true;
@@ -1087,6 +1098,97 @@ PadState ReadPad() {
     state.l2 = data.analogButtons.l2;
     state.r2 = data.analogButtons.r2;
     return state;
+}
+} // namespace
+
+PadState ReadPad(int index) {
+    if (index <= 0) {
+        return ReadHandle(g_pad);
+    }
+    return index < MaxPads ? ReadHandle(g_extra_pad[index]) : PadState{};
+}
+
+int OpenExtraPads(int wanted) {
+    wanted = std::min(wanted, MaxPads);
+    if (wanted <= 1) {
+        return 0;
+    }
+    // Every 2 seconds at most: a second controller is logged in as a guest when the player presses its PS button.
+    const std::uint64_t now = NowUs();
+    if (g_extra_scan_us != 0 && now - g_extra_scan_us < 2000000) {
+        return 0;
+    }
+    g_extra_scan_us = now;
+    if (&sceUserServiceGetLoginUserIdList == nullptr) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            Log("controllers: this SDK's user service library has no sceUserServiceGetLoginUserIdList; only the first controller can be used");
+        }
+        return 0;
+    }
+    int32_t users[4] = {-1, -1, -1, -1};
+    const int32_t rc = sceUserServiceGetLoginUserIdList(users);
+    if (rc < 0) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            Log("controllers: sceUserServiceGetLoginUserIdList failed: 0x%08x", static_cast<unsigned>(rc));
+        }
+        return 0;
+    }
+    // A user who logged out: forget the slot (the handle is left as it is; scePadGetHandle finds it again if the same user returns).
+    for (int slot = 1; slot < MaxPads; ++slot) {
+        if (g_extra_pad[slot] >= 0 && std::find(std::begin(users), std::end(users), g_extra_user[slot]) == std::end(users)) {
+            Log("controllers: player %d (user 0x%x) logged out", slot + 1, static_cast<unsigned>(g_extra_user[slot]));
+            g_extra_pad[slot] = -1;
+            g_extra_user[slot] = -1;
+        }
+    }
+    int opened = 0;
+    for (const int32_t user : users) {
+        if (user < 0 || user == g_initial_user) {
+            continue;
+        }
+        bool have = false;
+        for (int slot = 1; slot < MaxPads; ++slot) {
+            have = have || (g_extra_pad[slot] >= 0 && g_extra_user[slot] == user);
+        }
+        if (have) {
+            continue;
+        }
+        int slot = 1;
+        while (slot < wanted && g_extra_pad[slot] >= 0) {
+            ++slot;
+        }
+        if (slot >= wanted) {
+            break;
+        }
+        int32_t handle = scePadOpen(user, ORBIS_PAD_PORT_TYPE_STANDARD, 0, nullptr);
+        if (handle < 0) {
+            handle = scePadGetHandle(user, ORBIS_PAD_PORT_TYPE_STANDARD, 0);
+        }
+        if (handle < 0) {
+            Log("controllers: user 0x%x: scePadOpen failed 0x%08x", static_cast<unsigned>(user), static_cast<unsigned>(handle));
+            continue;
+        }
+        g_extra_pad[slot] = handle;
+        g_extra_user[slot] = user;
+        ++opened;
+        static constexpr std::uint8_t Lights[4][3] = {{0, 80, 255}, {255, 40, 40}, {40, 220, 60}, {255, 70, 200}}; // blue, red, green, pink
+        OrbisPadColor color{Lights[slot][0], Lights[slot][1], Lights[slot][2], 255};
+        scePadSetLightBar(handle, &color);
+        Log("controllers: player %d is user 0x%x (pad handle %d)", slot + 1, static_cast<unsigned>(user), static_cast<int>(handle));
+    }
+    return opened;
+}
+
+int PadsOpen() {
+    int count = g_pad >= 0 ? 1 : 0;
+    for (int slot = 1; slot < MaxPads; ++slot) {
+        count += g_extra_pad[slot] >= 0 ? 1 : 0;
+    }
+    return count;
 }
 
 void SetPadLight(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
@@ -1130,36 +1232,40 @@ SystemFlexibleMapFn FindSystemFlexibleMap() {
     return rc == 0 && address != nullptr ? reinterpret_cast<SystemFlexibleMapFn>(address) : nullptr;
 }
 
-/// The most the pool can give right now, up to `max_mib`, in steps: maps a block, unmaps it at once. The block is put
-/// well away from where the kernel library keeps its own objects (Eden4 found those land at 0x200000000).
-std::uint64_t ProbeSystemFlexibleMiB(SystemFlexibleMapFn map, std::uint64_t max_mib) {
-    constexpr std::uint64_t Step = Ps4Memory::SystemFlexibleStepMiB;
+/// Whether the pool can map `mib` MiB at once right now: maps a block, unmaps it at once. The block is put well away
+/// from where the kernel library keeps its own objects (Eden4 found those land at 0x200000000).
+bool PoolAccepts(SystemFlexibleMapFn map, std::uint64_t mib) {
     constexpr size_t Align = 16 * 1024;
     constexpr int32_t ProtRw = 0x3;
     constexpr int32_t MapFixed = 0x10;
-    for (std::uint64_t mib = max_mib; mib >= Ps4Memory::SystemFlexibleReserveMiB + Step; mib -= Step) {
-        const size_t len = static_cast<size_t>(mib) << 20;
-        void* at = nullptr;
-        for (const std::uintptr_t hint : {std::uintptr_t{0x1000000000}, std::uintptr_t{0x800000000}, std::uintptr_t{0x600000000}}) {
-            void* want = reinterpret_cast<void*>(hint);
-            if (sceKernelReserveVirtualRange(&want, len, 0, Align) == 0 && reinterpret_cast<std::uintptr_t>(want) >= 0x400000000ull) {
-                at = want;
-                break;
-            }
+    const size_t len = static_cast<size_t>(mib) << 20;
+    void* at = nullptr;
+    for (const std::uintptr_t hint : {std::uintptr_t{0x1000000000}, std::uintptr_t{0x800000000}, std::uintptr_t{0x600000000}}) {
+        void* want = reinterpret_cast<void*>(hint);
+        if (sceKernelReserveVirtualRange(&want, len, 0, Align) == 0 && reinterpret_cast<std::uintptr_t>(want) >= 0x400000000ull) {
+            at = want;
+            break;
         }
-        if (at == nullptr) {
-            Log("system flexible memory: no address range to probe %lu MiB in", static_cast<unsigned long>(mib));
-            return 0;
-        }
-        void* mapped = at;
-        const int32_t rc = map(&mapped, len, ProtRw, MapFixed, "eden probe");
-        sceKernelMunmap(at, len); // the probe block, or just the reservation when the pool said no
-        if (rc == 0) {
-            return mib;
-        }
-        Log("system flexible memory: probe of %lu MiB refused (0x%08x)", static_cast<unsigned long>(mib), static_cast<unsigned>(rc));
     }
-    return 0;
+    if (at == nullptr) {
+        Log("system flexible memory: no address range to probe %lu MiB in", static_cast<unsigned long>(mib));
+        return false;
+    }
+    void* mapped = at;
+    const int32_t rc = map(&mapped, len, ProtRw, MapFixed, "eden probe");
+    sceKernelMunmap(at, len); // the probe block, or just the reservation when the pool said no
+    Log("system flexible memory: probe of %lu MiB %s", static_cast<unsigned long>(mib),
+        rc == 0 ? "accepted" : "refused");
+    if (rc != 0) {
+        Log("system flexible memory: (the pool answered 0x%08x)", static_cast<unsigned>(rc));
+    }
+    return rc == 0;
+}
+
+/// The most the pool can map at once, up to `max_mib` (0.9.1: a binary search, so a pool of any size up to the cap is
+/// measured in a handful of probes; 0.9.0 stepped down from the cap one 32 MiB step at a time).
+std::uint64_t ProbeSystemFlexibleMiB(SystemFlexibleMapFn map, std::uint64_t max_mib) {
+    return Ps4Memory::LargestAcceptedMiB(max_mib, [map](std::uint64_t mib) { return PoolAccepts(map, mib); });
 }
 
 } // namespace
@@ -1176,7 +1282,7 @@ void ConfigureSystemFlexible(std::uint64_t cap_mib) {
     }
     const std::uint64_t pool_mib = ProbeSystemFlexibleMiB(map, cap_mib + Ps4Memory::SystemFlexibleReserveMiB);
     const std::uint64_t budget_mib = Ps4Memory::SystemFlexibleBudgetMiB(cap_mib, pool_mib);
-    Log("system flexible memory: cap %lu MiB, the pool could map %lu MiB at once, reserve %lu MiB for the system -> budget %lu MiB for guest memory",
+    Log("system flexible memory: cap %lu MiB, the pool could map %lu MiB at once (probed up to cap + reserve), reserve %lu MiB for the system -> budget %lu MiB for guest memory",
         static_cast<unsigned long>(cap_mib), static_cast<unsigned long>(pool_mib),
         static_cast<unsigned long>(Ps4Memory::SystemFlexibleReserveMiB), static_cast<unsigned long>(budget_mib));
     Common::Orbis::ConfigureSystemFlexible(map, static_cast<std::size_t>(budget_mib) << 20);

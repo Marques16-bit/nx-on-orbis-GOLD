@@ -2,6 +2,63 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.1] - The system flexible pool is no longer an experiment, and up to 4 controllers
+
+**Not built or run on a console by the author of this change.** What was run: patch 0030 applied after 0029 and the lazy-memory file it
+changes rebuilt from the patches and run on a PC against a model of the kernel calls (`tests/lazy_memory_test.sh`, 34 checks with
+address and undefined-behaviour sanitizers); `memory_guard_test` (the probe's search checked for every pool size from 0 to 2300 MiB),
+`menu_test`, `safe_mode_test` and `eden_settings_test` (stand-ins for Eden's settings); `ps4_platform.cpp` compiled against stand-ins
+for the SDK (only the four errors that were already there); `tests/docs_check.sh`. `main.cpp` and the Eden-side controller connection
+cannot be compiled or run without the pinned Eden and a console.
+
+**What the 0.9.0 logs showed** (Odyssey, Mario vs. Donkey Kong and Mario Maker 2 came back from the console): the system flexible pool
+exists on this console (firmware 12.02) and a probe of 640 MiB was accepted; the whole 512 MiB budget was used (`512 MiB in system
+flexible memory`), the 128 MiB reserve was left, audio and the controller opened and worked; Super Mario Odyssey, which 0.8.5 lost at
+1982 MiB of guest memory, ran on to a plateau of 2152 MiB with the largest free direct block at 93 MiB, 9-19 fps, and was left by choosing
+Exit in the pause menu. Over the whole run the game gave back `0 MiB` of guest memory. Mario Maker 2 did not change (CPU-bound). Mario vs.
+Donkey Kong runs at 10-26 fps; its video cutscenes are black.
+
+**Changed: `sysflex_mib` is on by default and larger.**
+- Default **auto** = up to 1536 MiB, still limited by the pool: the frontend now finds the pool's size with a **binary search** (the first
+  question is cap + 128 MiB; a roomy pool answers it in one probe, otherwise about eight probes at most) instead of stepping down 32 MiB at
+  a time. The 128 MiB reserve and the 32 MiB steps are unchanged. A refusal during the run still switches the pool off and direct memory
+  takes over (0.9.0 behaviour).
+- Values: `auto`, `off`, 256, 512, 768, 1024, 1536, 2048 in the menu. **`sysflex_mib=128` and `=384` in an old `settings.txt` (the 0.9.0 quick profile "Minimum RAM (test)" wrote 384) are read as auto**, with a line in `boot.log`; the 0.9.0 values were meant for testing the pool, not as a choice.
+- **Safe mode** no longer ignores it. After a start that died before drawing the cap is limited to **512 MiB**, the amount a console has
+  been seen to give, instead of being switched off. An explicit `off` is kept.
+- The quick profile "Minimum RAM (test)" now uses 2048 (it was 384).
+- **Not known:** how much the pool can really map at once (the 0.9.0 probe stopped at 640 MiB), and whether the kernel counts these pages
+  against something else when 1.5 GiB are taken. The `boot.log` line `system flexible memory: cap N MiB, the pool could map M MiB at once
+  ...` and the `in system flexible memory` figure of each `status:` line answer both. If a start dies, the next start is safe mode (512 MiB).
+
+**New: patch 0030, the kernel's frees are counted.** `OnGuestRamFreed` now counts calls, bytes and the calls under 64 KiB (too small to
+return a chunk). The `status:` line ends with `kernel frees N calls / M MiB (K under 64 KiB)`. Nothing about what is given back changes. The
+Odyssey run gave nothing back, so the idea of freeing the previous area at each black loading screen does not apply from outside: the game
+keeps its own heap and does not return it to the kernel. A different way would be needed for it (listed in the roadmap).
+
+**New: controllers 2-4** (`players=1|2|3|4`, SYSTEM tab, "Controllers (players)"; default 1, which changes nothing).
+- Eden has one virtual gamepad input per player slot (port = player index) and connects a slot that gets input while its `connected` setting is
+  true. `Ps4Eden::ConnectPlayers` (in `eden_settings.h`, written as a `requires` check like the other settings, so an Eden without the field
+  just reports "has no player settings") marks players 2..N connected.
+- On the PS4, controllers 2-4 are the other **logged-in users** (`sceUserServiceGetLoginUserIdList`, looked up weakly like other calls: if
+  the SDK's stub library has no such call, `boot.log` says so and only controller 1 works). A second DualShock logs in as a guest when its PS
+  button is pressed; the app looks every 2 seconds, lights the pad (red, green, pink) and sends each pad to its own port. The pause menu
+  (L3 + R3) and the quit combination stay with controller 1; nothing is sent from the others while the menu is open, and a pad that goes away
+  gets one neutral state so no button stays pressed.
+- `boot.log` lines: `controllers: players=N, ...`, `controllers: player 2 is user 0x...`, `controllers: player 2 connected`.
+- **Not tested** on a console or inside Eden: the PC tests cover the settings and the menu only.
+
+**Not in 0.9.1, and why.**
+- **The JIT changes from Eden4** (Dynarmic): each is a patch to the pinned Eden's Dynarmic sources, and that source is not in this
+  repository. A patch that fails to apply stops the whole build, so none was written blind. To do it, the run of the "Check patches" workflow
+  produces the `eden-sources` artifact; with it, each change can be applied with `git apply --check` first.
+- **Black cutscenes in Mario vs. Donkey Kong:** the log shows the video decoding; what is missing is where the picture is lost. No change was
+  made without that. `vic_frame.raw` and `vic_frame.txt` in `/data/edenps4/` (the first decoded frame, saved by patch 0016) would show whether
+  the decoded frame is real.
+- **More fps for it:** the status lines show the CPU, not the GPU, as the limit (cores 43-70% busy while waiting). The `vsync` option
+  (`immediate` / `mailbox`) can be tried; the driver may ignore it.
+- **SpongeBob (Unreal Engine 5)** and **Mario Maker 2**: nothing changed; no cause found that a change here could address.
+
 ## [0.9.0] - Eden4 read in full, game memory in the system flexible pool, and a README that is checked against the code
 
 **Not built or run on a console by the author of this change.** The new patch (0029) was applied with `git am --keep-cr` the way

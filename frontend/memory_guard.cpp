@@ -103,13 +103,46 @@ Plan PlanFor(Profile profile, Tier detected) {
 }
 
 bool ParseSystemFlexibleCap(std::string_view text, std::uint64_t* out_mib) {
-    for (const std::uint64_t mib : {0ull, 128ull, 256ull, 384ull, 512ull}) {
+    if (text == "auto") {
+        *out_mib = SystemFlexibleAutoCapMiB;
+        return true;
+    }
+    // 128 and 384 are not in the menu any more (0.9.1) but settings.txt files of 0.9.0 may have them.
+    for (const std::uint64_t mib : {0ull, 128ull, 256ull, 384ull, 512ull, 768ull, 1024ull, 1536ull, 2048ull}) {
         if (text == (mib == 0 ? std::string("off") : std::to_string(mib))) {
             *out_mib = mib;
             return true;
         }
     }
     return false;
+}
+
+std::uint64_t LargestAcceptedMiB(std::uint64_t max_mib, const std::function<bool(std::uint64_t)>& accepts) {
+    constexpr std::uint64_t Step = SystemFlexibleStepMiB;
+    constexpr std::uint64_t Smallest = SystemFlexibleReserveMiB + Step;
+    std::uint64_t hi = max_mib / Step * Step;
+    if (hi < Smallest) {
+        return 0;
+    }
+    if (accepts(hi)) {
+        return hi;
+    }
+    if (hi == Smallest || !accepts(Smallest)) {
+        return 0;
+    }
+    std::uint64_t lo = Smallest; // accepted; hi is refused
+    while (hi - lo > Step) {
+        const std::uint64_t mid = lo + (hi - lo) / 2 / Step * Step;
+        if (mid <= lo) {
+            break;
+        }
+        if (accepts(mid)) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
 }
 
 std::uint64_t SystemFlexibleBudgetMiB(std::uint64_t cap_mib, std::uint64_t pool_mib) {

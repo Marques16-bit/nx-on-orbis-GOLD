@@ -74,7 +74,16 @@ struct PadState {
 
 /// Opens the first user's controller. False if there is none.
 bool OpenPad();
-PadState ReadPad();
+inline constexpr int MaxPads = 4;
+/// `index` 0 is the first user's controller; 1-3 are controllers 2-4 (0.9.1), see OpenExtraPads. A controller that is
+/// not open or not connected reads as `connected == false`.
+PadState ReadPad(int index = 0);
+/// 0.9.1: opens the controllers of the other users who are logged in (a second controller logs in as a guest when its
+/// PS button is pressed), up to `wanted` pads in all. Cheap to call every frame: it scans every 2 seconds at most.
+/// Returns how many pads this call opened.
+int OpenExtraPads(int wanted);
+/// How many controllers are open now (the first one included).
+int PadsOpen();
 void SetPadLight(std::uint8_t r, std::uint8_t g, std::uint8_t b);
 
 // DualShock 4 button bits (scePad).

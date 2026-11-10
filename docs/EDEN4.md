@@ -17,9 +17,11 @@ console: it is a reading of text, and the one thing that was taken was tested on
 | **Where to map the probe block.** Eden4 found that the kernel library's own objects land at `0x200000000`, so blocks have to be placed elsewhere. | `ProbeSystemFlexibleMiB()` tries hints `0x1000000000`, `0x800000000`, `0x600000000` and accepts only an address at or above `0x400000000` | A detail, not code. |
 | **Safe use of an unproven pool.** Eden4 does not say what happens on a firmware without the call. | Here: the call is looked up at start (the SDK's stub library, else `sceKernelDlsym`), probed in steps, and any failure makes the program fall back to direct memory and count the refusal | Tested against a model of the kernel in `tests/lazy_memory_test.sh`. |
 
-**What it can and cannot do.** If the pool exists on your firmware and is as large as Eden4's use of it suggests, up to 384-512 MiB
-move out of direct memory, which is about what Super Mario Odyssey was short by (270-470 MiB after the 0.8.5 change). That is an
-estimate from log numbers, not a result. It is off by default, so no game changes until you turn it on.
+**What it did (0.9.0 console run, read in 0.9.1).** The pool exists on this console (firmware 12.02) and accepted a 640 MiB probe; the
+whole 512 MiB budget was used and the system kept working; Super Mario Odyssey, which ran out of direct memory at 1982 MiB of guest
+memory in 0.8.5, ran on to 2152 MiB. It still left only about 93 MiB of the largest free direct block, so 0.9.1 makes the pool
+**on by default and larger** (automatic, up to 1536 MiB, limited by what the pool has; safe mode keeps it to 512 MiB). Its real size is
+not known yet: the 0.9.0 probe stopped at 640 MiB, and the 0.9.1 probe is a binary search up to 2176 MiB that logs the result.
 
 ## Already here, or done differently
 

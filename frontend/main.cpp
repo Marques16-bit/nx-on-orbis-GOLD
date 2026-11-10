@@ -594,8 +594,11 @@ void ApplyPs4Settings() {
 // 0.8.4: pause is the default. A Super Mario Odyssey run fell from 1790 MiB to 58 MiB free and died 7 s after the
 // critical level; pausing there turns that crash into a choice (continue, restart, back to the list).
 Ps4Memory::Action g_memory_action = Ps4Memory::Action::Pause;
-/// 0.9.0, settings.txt: sysflex_mib - how much system flexible memory the guest RAM may use (0 = off, the default).
-std::uint64_t g_sysflex_cap_mib = 0;
+/// settings.txt: sysflex_mib - how much system flexible memory the guest RAM may use (0 = off). 0.9.1: the default is
+/// "auto" (Ps4Memory::SystemFlexibleAutoCapMiB), no longer off; the pool itself still limits it (see ConfigureSystemFlexible).
+std::uint64_t g_sysflex_cap_mib = Ps4Memory::SystemFlexibleAutoCapMiB;
+/// 0.9.1, settings.txt: players=1|2|3|4 - how many controllers the game is given (default 1, exactly as before).
+int g_players = 1;
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
@@ -677,9 +680,12 @@ void ApplyMemoryPlan() {
 ///   overlay_delay=0|1|2|4|8     classic: ms the GPU gets to finish a frame before the HUD is drawn into it (default 2)
 ///   memory_profile=auto|roomy|standard|tight|strict  0.7.6: arena, shader preload and driver cache for this
 ///                               console's memory (default auto: chosen from the direct memory it gives; see memory_guard.h)
-///   sysflex_mib=off|128|256|384|512  0.9.0: guest RAM may take up to N MiB of the console's system flexible memory
-///                               (outside the ~4.5 GiB of direct memory), keeping 128 MiB of that pool for the
-///                               system; default off. Idea from Eden4. Ignored in safe mode.
+///   sysflex_mib=auto|off|256|512|768|1024|1536|2048  guest RAM may take up to N MiB of the console's system flexible
+///                               memory (outside the ~4.5 GiB of direct memory), keeping 128 MiB of that pool for the
+///                               system. 0.9.0: off by default, experimental. 0.9.1: default auto (1536 MiB, or what the
+///                               pool has); a start after a death before drawing (safe mode) limits it to 512. Idea from Eden4.
+///   players=1|2|3|4             0.9.1: controllers given to the game (default 1). Controllers 2-4 are the other users
+///                               logged in to the console (a second DualShock logs in as a guest on its PS button)
 ///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
@@ -791,6 +797,14 @@ void ApplySettingsFile() {
             g_autoshot = value == "on";
         } else if (key == "sysflex_mib" && Ps4Memory::ParseSystemFlexibleCap(value, &g_sysflex_cap_mib)) {
             // Applied by ConfigureSystemFlexible() after this file is read, before the core starts.
+            if (value == "128" || value == "384") {
+                // 0.9.0 values that the menu does not offer any more (the old "Minimum RAM" profile wrote 384): read as auto.
+                Ps4::Log("settings.txt: sysflex_mib=%s is a 0.9.0 value; 0.9.1 uses auto instead (choose 256 to 2048 in the menu for a fixed amount)",
+                         value.c_str());
+                g_sysflex_cap_mib = Ps4Memory::SystemFlexibleAutoCapMiB;
+            }
+        } else if (key == "players" && (value == "1" || value == "2" || value == "3" || value == "4")) {
+            g_players = std::atoi(value.c_str()); // applied before the core starts (ConnectPlayers) and in the main loop
         } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
             g_memory_action = value == "pause" ? Ps4Memory::Action::Pause : Ps4Memory::Action::Warn;
         } else if (key == "driver_cache" && (value == "on" || value == "off")) {
@@ -844,8 +858,9 @@ void ApplySettingsFile() {
     }
 }
 
-/// DualShock 4 -> the virtual gamepad Eden binds to player 1, by position like a Switch pad.
-void PollPad(InputCommon::VirtualGamepad& pad, const Ps4::PadState& s) {
+/// DualShock 4 -> the virtual gamepad Eden binds to a player (0.9.1: `player` 0-3, the port of Eden's virtual_gamepad),
+/// by position like a Switch pad.
+void PollPad(InputCommon::VirtualGamepad& pad, const Ps4::PadState& s, int player = 0) {
     using VB = InputCommon::VirtualGamepad::VirtualButton;
     struct Map {
         u32 bit;
@@ -862,12 +877,12 @@ void PollPad(InputCommon::VirtualGamepad& pad, const Ps4::PadState& s) {
         {Ps4::Button::Left, VB::ButtonLeft},    {Ps4::Button::Right, VB::ButtonRight},
     };
     for (const auto& m : map) {
-        pad.SetButtonState(0, m.button, (s.buttons & m.bit) != 0);
+        pad.SetButtonState(static_cast<std::size_t>(player), m.button, (s.buttons & m.bit) != 0);
     }
     const auto axis = [](u8 value) { return std::clamp((static_cast<int>(value) - 128) / 127.0f, -1.0f, 1.0f); };
     // Switch sticks: up is positive.
-    pad.SetStickPosition(0, InputCommon::VirtualGamepad::VirtualStick::Left, axis(s.lx), -axis(s.ly));
-    pad.SetStickPosition(0, InputCommon::VirtualGamepad::VirtualStick::Right, axis(s.rx), -axis(s.ry));
+    pad.SetStickPosition(static_cast<std::size_t>(player), InputCommon::VirtualGamepad::VirtualStick::Left, axis(s.lx), -axis(s.ly));
+    pad.SetStickPosition(static_cast<std::size_t>(player), InputCommon::VirtualGamepad::VirtualStick::Right, axis(s.rx), -axis(s.ry));
 }
 
 /// Thread-local storage check: an initialised thread_local must read its initial value on the
@@ -1066,7 +1081,22 @@ int main() {
     ApplyPs4Settings();
     ApplyMemoryPlan();
     ApplySettingsFile();
+    if (g_safe_mode && g_sysflex_cap_mib > Ps4Memory::SystemFlexibleProvenMiB) {
+        // The last start died before drawing: the pool is not switched off (that costs direct memory), but it goes back
+        // to the amount a console has been seen to give (0.9.0 test) instead of the larger automatic one.
+        Ps4::Log("safe mode: system flexible memory limited to %lu MiB for this start (settings.txt asked for %lu)",
+                 static_cast<unsigned long>(Ps4Memory::SystemFlexibleProvenMiB), static_cast<unsigned long>(g_sysflex_cap_mib));
+        g_sysflex_cap_mib = Ps4Memory::SystemFlexibleProvenMiB;
+    }
     Ps4::ConfigureSystemFlexible(g_sysflex_cap_mib);
+    if (g_players > 1) {
+        const Ps4Eden::Result linked = Ps4Eden::ConnectPlayers(Settings::values, g_players);
+        const int opened = Ps4::OpenExtraPads(g_players);
+        Ps4::Log("controllers: players=%d, this Eden %s; %d controller(s) open now (the others are looked for every 2 s)", g_players,
+                 linked == Ps4Eden::Result::Applied ? "has the player settings (players 2-4 marked connected)" : "has no player settings (only controller 1 works)",
+                 Ps4::PadsOpen());
+        (void)opened;
+    }
     Core::System system;
     system.Initialize();
     InputCommon::InputSubsystem input;
@@ -1254,6 +1284,7 @@ int main() {
     const bool pt = MenuInPortuguese();
     // The pause menu (L3 + R3), drawn over the frozen game by the video hook.
     bool in_menu = false, combo_before = false, overlay_warned = false;
+    bool extra_was_connected[Ps4::MaxPads] = {};
     int menu_sel = 0;
     std::uint32_t menu_buttons_before = 0;
     bool notice_on = Ps4Hook::Pending().shader_notice;
@@ -1486,6 +1517,21 @@ int main() {
         if (pad.connected && gamepad != nullptr) {
             PollPad(*gamepad, pad);
         }
+        // 0.9.1: controllers 2-4. Nothing is sent while the pause menu is open (it is player 1's), and a controller that
+        // goes away gets one neutral state so no button stays pressed.
+        if (g_players > 1 && gamepad != nullptr) {
+            Ps4::OpenExtraPads(g_players);
+            for (int player = 1; player < g_players; ++player) {
+                const Ps4::PadState extra = in_menu ? Ps4::PadState{} : Ps4::ReadPad(player);
+                if (extra.connected && !extra_was_connected[player]) {
+                    Ps4::Log("controllers: player %d connected", player + 1);
+                }
+                if (extra.connected || extra_was_connected[player]) {
+                    PollPad(*gamepad, extra, player);
+                }
+                extra_was_connected[player] = extra.connected;
+            }
+        }
         const bool quit_combo = (pad.buttons & Ps4::Button::Options) && (pad.buttons & Ps4::Button::TouchPad);
         if (!quit_combo) {
             quit_since = 0;
@@ -1553,13 +1599,14 @@ int main() {
             last_status = Ps4::NowUs();
             const auto perf = system.GetAndResetPerfStats();
             const auto mem = Common::Orbis::GetStats();
-            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB in system flexible memory, %lu MiB given back), largest free direct block %lu MiB (%s, %+.0f MiB/min), shaders built %d",
+            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB in system flexible memory, %lu MiB given back), largest free direct block %lu MiB (%s, %+.0f MiB/min), shaders built %d, kernel frees %lu calls / %lu MiB (%lu under 64 KiB)",
                      perf.average_game_fps, perf.emulation_speed * 100.0, perf.frametime * 1000.0,
                      static_cast<unsigned long>(mem.committed_bytes >> 20),
                      static_cast<unsigned long>(mem.system_flexible_bytes >> 20),
                      static_cast<unsigned long>(mem.decommitted_bytes >> 20),
                      static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20), stage_name(mem_status.stage),
-                     mem_status.trend_mib_per_min, shaders_total);
+                     mem_status.trend_mib_per_min, shaders_total, static_cast<unsigned long>(mem.guest_free_calls),
+                     static_cast<unsigned long>(mem.guest_free_bytes >> 20), static_cast<unsigned long>(mem.guest_free_small));
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
                 Ps4::Log("%s", Ps4Hook::Describe().c_str());

@@ -52,13 +52,15 @@ echo "== options and profiles the pages name"
 settings_key() { grep -q "^| \`$1\` |" docs/SETTINGS.md; }
 settings_default() { grep "^| \`$1\` |" docs/SETTINGS.md | grep -q "\`$2\` \*\*(default)\*\*"; }
 check "sysflex_mib is an option" 'settings_key sysflex_mib'
-check "sysflex_mib defaults to off" 'settings_default sysflex_mib off'
-check "sysflex_mib offers 128, 256, 384 and 512" 'for v in 128 256 384 512; do grep "^| \`sysflex_mib\` |" docs/SETTINGS.md | grep -q "\`$v\`" || exit 1; done'
+check "sysflex_mib defaults to auto (README, CHANGELOG 0.9.1)" 'settings_default sysflex_mib auto'
+check "sysflex_mib offers auto, off, 256, 512, 768, 1024, 1536 and 2048" 'for v in auto off 256 512 768 1024 1536 2048; do grep "^| \`sysflex_mib\` |" docs/SETTINGS.md | grep -q "\`$v\`" || exit 1; done'
+check "players is an option, 1 to 4, default 1 (README, CHANGELOG 0.9.1)" 'settings_key players && settings_default players 1 && for v in 1 2 3 4; do grep "^| \`players\` |" docs/SETTINGS.md | grep -q "\`$v\`" || exit 1; done'
+check "players is in the SYSTEM tab (README)" 'awk "/^## SYSTEM tab/{f=1;next} /^## /{f=0} f" docs/SETTINGS.md | grep -q "^| \`players\` |"'
 check "memory_action defaults to pause (CHANGELOG 0.8.4)" 'settings_default memory_action pause'
 check "colour_swap is on by default (README)" 'settings_default colour_swap on'
 check "async_shaders is off by default (README, CHANGELOG)" 'settings_default async_shaders off'
 check "the menu has 7 colour themes (README)" '[ "$(grep "^| \`menu_theme\` |" docs/SETTINGS.md | grep -o "\`[a-z]*\`" | wc -l | tr -d " ")" = 7 ]'
-check "profile \"Minimum RAM (test)\" exists and sets sysflex_mib=384 (README)" 'grep "^| Minimum RAM (test) |" docs/SETTINGS.md | grep -q "\`sysflex_mib=384\`"'
+check "profile \"Minimum RAM (test)\" exists and sets sysflex_mib=2048 (CHANGELOG 0.9.1)" 'grep "^| Minimum RAM (test) |" docs/SETTINGS.md | grep -q "\`sysflex_mib=2048\`"'
 check "README names the tab that has sysflex_mib (CPU AND MEMORY)" 'grep -q "^## CPU AND MEMORY tab" docs/SETTINGS.md && awk "/^## CPU AND MEMORY tab/{f=1;next} /^## /{f=0} f" docs/SETTINGS.md | grep -q "^| \`sysflex_mib\` |"'
 
 # Every `key` or `key=value` the README and INSTALL put in backticks that looks like a settings key must be one the menu knows,
@@ -137,10 +139,10 @@ PY
 checks=$((checks + 1))
 
 echo "== log lines the pages point to are in the source"
-for phrase in "system flexible memory: cap" "not available on this console or SDK" "probe of" "in system flexible memory"; do
+for phrase in "system flexible memory: cap" "not available on this console or SDK" "probe of" "in system flexible memory" "controllers: players=" "controllers: player %d connected" "kernel frees"; do
     check "source has \"$phrase\"" 'grep -rqF -- "$phrase" frontend/ps4_platform.cpp frontend/main.cpp'
 done
-for phrase in "system flexible memory: cap N MiB" "not available on this console or SDK" "in system flexible memory"; do
+for phrase in "system flexible memory: cap N MiB" "not available on this console or SDK" "in system flexible memory" "kernel frees N calls" "controllers: players=N"; do
     check "CHANGELOG/README quote \"$phrase\"" 'grep -qF -- "$phrase" CHANGELOG.md README.md'
 done
 
@@ -153,6 +155,7 @@ check "README says Eden4 does not name its author (no invented name)" 'tr "\n" "
 check "NOTICE.md has the Eden4 section, DolphinPS4 and ShiroKlein" 'grep -q "^## Eden4" NOTICE.md && grep -q "DolphinPS4" NOTICE.md && grep -q "ShiroKlein" NOTICE.md'
 check "docs/EDEN4.md has Taken and Not taken sections" 'grep -q "^## Taken" docs/EDEN4.md && grep -q "^## Not taken" docs/EDEN4.md'
 check "patch 0029 credits Eden4" 'grep -q "Eden4" patches/eden/0029-*.patch'
+check "patch 0030 exists and changes only the lazy-memory files" '[ "$(grep "^diff --git" patches/eden/0030-*.patch | wc -l | tr -d " ")" = 2 ] && ! grep "^diff --git" patches/eden/0030-*.patch | grep -qv "orbis_lazy_memory"'
 check "the menu text of sysflex_mib credits Eden4" 'grep -q "from Eden4" frontend/menu/settings_model.cpp'
 
 echo "== the lazy-memory test"

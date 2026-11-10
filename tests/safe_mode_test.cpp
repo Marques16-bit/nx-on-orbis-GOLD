@@ -38,8 +38,9 @@ int main() {
     Check(IsExperimental("skip_cpu_invalidation", "on") && !IsExperimental("skip_cpu_invalidation", "off"), "skip_cpu_invalidation");
     Check(IsExperimental("auto_stub", "on") && !IsExperimental("auto_stub", "off"), "auto_stub");
     Check(IsExperimental("astc", "gpu") && IsExperimental("astc", "async") && !IsExperimental("astc", "cpu"), "astc: only the CPU mode is safe");
-    Check(IsExperimental("sysflex_mib", "384") && IsExperimental("sysflex_mib", "128") && !IsExperimental("sysflex_mib", "off"),
-          "sysflex_mib: any amount is experimental, off is not");
+    Check(!IsExperimental("sysflex_mib", "384") && !IsExperimental("sysflex_mib", "2048") && !IsExperimental("sysflex_mib", "auto") &&
+              !IsExperimental("sysflex_mib", "off") && !IsExperimental("players", "4"),
+          "sysflex_mib (not experimental since 0.9.1) and players are never ignored by safe mode");
     Check(IsExperimental("astc_recompress", "bc3") && IsExperimental("astc_recompress", "bc1") && !IsExperimental("astc_recompress", "off"),
           "astc_recompress: BC1 and BC3 are experimental, off is not");
     Check(IsExperimental("dma_accuracy", "unsafe") && !IsExperimental("dma_accuracy", "default") && !IsExperimental("dma_accuracy", "safe"),

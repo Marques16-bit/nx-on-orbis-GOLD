@@ -237,6 +237,27 @@ int main() {
         Stats s = GetStats();
         Check(s.committed_bytes == 0 && s.system_flexible_bytes == 0 && g_direct_live.empty() && g_flex_live.empty(), "7: nothing is left");
     }
+    // 8. (0.9.1, patch 0030) The kernel's frees are counted: calls, bytes and the ones too small for a chunk.
+    {
+        Reset(100);
+        ConfigureSystemFlexible(nullptr, 0);
+        char* a = static_cast<char*>(ReserveLazy(4 * Chunk, "t8"));
+        SetGuestRamBase(a, 4 * Chunk);
+        CommitLazy(a, 4 * Chunk);
+        const Stats before = GetStats();
+        OnGuestRamFreed(0, 4096);          // one page: too small, no chunk goes back
+        OnGuestRamFreed(Chunk, 2 * Chunk); // two whole chunks
+        const Stats after = GetStats();
+        Check(after.guest_free_calls == before.guest_free_calls + 2, "8: both frees are counted as calls");
+        Check(after.guest_free_bytes == before.guest_free_bytes + 4096 + 2 * Chunk, "8: and their bytes");
+        Check(after.guest_free_small == before.guest_free_small + 1, "8: only the 4 KiB one is 'small'");
+        Check(after.decommitted_bytes == before.decommitted_bytes + 2 * Chunk && after.committed_bytes == 2 * Chunk,
+              "8: counting changes nothing about what is given back (two chunks, not the page)");
+        OnGuestRamFreed(8 * Chunk, Chunk); // outside the guest RAM range: counted, ignored
+        Check(GetStats().guest_free_calls == after.guest_free_calls + 1 && GetStats().committed_bytes == 2 * Chunk,
+              "8: a free outside the range is counted and changes nothing");
+        ReleaseLazy(a);
+    }
     ConfigureSystemFlexible(nullptr, 0);
     std::printf("lazy memory test: %s\n", g_failures == 0 ? "PASSED" : "FAILED");
     return g_failures == 0 ? 0 : 1;

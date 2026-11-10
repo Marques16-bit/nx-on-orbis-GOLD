@@ -141,7 +141,8 @@ void TestSettingsFile() {
         check("overlay_flip_stamp", {"on", "off"}, "on");
         check("memory_profile", {"auto", "roomy", "standard", "tight", "strict"}, "auto");
         check("memory_action", {"warn", "pause"}, "pause"); // 0.8.4: pause by default
-        check("sysflex_mib", {"off", "128", "256", "384", "512"}, "off"); // 0.9.0: off by default
+        check("sysflex_mib", {"auto", "off", "256", "512", "768", "1024", "1536", "2048"}, "auto"); // 0.9.1: automatic by default
+        check("players", {"1", "2", "3", "4"}, "1");                                           // 0.9.1: one controller, as before
         check("env:ORBIS_ARENA_MIB", {"1024", "1152", "1280", "1536", "1792"}, "1280");
         check("shader_preload", {"0", "128", "256", "1024", "4096", "all"}, "all"); // 0.7.7: no limit by default
         SettingsFile f("overlay_mode=classic\nmemory_profile=tight\nmemory_action=pause\n");
@@ -249,6 +250,7 @@ void TestNavigation() {
         Check(r.saved.find("language=en") != std::string::npos, "Cross on the language switches to English");
         Check(r.ui.Result().kind == MenuResult::Kind::None, "...and does not start a game");
         r.Tap(Pad::Down); // the menu colour
+        r.Tap(Pad::Down); // the number of controllers (0.9.1)
         r.Tap(Pad::Down); // restore defaults
         r.saves = 0;
         r.Tap(Pad::Cross);
@@ -257,10 +259,25 @@ void TestNavigation() {
         Check(r.saves == 1 && r.saved.find("language=en") != std::string::npos, "second press resets the options, not the language");
     }
     {
+        // 0.9.1: the controllers option writes players=N, and its default (1) removes the line.
+        Rig r("");
+        r.ui.SetTab(4);
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Down); // the controllers row
+        r.Tap(Pad::Right);
+        Check(r.saved.find("players=2") != std::string::npos, "the controllers row: Right writes players=2");
+        r.Tap(Pad::Right);
+        r.Tap(Pad::Right);
+        Check(r.saved.find("players=4") != std::string::npos, "...and 4 is the last choice");
+        const Option* o = FindOption("players");
+        Check(o != nullptr && o->group == Group::System, "players is in the System tab");
+    }
+    {
         Rig r("mode=docked\nastc=gpu\n");
         r.ui.SetTab(4);
         r.Tap(Pad::Down);
         r.Tap(Pad::Down);
+        r.Tap(Pad::Down); // language, colour, controllers: now on restore defaults
         r.Tap(Pad::Cross);
         r.Tap(Pad::Up); // moving cancels the confirmation
         r.Tap(Pad::Down);
@@ -392,6 +409,7 @@ void TestNavigation() {
         tap(Pad::Down);
         tap(Pad::Down);
         tap(Pad::Down);
+        tap(Pad::Down); // language, colour, controllers (0.9.1), restore defaults, clear the cache
         tap(Pad::Cross);
         Check(cleared == 0, "clear shader cache: the first press only asks");
         tap(Pad::Up);

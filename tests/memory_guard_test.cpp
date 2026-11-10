@@ -123,10 +123,17 @@ int main() {
         Check(ParseSystemFlexibleCap("off", &cap) && cap == 0 && ParseSystemFlexibleCap("128", &cap) && cap == 128 &&
                   ParseSystemFlexibleCap("256", &cap) && cap == 256 && ParseSystemFlexibleCap("384", &cap) && cap == 384 &&
                   ParseSystemFlexibleCap("512", &cap) && cap == 512,
-              "sysflex_mib: off, 128, 256, 384 and 512 parse");
+              "sysflex_mib: off, 128, 256, 384 and 512 parse (the 0.9.0 values still work)");
+        Check(ParseSystemFlexibleCap("768", &cap) && cap == 768 && ParseSystemFlexibleCap("1024", &cap) && cap == 1024 &&
+                  ParseSystemFlexibleCap("1536", &cap) && cap == 1536 && ParseSystemFlexibleCap("2048", &cap) && cap == 2048,
+              "sysflex_mib (0.9.1): 768, 1024, 1536 and 2048 parse");
+        Check(ParseSystemFlexibleCap("auto", &cap) && cap == SystemFlexibleAutoCapMiB && SystemFlexibleAutoCapMiB == 1536,
+              "sysflex_mib=auto is the automatic cap, 1536 MiB");
+        Check(SystemFlexibleProvenMiB == 512 && SystemFlexibleProvenMiB < SystemFlexibleAutoCapMiB,
+              "the proven amount (what safe mode falls back to) is 512 MiB, below auto");
         cap = 7;
-        Check(!ParseSystemFlexibleCap("1024", &cap) && !ParseSystemFlexibleCap("", &cap) && !ParseSystemFlexibleCap("on", &cap) &&
-                  !ParseSystemFlexibleCap("0", &cap) && cap == 7,
+        Check(!ParseSystemFlexibleCap("4096", &cap) && !ParseSystemFlexibleCap("", &cap) && !ParseSystemFlexibleCap("on", &cap) &&
+                  !ParseSystemFlexibleCap("0", &cap) && !ParseSystemFlexibleCap("AUTO", &cap) && cap == 7,
               "sysflex_mib: anything else is refused and leaves the value alone");
         Check(SystemFlexibleBudgetMiB(0, 640) == 0, "budget: a cap of 0 is off whatever the pool has");
         Check(SystemFlexibleBudgetMiB(384, 640) == 384 && SystemFlexibleBudgetMiB(512, 640) == 512, "budget: a roomy pool gives the whole cap");
@@ -134,6 +141,30 @@ int main() {
         Check(SystemFlexibleBudgetMiB(384, 300) == 160 && SystemFlexibleBudgetMiB(384, 301) == 160, "budget: rounded down to steps of 32 MiB");
         Check(SystemFlexibleBudgetMiB(256, 159) == 0 && SystemFlexibleBudgetMiB(256, 0) == 0, "budget: a pool with no room beyond the reserve plus one step is off");
         Check(SystemFlexibleBudgetMiB(256, 160) == 32, "budget: exactly reserve + one step leaves one step");
+        Check(SystemFlexibleBudgetMiB(SystemFlexibleAutoCapMiB, 4096) == 1536 && SystemFlexibleBudgetMiB(2048, 2176) == 2048,
+              "budget: auto and 2048 MiB fit a pool that can map cap + reserve at once");
+        Check(SystemFlexibleBudgetMiB(SystemFlexibleAutoCapMiB, 1024) == 896, "budget: auto on a pool that maps 1024 MiB takes 896 and keeps 128");
+        // The probe's search: the largest size in steps that the (mock) pool accepts at once.
+        int asked = 0;
+        const auto pool_of = [&](std::uint64_t limit) {
+            asked = 0;
+            return [&asked, limit](std::uint64_t mib) { ++asked; return mib <= limit; };
+        };
+        Check(LargestAcceptedMiB(1664, pool_of(4096)) == 1664 && asked == 1, "probe: a roomy pool answers the first question, one probe");
+        Check(LargestAcceptedMiB(1664, pool_of(1000)) == 992 && asked <= 8, "probe: a pool of 1000 MiB is found as 992 (steps of 32) in at most 8 probes");
+        Check(LargestAcceptedMiB(2176, pool_of(640)) == 640, "probe: 640 MiB exactly is found");
+        Check(LargestAcceptedMiB(2176, pool_of(161)) == 160, "probe: the smallest size (reserve + step = 160) is found when nothing bigger fits");
+        Check(LargestAcceptedMiB(2176, pool_of(159)) == 0 && LargestAcceptedMiB(2176, pool_of(0)) == 0, "probe: a pool under the smallest size is 0");
+        Check(LargestAcceptedMiB(100, pool_of(4096)) == 0 && asked == 0, "probe: a maximum under the smallest size asks nothing");
+        Check(LargestAcceptedMiB(160, pool_of(100)) == 0, "probe: a maximum equal to the smallest size, refused, is 0");
+        {
+            bool all_ok = true;
+            for (std::uint64_t limit = 0; limit <= 2300; limit += 7) {
+                const std::uint64_t want = limit < 160 ? 0 : std::min<std::uint64_t>(limit, 1664) / 32 * 32;
+                all_ok = all_ok && LargestAcceptedMiB(1664, pool_of(limit)) == want;
+            }
+            Check(all_ok, "probe: for every pool size from 0 to 2300 MiB (steps of 7) the answer is the largest step the pool accepts, capped at the maximum");
+        }
     }
     std::printf(g_failures == 0 ? "memory guard test: PASSED\n" : "memory guard test: FAILED\n");
     return g_failures == 0 ? 0 : 1;

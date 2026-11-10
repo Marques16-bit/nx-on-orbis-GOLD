@@ -56,9 +56,8 @@ inline bool IsExperimental(std::string_view key, std::string_view value) {
     if (key == "cpu_ticks") {
         return value != "off";
     }
-    if (key == "sysflex_mib") {
-        return value != "off";
-    }
+    // sysflex_mib (0.9.0: experimental) is not one any more: it worked on the console in the 0.9.0 test. Safe mode still
+    // limits it to the amount that test proved (main.cpp), instead of ignoring the line.
     if (key == "async_presentation" || key == "skip_cpu_invalidation" || key == "auto_stub") {
         return value == "on";
     }

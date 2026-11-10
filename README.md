@@ -3,21 +3,22 @@
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
-> **Status: experimental, under development (v0.9.0).** It boots, has its own menu, and runs real games, but
+> **Status: experimental, under development (v0.9.1).** It boots, has its own menu, and runs real games, but
 > slowly: the emulated CPU is the limit, not the GPU. Some games run, some close when the console runs out of
 > memory. It is not a way to play Switch games on a PS4 yet. Everything below says what was **measured on a console**
 > and what was only written and tested on a PC.
 
 **Resumo em português:** port experimental do emulador Eden (Switch) para PS4 Pro com jailbreak. Abre, tem menu
 próprio (português e inglês), roda jogos de verdade, mas devagar (o limite é a CPU emulada). O Super Mario Maker 2
-roda; o Super Mario Odyssey fecha quando a memória do console acaba. A versão 0.9.0 traz uma opção nova e
-**desligada por padrão** (`sysflex_mib`) que tira memória do jogo de um segundo "balde" de memória do PS4. **Nada da 0.9.0
-foi rodado num console ainda.** Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
+roda; o Super Mario Odyssey passou a abrir e a ficar rodando, mas deixa pouca memória livre. A 0.9.0 trouxe a memória
+flexível do sistema (`sysflex_mib`), **que funcionou no console** (os logs voltaram). A 0.9.1 a deixa **ligada por padrão e
+maior** (até 1536 MiB), e traz a opção **Controles (jogadores) de 1 a 4** na aba Sistema, **ainda não testada num console**.
+Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
 
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 29 patches in `patches/eden/` |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 30 patches in `patches/eden/` |
 | Renderer | Vulkan only (`-DENABLE_OPENGL=OFF`), on Mesa RADV "PlayStation 4 Liverpool" (Vulkan 1.3) |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Build | GitHub Actions builds the `.pkg` and the ELF from a tag ([docs/BUILDING.md](docs/BUILDING.md)); [Releases](../../releases) |
@@ -46,8 +47,11 @@ foi rodado num console ainda.** Veja [Créditos](#credits) (inclui o Eden4) e [d
   the sky pink and the ground blue in Super Mario Maker 2.
 - **Memory care**, because a console process has a hard ~4.5 GiB of direct memory and no swap: a profile picked from what the
   console reports, a watch on the largest free block that **pauses the game** before it runs out, a shader cache with no limit
-  that survives a bad start, and (0.9.0) an optional second memory pool.
-- **Safe mode**: after a start that died before drawing, the next start turns the experimental lines of `settings.txt` off.
+  that survives a bad start, and (0.9.0, on by default since 0.9.1) a second memory pool.
+- **Safe mode**: after a start that died before drawing, the next start turns the experimental lines of `settings.txt` off (and
+  keeps the second memory pool to the 512 MiB that has been seen to work).
+- **Up to 4 controllers** (0.9.1, `players=1|2|3|4`; menu: SYSTEM tab, "Controllers (players)"): the other users logged in to the
+  console each give one DualShock. Not tested on a console yet.
 - **Logs** that are kept: `boot.log` (with a `status:` line every few seconds), `mesa.log` (the driver), `log/eden_log.txt`,
   the last 8 runs of each in `logs/`, and a sampling profile of where the CPU time goes.
 
@@ -56,36 +60,54 @@ foi rodado num console ainda.** Veja [Créditos](#credits) (inclui o Eden4) e [d
 | Game | What happens |
 |---|---|
 | Super Mario Maker 2 | Plays. The title screen runs at 29-39 fps; after the scene change (the editor) it drops to 9-13 fps. The driver waits 0% for the GPU and the busiest emulated core is 88% busy: **CPU-bound**. One defect is not solved: in one scene the terrain is flat dark grey and some text is missing. |
-| Super Mario Odyssey | Closes while loading: direct memory runs out (free block 58 MiB, then a crash 7 s later), because about 2.5 GiB are already taken by the emulator before the game uses any, and the game's memory then grew by 1.4 GiB. 0.8.4-0.9.0 try to give it room; **not confirmed on a console**. |
+| Super Mario Odyssey | 0.8.5 closed while loading (direct memory ran out at 1982 MiB of guest memory). With 0.9.0's 512 MiB of system flexible memory it **kept running**: guest memory plateaued at 2152 MiB, the largest free direct block stayed at about 93 MiB (`low`), 9-19 fps, and the run ended by choosing Exit in the pause menu (at 435 s of the log). The game freed **no** guest memory during that run (`0 MiB given back`). 0.9.1 raises the pool to up to 1536 MiB, which should leave about 1 GiB more direct memory free; **not run yet**. |
 | Mario Kart 8 Deluxe | Played full races at 13-16 fps in v0.1.0 (the original release), with red and blue swapped. There is no newer measurement. |
 | Cuphead | Reached its menu (~30 fps) in v0.1.0. |
-| SpongeBob: Titans of the Tide | Crashes (seen in 0.6.0); the cause is not found. |
+| Mario vs. Donkey Kong | Plays and is the best 3D test so far: 10-26 fps in the `status:` lines of the 0.9.0 run, once it was running. Its video cutscenes show a **black screen**: the video decodes (the log shows the decoder working), but what is drawn is black, and the cause is not found; see [docs/ROADMAP.md](docs/ROADMAP.md). |
+| SpongeBob: Titans of the Tide | Crashes (seen in 0.6.0); the cause is not found. An Unreal Engine 5 game; too heavy for this CPU as it is. |
 
-The speeds above come from console logs of 0.7.9 to 0.8.3, and the last logs read here are from **0.8.3**. Versions 0.8.4, 0.8.5 and 0.9.0 were built and unit-tested, but no log
-of them has come back, so what they change is **not confirmed**: [CHANGELOG.md](CHANGELOG.md) says so entry by entry.
+The speeds above come from console logs of 0.7.9 to 0.9.0. The 0.8.5 and 0.9.0 logs of Odyssey, Mario vs. Donkey Kong and (0.9.0)
+Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **not confirmed**: [CHANGELOG.md](CHANGELOG.md) says so
+entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
-## What is new in 0.9.0 (not run on a console)
+## What is new in 0.9.1 (not run on a console)
 
-- **Game memory in the system flexible memory** (`sysflex_mib`, **off** by default; menu: CPU AND MEMORY tab, "Game RAM in system
-  flexible memory"). The PS4 has a second pool, outside the ~4.5 GiB of direct memory that big games run out of. With the option
-  on, the game's RAM and Eden's big tables take their 64 KiB pieces from that pool first and from direct memory only when the pool
-  says no. If the console does not offer the pool, nothing changes. The idea comes from **Eden4** (see below); the code is new.
-  Try it with the quick profile "Minimum RAM (test)" (it sets 384 MiB) or by picking 128-512 in the option.
-  In `boot.log` look for `system flexible memory: cap ... budget ... MiB` at the start and, in each `status:` line, the number
-  of MiB "in system flexible memory". A line `not available on this console or SDK` means the pool is not there.
-- Patch 0029 (the pool) is checked by `tests/lazy_memory_test.sh` (29 checks against a model of the kernel calls, with address
-  and undefined-behaviour sanitizers). That is a model of the console, not the console.
-- This page, [docs/SETTINGS.md](docs/SETTINGS.md), [docs/EDEN4.md](docs/EDEN4.md) and a script that checks them against the code
-  (`bash tests/docs_check.sh`).
+- **Game memory in the system flexible memory is no longer an experiment** (`sysflex_mib`; menu: CPU AND MEMORY tab, "Game RAM in
+  system flexible memory"). The PS4 has a second pool, outside the ~4.5 GiB of direct memory that big games run out of, and the
+  0.9.0 console run showed it works: the pool accepted a 640 MiB probe, all 512 MiB of the budget were used, audio and the
+  controller kept working, and Odyssey went on running to 2152 MiB. Now:
+  - the default is **automatic**: up to 1536 MiB, limited by what the pool turns out to have (the app finds that with a binary
+    search of up to 2176 MiB and always leaves 128 MiB to the system); the menu offers off, 256, 512, 768, 1024, 1536 and 2048 (an old `sysflex_mib=384` or `=128` line from 0.9.0 is read as auto);
+  - it is **no longer ignored by safe mode**; after a start that died before drawing it is limited to 512 MiB instead (the amount
+    seen to work), not switched off;
+  - the quick profile "Minimum RAM (test)" uses 2048.
+  A game's RAM and Eden's big tables take their 64 KiB pieces from the pool first and from direct memory only when the pool says
+  no. Look in `boot.log` for `system flexible memory: cap ... budget ... MiB` and, in each `status:` line, the MiB "in system
+  flexible memory". The idea comes from **Eden4** (see below); the code is new.
+- **Patch 0030** counts what the emulated kernel gives back: the `status:` line now ends with `kernel frees N calls / M MiB (K under
+  64 KiB)`. In the Odyssey run nothing was given back, so the game keeps its own heap and "free the previous area at each loading
+  screen" has nothing to free from the outside; these numbers will show whether that holds in other games.
+- **Controllers (players)** (`players=1|2|3|4`; menu: SYSTEM tab). Eden already has one virtual gamepad input per player slot, and a
+  slot marked connected connects itself when it gets input (read in Eden's source). The frontend marks players 2-4 connected and reads
+  one DualShock per extra logged-in user (a second controller logs in as a guest when its PS button is pressed; the app looks every
+  2 seconds and lights it red, green or pink). The default is 1, which changes nothing. The PS4 side and the settings side are
+  tested on a PC with stand-ins; the **real connection in Eden and on the console is not tested**. Look for `controllers:` in `boot.log`.
+- Checks: `tests/lazy_memory_test.sh` (34 checks, with address and undefined-behaviour sanitizers, against a model of the kernel
+  calls, not the console), `tests/docs_check.sh`, and the other host tests listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## What does not work yet, and what is being tried
 
 - **Speed.** The game's own ARM code, translated to x86 and run on a 2.1 GHz Jaguar core, is the bottleneck. The profile in `boot.log`
   adds up the busy cores per thread. The biggest lever that is known and not done is the JIT: Eden4 changes Dynarmic's code
-  generation, and that is a project of its own ([docs/EDEN4.md](docs/EDEN4.md)).
+  generation, and that is a project of its own ([docs/EDEN4.md](docs/EDEN4.md)). It needs the pinned Eden's source to check each change
+  against, and that source is not in this repository (see the roadmap).
 - **Memory for Odyssey-sized games.** See above. The numbers: a fixed ~2560 MiB is taken before the game starts (driver arena
   1280, C heap carve-outs, JIT caches, stacks, and the 128 MiB GPU stream buffer since 0.8.5); the game then wants about 1.4 GiB more.
+  0.9.0 moved 512 MiB of that out of direct memory; 0.9.1 can move up to 1536 MiB.
+- **Cutscenes of Mario vs. Donkey Kong** stay black: the decode works, the picture does not reach the screen. The first decoded frame
+  is saved by the build as `/data/edenps4/vic_frame.raw` and `vic_frame.txt`; sending those two files would show whether the frame
+  is real.
 - **Naming the biggest heap owners** needs the ELF that matches the build; keep it from every release.
 
 ## Install

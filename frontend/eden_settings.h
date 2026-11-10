@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdlib>
 #include <string>
 #include <type_traits>
@@ -330,6 +331,24 @@ Result Apply(Values& v, const std::string& key, const std::string& value) {
         }
     }
     return Result::NotMine;
+}
+
+/// 0.9.1: settings.txt `players=2|3|4`. Eden's HID core gives every one of its player slots an input called
+/// "virtual_gamepad" whose port is the player's index (EmulatedController::LoadVirtualGamepadParams), and a slot that
+/// gets input while its `connected` setting is true connects itself (EmulatedController::SetButton). So the frontend
+/// only has to mark players 2..count as connected and feed port N from controller N. Player 1 is left exactly as it
+/// was. Result::Missing when this Eden has no such setting (then only controller 1 works, as before).
+template <typename Values>
+Result ConnectPlayers(Values& v, int count) {
+    if constexpr (requires { v.players.GetValue()[1].connected = true; }) {
+        auto& players = v.players.GetValue();
+        for (int i = 1; i < count && i < static_cast<int>(players.size()); ++i) {
+            players[static_cast<std::size_t>(i)].connected = true;
+        }
+        return Result::Applied;
+    } else {
+        return Result::Missing;
+    }
 }
 
 } // namespace Ps4Eden

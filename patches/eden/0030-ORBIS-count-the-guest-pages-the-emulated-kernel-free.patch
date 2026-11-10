@@ -1,0 +1,72 @@
+From efb8bf4582bf185a1d25b00a63da76d614a6b43f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 10 Nov 2026 08:20:59 -0300
+Subject: [PATCH 30/30] ORBIS: count the guest pages the emulated kernel frees
+ (for the loading-screen memory question)
+
+A game that frees guest memory at a loading screen gets it back chunk by chunk (patch 0007), but a game that keeps
+its own heap frees almost nothing. The numbers tell the two apart: how many times the kernel gave pages back, how
+many bytes, and how many of the calls were too small (under 64 KiB) to return a whole chunk. They are printed in
+the status line of the frontend; nothing about the memory handling changes.
+---
+ src/common/orbis_lazy_memory.cpp | 15 +++++++++++++--
+ src/common/orbis_lazy_memory.h   |  3 +++
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/common/orbis_lazy_memory.cpp b/src/common/orbis_lazy_memory.cpp
+index 17cf716..4855753 100644
+--- a/src/common/orbis_lazy_memory.cpp
++++ b/src/common/orbis_lazy_memory.cpp
+@@ -64,6 +64,11 @@ std::atomic<SystemFlexibleMap> g_flex_map{nullptr};
+ std::atomic<std::size_t> g_flex_budget{0};
+ std::atomic<std::size_t> g_flex_used{0};
+ std::atomic<std::size_t> g_flex_refusals{0};
++// What the emulated kernel gave back (OnGuestRamFreed), before and regardless of whether a whole 64 KiB chunk was
++// covered: tells a game that frees little (the guest allocator keeps its pages) from one whose frees are too small.
++std::atomic<std::size_t> g_guest_free_calls{0};
++std::atomic<std::size_t> g_guest_free_bytes{0};
++std::atomic<std::size_t> g_guest_free_small{0};
+ 
+ struct SpinGuard {
+     SpinGuard() {
+@@ -350,6 +355,11 @@ void SetGuestRamBase(void* base, std::size_t size) {
+ }
+ 
+ void OnGuestRamFreed(std::size_t offset, std::size_t size) {
++    g_guest_free_calls.fetch_add(1, std::memory_order_relaxed);
++    g_guest_free_bytes.fetch_add(size, std::memory_order_relaxed);
++    if (size < Chunk) {
++        g_guest_free_small.fetch_add(1, std::memory_order_relaxed);
++    }
+     unsigned char* const base = g_guest_base.load();
+     if (base != nullptr && offset < g_guest_size.load()) {
+         DecommitLazy(base + offset, size);
+@@ -362,8 +372,9 @@ void ConfigureSystemFlexible(SystemFlexibleMap map, std::size_t budget_bytes) {
+ }
+ 
+ Stats GetStats() {
+-    return {g_reserved.load(),     g_committed.load(),  g_failures.load(),
+-            g_decommitted.load(),  g_flex_used.load(),  g_flex_refusals.load()};
++    return {g_reserved.load(),        g_committed.load(),        g_failures.load(),        g_decommitted.load(),
++            g_flex_used.load(),       g_flex_refusals.load(),    g_guest_free_calls.load(), g_guest_free_bytes.load(),
++            g_guest_free_small.load()};
+ }
+ 
+ } // namespace Common::Orbis
+diff --git a/src/common/orbis_lazy_memory.h b/src/common/orbis_lazy_memory.h
+index f9d57d6..6a249af 100644
+--- a/src/common/orbis_lazy_memory.h
++++ b/src/common/orbis_lazy_memory.h
+@@ -66,6 +66,9 @@ struct Stats {
+     std::size_t decommitted_bytes;
+     std::size_t system_flexible_bytes;    // of committed_bytes: the part that sits in system flexible memory
+     std::size_t system_flexible_refusals; // chunks the pool refused (it then stops being asked)
++    std::size_t guest_free_calls;         // times the emulated kernel gave guest pages back
++    std::size_t guest_free_bytes;         // ... and how much, in total (before rounding to whole 64 KiB chunks)
++    std::size_t guest_free_small;         // of those calls, the ones under 64 KiB (they cannot give a chunk back by themselves)
+ };
+ Stats GetStats();
+ 
+-- 
+2.43.0
+

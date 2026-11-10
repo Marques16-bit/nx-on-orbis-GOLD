@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -46,11 +47,18 @@ struct Plan {
 /// `detected` is the tier measured on this console; a profile other than Auto replaces it.
 Plan PlanFor(Profile profile, Tier detected);
 
-/// 0.9.0, settings.txt: sysflex_mib=off|128|256|384|512 - how much of the console's SYSTEM FLEXIBLE memory pool
-/// the game's guest RAM may use. That pool is not part of the ~4.5 GiB of direct memory the rest of this file is
-/// about (Eden4 keeps its whole C heap there), so every MiB taken from it is a MiB of direct memory kept free.
-/// "off" is 0 and the default.
+/// settings.txt: sysflex_mib=auto|off|256|512|768|1024|1536|2048 (128 and 384, the 0.9.0 values, are read as auto) - how much of the console's SYSTEM FLEXIBLE
+/// memory pool the game's guest RAM may use (0.9.0, an idea from Eden4, which keeps its whole C heap there). That pool
+/// is not part of the ~4.5 GiB of direct memory the rest of this file is about, so every MiB taken from it is a MiB of
+/// direct memory kept free. 0.9.1: no longer experimental; "auto" (the default) is SystemFlexibleAutoCapMiB, still
+/// limited by what the pool turns out to have. "off" is 0.
 bool ParseSystemFlexibleCap(std::string_view text, std::uint64_t* out_mib);
+/// What "auto" means: 1536 MiB. The 0.9.0 test on a PS4 Pro took 512 MiB (all of that budget) from the pool and the
+/// system kept working; a firmware whose pool is smaller is handled by the probe and the reserve below.
+constexpr std::uint64_t SystemFlexibleAutoCapMiB = 1536;
+/// What a console has actually been seen to give (0.9.0, PS4 Pro). Safe mode (a start that died before drawing) goes
+/// back to this when the cap is higher, instead of switching the pool off.
+constexpr std::uint64_t SystemFlexibleProvenMiB = 512;
 /// What is left to the system (its own libraries and thread objects come from the same pool): never taken.
 constexpr std::uint64_t SystemFlexibleReserveMiB = 128;
 /// The probe and the budget move in steps of this size.
@@ -58,6 +66,11 @@ constexpr std::uint64_t SystemFlexibleStepMiB = 32;
 /// The budget actually used: the cap, but at most what the pool had free at start minus the reserve (`pool_mib`, as
 /// found by a probe), in whole steps. 0 when the cap is 0 or the pool has less than the reserve plus one step to spare.
 std::uint64_t SystemFlexibleBudgetMiB(std::uint64_t cap_mib, std::uint64_t pool_mib);
+/// 0.9.1: the largest size in [reserve + step, max_mib], in steps, that `accepts` says the pool can map at once.
+/// The first question is max_mib itself (a roomy pool answers yes at once, one probe); otherwise a binary search
+/// between the smallest size and max_mib. 0 when even the smallest is refused. `accepts` is assumed monotonic (a
+/// size the pool accepts, every smaller size it accepts too).
+std::uint64_t LargestAcceptedMiB(std::uint64_t max_mib, const std::function<bool(std::uint64_t)>& accepts);
 
 enum class Stage { Ok, Low, Critical };
 enum class Action { Warn, Pause }; // settings.txt: memory_action=warn|pause

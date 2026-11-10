@@ -2,6 +2,7 @@
 // Host test of frontend/eden_settings.h with mock settings structs (no Eden needed).
 //   g++ -std=c++20 -Ifrontend tests/eden_settings_test.cpp frontend/menu/settings_model.cpp -o eden_settings_test
 //   ./eden_settings_test
+#include <array>
 #include <cstdio>
 #include <string>
 
@@ -73,6 +74,19 @@ struct ValuesClockOld {
 };
 
 struct ValuesEmpty {};
+
+// 0.9.1: Eden's players (settings_input.h PlayerInput.connected; settings.h InputSetting<std::array<PlayerInput, 10>>).
+struct PlayerInputMock {
+    bool connected{};
+    int controller_type{};
+};
+struct InputSettingMock {
+    std::array<PlayerInputMock, 10> value{};
+    std::array<PlayerInputMock, 10>& GetValue(bool = false) { return value; }
+};
+struct ValuesPlayers {
+    InputSettingMock players;
+};
 
 using Ps4Eden::Apply;
 using Ps4Eden::Result;
@@ -198,6 +212,23 @@ int main() {
         Check(res, "resolution: the menu's 0.25 and 1.25 are Apply()'s, the others main.cpp's");
         const Menu::Option* region = Menu::FindOption("region");
         Check(region != nullptr && std::string(region->choices[size_t(region->default_index)].value) == "usa", "region defaults to USA, like Eden");
+    }
+    {
+        // 0.9.1: ConnectPlayers marks players 2..count connected and leaves player 1 and the rest alone.
+        ValuesPlayers v;
+        Check(Ps4Eden::ConnectPlayers(v, 1) == Result::Applied && !v.players.value[1].connected, "players=1: nobody else is connected");
+        Check(Ps4Eden::ConnectPlayers(v, 3) == Result::Applied && v.players.value[1].connected && v.players.value[2].connected &&
+                  !v.players.value[3].connected,
+              "players=3: players 2 and 3 are connected, 4 is not");
+        Check(!v.players.value[0].connected && !v.players.value[4].connected, "player 1 and the slots past the fourth are not touched");
+        Check(Ps4Eden::ConnectPlayers(v, 4) == Result::Applied && v.players.value[3].connected, "players=4: player 4 too");
+        ValuesPlayers w;
+        Check(Ps4Eden::ConnectPlayers(w, 99) == Result::Applied && w.players.value[9].connected && !w.players.value[0].connected,
+              "a count past the slots stops at the last slot");
+        ValuesEmpty none;
+        Check(Ps4Eden::ConnectPlayers(none, 4) == Result::Missing, "an Eden without the setting: Missing, nothing breaks");
+        ValuesNew other;
+        Check(Ps4Eden::ConnectPlayers(other, 4) == Result::Missing, "an Eden whose settings struct has no players: Missing");
     }
     std::printf(g_failures == 0 ? "eden settings test: PASSED\n" : "eden settings test: FAILED\n");
     return g_failures == 0 ? 0 : 1;

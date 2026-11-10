@@ -172,7 +172,7 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
 
-## The system flexible pool (0.9.0; not yet seen on a console)
+## The system flexible pool (0.9.0; seen working on a console, 0.9.1 enlarges it)
 
 The PS4 gives a process two kinds of RAM that this port uses: **direct memory** (4608 MiB measured, GPU-visible, what runs out) and
 **flexible memory**, which comes in two pools, regular and *system*. The system pool is reached by `sceKernelMapNamedSystemFlexibleMemory`,
@@ -183,11 +183,16 @@ it already reserved; if the call fails or returns another address, the pool is s
 Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - Constants and the habit of placing blocks above `0x400000000` come from Eden4's runtime, which found that the kernel library allocates its
   own objects at `0x200000000`.
-- It is off by default (`sysflex_mib`); the budget is the smaller of the chosen cap and the probed pool minus 128 MiB, in steps of 32 MiB.
+- 0.9.1: it is on by default (`sysflex_mib=auto`, a cap of 1536 MiB). The budget is the smaller of the cap and the probed pool minus 128 MiB, in
+  steps of 32 MiB. The probe (`PoolAccepts`, `Ps4Memory::LargestAcceptedMiB`) asks for cap + 128 MiB first and, if refused, bisects between
+  160 MiB and that size (about eight questions at most; tested for every pool size from 0 to 2300 MiB in `tests/memory_guard_test.cpp`). It
+  assumes the pool accepts every size below one it accepted. Safe mode limits the cap to 512 MiB (`SystemFlexibleProvenMiB`).
+- What the 0.9.0 console run showed: the pool exists on firmware 12.02, accepted a 640 MiB probe, gave the whole 512 MiB budget, and the
+  128 MiB left was enough for audio and pad to open. It did not show the pool's real size (the probe stopped at 640 MiB).
 - The status line of `boot.log` shows `N MiB in system flexible memory` next to the committed guest memory; the lazy-memory counters add
-  `system_flexible_bytes` and `system_flexible_refusals`.
-- What is not known: whether the pool is offered to this process on firmware 12.02, its size, and whether the pages count against another
-  limit. `tests/lazy_memory_test.sh` runs the real chunk code against a model of these calls, not against the console.
+  `system_flexible_bytes` and `system_flexible_refusals`; patch 0030 adds `guest_free_calls`, `guest_free_bytes` and `guest_free_small` (the kernel's
+  frees of guest pages, counted in `OnGuestRamFreed` before whole chunks are decided), printed at the end of the `status:` line.
+- What is not known: the pool's size, and whether the pages count against another limit when much more than 512 MiB is taken. `tests/lazy_memory_test.sh` runs the real chunk code against a model of these calls, not against the console.
 
 ## Memory run of Super Mario Odyssey and the pause default (0.8.4; not yet seen on a console)
 
@@ -264,3 +269,16 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - `ArchiveLog()` (`ps4_platform.cpp`) runs in `OpenBootLog`, before Eden's logger and the driver start: it moves
   `log/eden_log.txt`, `log/eden_log.txt.old.txt`, `mesa.log`, `mesa.old.log` (when at least 2 KiB) and the old boot log to `logs/`.
 
+
+## Controllers 2-4 (0.9.1; not yet seen on a console)
+
+- Eden side, from its source: `EmulatedController::LoadVirtualGamepadParams` gives every player slot an input `engine:virtual_gamepad,port:<player
+  index>` with fixed button and stick numbers; `VirtualGamepad::SetButtonState(player_index, ...)` writes to that port; and `EmulatedController::SetButton`
+  calls `Connect()` when `Settings::values.players[index].connected` is true. `Ps4Eden::ConnectPlayers` (in `frontend/eden_settings.h`) sets that field for
+  players 2..N before the core starts. The check is a `requires` expression, so an Eden without `players[i].connected` skips it and `boot.log` says so.
+- PS4 side (`ps4_platform.cpp`): `OpenPad` opens the first user's pad as before. `OpenExtraPads(n)` calls `sceUserServiceGetLoginUserIdList` (declared weak) at
+  most every 2 seconds, opens a pad (`scePadOpen`, else `scePadGetHandle`) for each other logged-in user until `n` pads are open, and sets the light bar. A
+  user who logs out frees the slot (the handle is left open, since this SDK's pad close call was not checked). `ReadPad(index)` reads slot `index`.
+- `main.cpp` sends pad `i` to `PollPad(..., i)`. The pause menu, the memory panel and the quit combination read pad 0 only.
+- Not checked: that the OpenOrbis stub library exports `sceUserServiceGetLoginUserIdList` (if not, only controller 1 works and the log says so), that a guest
+  user's pad can be opened by this process, and how a game reacts to the extra Pro Controllers while Eden is in handheld mode.
