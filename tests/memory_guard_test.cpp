@@ -117,6 +117,24 @@ int main() {
         Check(BannerText(crit, false).find("CRITICAL") != std::string::npos && BannerText(crit, true).find("CRITICA") != std::string::npos,
               "critical text in both languages");
     }
+    {
+        // 0.9.0: sysflex_mib and the budget the console probe turns it into.
+        std::uint64_t cap = 99;
+        Check(ParseSystemFlexibleCap("off", &cap) && cap == 0 && ParseSystemFlexibleCap("128", &cap) && cap == 128 &&
+                  ParseSystemFlexibleCap("256", &cap) && cap == 256 && ParseSystemFlexibleCap("384", &cap) && cap == 384 &&
+                  ParseSystemFlexibleCap("512", &cap) && cap == 512,
+              "sysflex_mib: off, 128, 256, 384 and 512 parse");
+        cap = 7;
+        Check(!ParseSystemFlexibleCap("1024", &cap) && !ParseSystemFlexibleCap("", &cap) && !ParseSystemFlexibleCap("on", &cap) &&
+                  !ParseSystemFlexibleCap("0", &cap) && cap == 7,
+              "sysflex_mib: anything else is refused and leaves the value alone");
+        Check(SystemFlexibleBudgetMiB(0, 640) == 0, "budget: a cap of 0 is off whatever the pool has");
+        Check(SystemFlexibleBudgetMiB(384, 640) == 384 && SystemFlexibleBudgetMiB(512, 640) == 512, "budget: a roomy pool gives the whole cap");
+        Check(SystemFlexibleBudgetMiB(512, 480) == 352, "budget: a pool of 480 MiB gives 480 - 128 reserve = 352");
+        Check(SystemFlexibleBudgetMiB(384, 300) == 160 && SystemFlexibleBudgetMiB(384, 301) == 160, "budget: rounded down to steps of 32 MiB");
+        Check(SystemFlexibleBudgetMiB(256, 159) == 0 && SystemFlexibleBudgetMiB(256, 0) == 0, "budget: a pool with no room beyond the reserve plus one step is off");
+        Check(SystemFlexibleBudgetMiB(256, 160) == 32, "budget: exactly reserve + one step leaves one step");
+    }
     std::printf(g_failures == 0 ? "memory guard test: PASSED\n" : "memory guard test: FAILED\n");
     return g_failures == 0 ? 0 : 1;
 }

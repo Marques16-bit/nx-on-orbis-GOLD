@@ -172,6 +172,23 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
 
+## The system flexible pool (0.9.0; not yet seen on a console)
+
+The PS4 gives a process two kinds of RAM that this port uses: **direct memory** (4608 MiB measured, GPU-visible, what runs out) and
+**flexible memory**, which comes in two pools, regular and *system*. The system pool is reached by `sceKernelMapNamedSystemFlexibleMemory`,
+which the OpenOrbis headers do not declare and the SDK's stub library may not export. `frontend/ps4_platform.cpp` (`ConfigureSystemFlexible`)
+looks it up (the stub, else `sceKernelDlsym(0x2001, ...)`, 0x2001 being the libkernel handle PS4 homebrew commonly uses; not checked on this console), probes how much the pool can map at once, and hands the function and a budget to `Common::Orbis::ConfigureSystemFlexible`
+(patch 0029, `orbis_lazy_memory`). A 64 KiB lazy chunk then takes its pages with `MAP_FIXED` (0x10) and `PROT_CPU_RW` (0x3) at the address
+it already reserved; if the call fails or returns another address, the pool is switched off for the run and the chunk comes from direct memory.
+Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
+- Constants and the habit of placing blocks above `0x400000000` come from Eden4's runtime, which found that the kernel library allocates its
+  own objects at `0x200000000`.
+- It is off by default (`sysflex_mib`); the budget is the smaller of the chosen cap and the probed pool minus 128 MiB, in steps of 32 MiB.
+- The status line of `boot.log` shows `N MiB in system flexible memory` next to the committed guest memory; the lazy-memory counters add
+  `system_flexible_bytes` and `system_flexible_refusals`.
+- What is not known: whether the pool is offered to this process on firmware 12.02, its size, and whether the pages count against another
+  limit. `tests/lazy_memory_test.sh` runs the real chunk code against a model of these calls, not against the console.
+
 ## Memory run of Super Mario Odyssey and the pause default (0.8.4; not yet seen on a console)
 
 - The memory watch (`memory_guard`) reports the LARGEST FREE BLOCK of direct memory. In the Odyssey run it fell from 1790 MiB

@@ -1,0 +1,160 @@
+From 672de42c34378fd78c4187fbfc4103a744910d50 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 8 Nov 2026 21:34:53 -0300
+Subject: [PATCH 29/29] ORBIS: let lazy chunks take memory from the system flexible
+ pool (budgeted, with fallback)
+
+Eden4 (an unofficial PS4 port of Eden) keeps its C heap in the console's system flexible memory, which is
+not part of the ~4.5 GiB of direct memory that a Super Mario Odyssey run on this port ran out of. The lazy
+64 KiB chunks (guest RAM and the emulator's tables, the part that grows while a game loads) can live there
+too. ConfigureSystemFlexible() hands over the kernel call and a budget; with no call or no budget nothing
+changes, and a refusal by the pool switches it off so direct memory takes over as before.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/common/orbis_lazy_memory.cpp | 63 ++++++++++++++++++++++++++++++--
+ src/common/orbis_lazy_memory.h   | 13 +++++++
+ 2 files changed, 73 insertions(+), 3 deletions(-)
+
+diff --git a/src/common/orbis_lazy_memory.cpp b/src/common/orbis_lazy_memory.cpp
+index 3e585d4..17cf716 100644
+--- a/src/common/orbis_lazy_memory.cpp
++++ b/src/common/orbis_lazy_memory.cpp
+@@ -58,6 +58,12 @@ std::atomic<std::size_t> g_failures{0};
+ std::atomic<std::size_t> g_decommitted{0};
+ std::atomic<unsigned char*> g_guest_base{nullptr};
+ std::atomic<std::size_t> g_guest_size{0};
++// System flexible memory (ConfigureSystemFlexible). A chunk that lives there has this in its `phys` slot.
++constexpr off_t InSystemFlexible = -2;
++std::atomic<SystemFlexibleMap> g_flex_map{nullptr};
++std::atomic<std::size_t> g_flex_budget{0};
++std::atomic<std::size_t> g_flex_used{0};
++std::atomic<std::size_t> g_flex_refusals{0};
+ 
+ struct SpinGuard {
+     SpinGuard() {
+@@ -80,11 +86,41 @@ Region* FindRegion(std::uintptr_t addr) {
+     return nullptr;
+ }
+ 
++// Caller holds g_lock. True when the chunk now has memory from the system flexible pool.
++bool CommitFromSystemFlexibleLocked(Region& r, std::size_t index) {
++    const SystemFlexibleMap map = g_flex_map.load(std::memory_order_acquire);
++    if (map == nullptr ||
++        g_flex_used.load(std::memory_order_relaxed) + Chunk > g_flex_budget.load(std::memory_order_relaxed)) {
++        return false;
++    }
++    const std::uintptr_t want = r.base + index * Chunk;
++    void* at = reinterpret_cast<void*>(want);
++    const std::int32_t rc = map(&at, Chunk, ProtCpuRw, MapFixed, "eden guest");
++    if (rc != 0 || reinterpret_cast<std::uintptr_t>(at) != want) {
++        if (rc == 0) {
++            sceKernelMunmap(at, Chunk); // mapped somewhere else: not what was asked for
++        }
++        // The pool is empty (or the call is not what it should be): stop asking, direct memory takes over.
++        g_flex_map.store(nullptr, std::memory_order_release);
++        g_flex_refusals.fetch_add(1, std::memory_order_relaxed);
++        return false;
++    }
++    // Zero it as the direct path does: nothing may depend on what the pool held before.
++    std::memset(at, 0, Chunk);
++    r.phys[index].store(InSystemFlexible, std::memory_order_release);
++    g_flex_used.fetch_add(Chunk, std::memory_order_relaxed);
++    g_committed.fetch_add(Chunk, std::memory_order_relaxed);
++    return true;
++}
++
+ // Caller holds g_lock.
+ bool CommitChunkLocked(Region& r, std::size_t index) {
+     if (r.phys[index].load(std::memory_order_relaxed) != -1) {
+         return true;
+     }
++    if (CommitFromSystemFlexibleLocked(r, index)) {
++        return true;
++    }
+     off_t phys = 0;
+     // 64 KiB chunks taken first-fit from the bottom ended up scattered over all of direct memory
+     // (test 22: the largest free block fell to 2 MiB in a race), while the C heap's carve-outs
+@@ -209,7 +245,11 @@ void ReleaseLazy(void* base) {
+     sceKernelMunmap(base, size);
+     for (std::size_t i = 0; i < size / Chunk; ++i) {
+         const off_t p = phys[i].load(std::memory_order_relaxed);
+-        if (p != -1) {
++        if (p == InSystemFlexible) {
++            // sceKernelMunmap above already gave the pool its pages back.
++            g_flex_used.fetch_sub(Chunk, std::memory_order_relaxed);
++            g_committed.fetch_sub(Chunk, std::memory_order_relaxed);
++        } else if (p != -1) {
+             sceKernelReleaseDirectMemory(p, Chunk);
+             g_committed.fetch_sub(Chunk, std::memory_order_relaxed);
+         }
+@@ -278,9 +318,20 @@ void DecommitLazy(void* addr, std::size_t size) {
+         if (phys == -1) {
+             continue;
+         }
++        void* at = reinterpret_cast<void*>(a);
++        if (phys == InSystemFlexible) {
++            // Unmap the pages (that is what returns them to the pool), then reserve the address again.
++            sceKernelMunmap(at, Chunk);
++            at = reinterpret_cast<void*>(a);
++            sceKernelReserveVirtualRange(&at, Chunk, MapFixed, Chunk); // best effort, as below
++            r->phys[index].store(-1, std::memory_order_release);
++            g_flex_used.fetch_sub(Chunk, std::memory_order_relaxed);
++            g_committed.fetch_sub(Chunk, std::memory_order_relaxed);
++            g_decommitted.fetch_add(Chunk, std::memory_order_relaxed);
++            continue;
++        }
+         // Put a reservation back over the chunk (replacing the mapping), so the address stays
+         // ours; then the physical memory can go.
+-        void* at = reinterpret_cast<void*>(a);
+         if (sceKernelReserveVirtualRange(&at, Chunk, MapFixed, Chunk) != 0) {
+             at = reinterpret_cast<void*>(a);
+             sceKernelMunmap(at, Chunk);
+@@ -305,8 +356,14 @@ void OnGuestRamFreed(std::size_t offset, std::size_t size) {
+     }
+ }
+ 
++void ConfigureSystemFlexible(SystemFlexibleMap map, std::size_t budget_bytes) {
++    g_flex_budget.store(budget_bytes, std::memory_order_relaxed);
++    g_flex_map.store(budget_bytes != 0 ? map : nullptr, std::memory_order_release);
++}
++
+ Stats GetStats() {
+-    return {g_reserved.load(), g_committed.load(), g_failures.load(), g_decommitted.load()};
++    return {g_reserved.load(),     g_committed.load(),  g_failures.load(),
++            g_decommitted.load(),  g_flex_used.load(),  g_flex_refusals.load()};
+ }
+ 
+ } // namespace Common::Orbis
+diff --git a/src/common/orbis_lazy_memory.h b/src/common/orbis_lazy_memory.h
+index 6e52b44..f9d57d6 100644
+--- a/src/common/orbis_lazy_memory.h
++++ b/src/common/orbis_lazy_memory.h
+@@ -48,11 +48,24 @@ void SetGuestRamBase(void* base, std::size_t size);
+ /// Called when the emulated kernel frees guest physical memory: offset from the start of DRAM.
+ void OnGuestRamFreed(std::size_t offset, std::size_t size);
+ 
++/// sceKernelMapNamedSystemFlexibleMemory's signature. The caller finds the function (it is not in every SDK's
++/// stub library) and hands it over, so this file needs no extra import.
++using SystemFlexibleMap = std::int32_t (*)(void** addr, std::size_t len, std::int32_t prot, std::int32_t flags,
++                                           const char* name);
++
++/// Lets the 64 KiB chunks take their memory from the console's system flexible pool, which is not part of the
++/// ~4.5 GiB of direct memory, until `budget_bytes` have been taken; after that, or if the pool refuses a chunk,
++/// direct memory is used as before. A null `map` or a budget of 0 switches it off. Chunks already committed stay
++/// where they are. (Idea from Eden4, whose C heap lives in this pool.)
++void ConfigureSystemFlexible(SystemFlexibleMap map, std::size_t budget_bytes);
++
+ struct Stats {
+     std::size_t reserved_bytes;
+     std::size_t committed_bytes;
+     std::size_t commit_failures;
+     std::size_t decommitted_bytes;
++    std::size_t system_flexible_bytes;    // of committed_bytes: the part that sits in system flexible memory
++    std::size_t system_flexible_refusals; // chunks the pool refused (it then stops being asked)
+ };
+ Stats GetStats();
+ 
+-- 
+2.43.0
+

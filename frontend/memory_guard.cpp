@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <string>
 
 #include "memory_guard.h"
 
@@ -99,6 +100,25 @@ Plan PlanFor(Profile profile, Tier detected) {
     }
     plan.vram_in_arena = profile == Profile::Strict;
     return plan;
+}
+
+bool ParseSystemFlexibleCap(std::string_view text, std::uint64_t* out_mib) {
+    for (const std::uint64_t mib : {0ull, 128ull, 256ull, 384ull, 512ull}) {
+        if (text == (mib == 0 ? std::string("off") : std::to_string(mib))) {
+            *out_mib = mib;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::uint64_t SystemFlexibleBudgetMiB(std::uint64_t cap_mib, std::uint64_t pool_mib) {
+    if (cap_mib == 0 || pool_mib < SystemFlexibleReserveMiB + SystemFlexibleStepMiB) {
+        return 0;
+    }
+    const std::uint64_t spare = pool_mib - SystemFlexibleReserveMiB;
+    const std::uint64_t budget = std::min(cap_mib, spare);
+    return budget / SystemFlexibleStepMiB * SystemFlexibleStepMiB;
 }
 
 Watch::Watch(std::uint64_t low_mib, std::uint64_t critical_mib) : low_(low_mib), critical_(std::min(critical_mib, low_mib)) {}

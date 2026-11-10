@@ -46,6 +46,19 @@ struct Plan {
 /// `detected` is the tier measured on this console; a profile other than Auto replaces it.
 Plan PlanFor(Profile profile, Tier detected);
 
+/// 0.9.0, settings.txt: sysflex_mib=off|128|256|384|512 - how much of the console's SYSTEM FLEXIBLE memory pool
+/// the game's guest RAM may use. That pool is not part of the ~4.5 GiB of direct memory the rest of this file is
+/// about (Eden4 keeps its whole C heap there), so every MiB taken from it is a MiB of direct memory kept free.
+/// "off" is 0 and the default.
+bool ParseSystemFlexibleCap(std::string_view text, std::uint64_t* out_mib);
+/// What is left to the system (its own libraries and thread objects come from the same pool): never taken.
+constexpr std::uint64_t SystemFlexibleReserveMiB = 128;
+/// The probe and the budget move in steps of this size.
+constexpr std::uint64_t SystemFlexibleStepMiB = 32;
+/// The budget actually used: the cap, but at most what the pool had free at start minus the reserve (`pool_mib`, as
+/// found by a probe), in whole steps. 0 when the cap is 0 or the pool has less than the reserve plus one step to spare.
+std::uint64_t SystemFlexibleBudgetMiB(std::uint64_t cap_mib, std::uint64_t pool_mib);
+
 enum class Stage { Ok, Low, Critical };
 enum class Action { Warn, Pause }; // settings.txt: memory_action=warn|pause
 bool ParseAction(std::string_view text, Action* out);

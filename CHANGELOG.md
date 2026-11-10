@@ -2,6 +2,49 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.0] - Eden4 read in full, game memory in the system flexible pool, and a README that is checked against the code
+
+**Not built or run on a console by the author of this change.** The new patch (0029) was applied with `git am --keep-cr` the way
+`scripts/fetch-eden.sh` does, and the lazy-memory file it changes was rebuilt from the patches and run on a PC against a model of the
+kernel calls (`tests/lazy_memory_test.sh`, 29 checks with address and undefined-behaviour sanitizers, identical over 12 runs). The
+frontend change was checked by compiling `ps4_platform.cpp` against stand-ins for the SDK (only the four errors that were already
+there). The other host tests pass. Nothing here proves that the console's system flexible pool exists on firmware 12.02 or how big it is.
+
+**Eden4 analysed.** A new unofficial PS4 port of Eden, `Eden4-1.0.0-experimental`, was read part by part (see `docs/EDEN4.md`): what it
+does, what this project already has, what was taken and what was not, with the reason for each. Short version: the memory idea was
+taken; its Dynarmic JIT changes (the likeliest speed gain), its reclaim-and-retry in the Vulkan staging pool, a 16 MiB VMA block, its
+HOME menu and a seventh-core package variant were not, because none of them can be verified without a console and some overlap this
+repository's patches. They are listed there as next steps. The Eden4 author's name is not in its package, so it is credited by project name
+(README, `NOTICE.md`).
+
+**New: `sysflex_mib`, game memory in the system flexible pool (off by default).** Eden4 keeps its C heap in the PS4's *system flexible
+memory*, a pool that is not part of the ~4.5 GiB of direct memory that the Odyssey run exhausted. Here the C heap is not in this repository
+(it is `orbis-compat`), but the part that grows while a game loads is: the 64 KiB lazy chunks of guest RAM and of Eden's tables.
+- **Patch 0029** lets those chunks take memory from the pool until a budget is used, then, or when the pool refuses a chunk, from direct memory
+  as before (a refusal switches the pool off for the rest of the run). With no call or no budget nothing changes. A chunk is zeroed, as the
+  direct path does, and given back with `sceKernelMunmap`.
+- **The frontend** looks the call up (`sceKernelMapNamedSystemFlexibleMemory`: the SDK's stub library, else `sceKernelDlsym` on libkernel),
+  probes how much the pool can map at once (hints `0x1000000000`, `0x800000000`, `0x600000000`, a block unmapped right after), keeps 128 MiB
+  of it for the system, and passes the rest as the budget.
+- **Menu and `settings.txt`:** `sysflex_mib=off|128|256|384|512` (CPU AND MEMORY tab, "Game RAM in system flexible memory"). The quick
+  profile "Minimum RAM (test)" sets 384. Safe mode turns it off like the other experimental lines.
+- **How to tell whether it worked, in `boot.log`:** `system flexible memory: cap N MiB, the pool could map M MiB at once, reserve 128 MiB ->
+  budget B MiB for guest memory` at the start (or `not available on this console or SDK`, or `probe of N MiB refused`), and the `status:` line
+  now says how many MiB of the committed guest memory are `in system flexible memory`. The largest free direct block in the same line should
+  stay higher than before by about that amount.
+- **Not known:** whether this firmware offers the pool to a homebrew process, how large it is, and whether the kernel counts these pages
+  against something else. It is off so that a wrong guess costs nothing; turn it on and read the log.
+
+**Changed: README rewritten** for what the project is now (it described v0.1.0), with the games tried and their measured speeds taken from
+the logs, what is confirmed on a console and what is not, and the credits, Eden4 first among the new ones. **New:** `docs/SETTINGS.md`
+(every option and profile, generated from the menu's own catalog by `tools/settings-doc.cpp`), `docs/EDEN4.md`, an Eden4 section in
+`NOTICE.md`, `docs/INSTALL.md` brought up to date, and `tests/docs_check.sh`, which fails when the README, `docs/SETTINGS.md`, `NOTICE.md` or
+`docs/EDEN4.md` disagree with the code (version, number of patches, options and profiles named, links, credits). The GitHub workflow that runs
+the host tests cannot be changed by an update zip, so run it by hand: `bash tests/docs_check.sh` and `bash tests/lazy_memory_test.sh`.
+
+**Still open (honest):** the console runs of 0.8.4, 0.8.5 and 0.9.0 are missing, the Odyssey gap is estimated at 270-470 MiB after 0.8.5 and
+this option may or may not close it, the JIT work from Eden4 is not done, and naming the biggest heap owners needs the ELF of the build.
+
 ## [0.8.5] - The 256 MiB buffer found, and cut in half
 
 **Not built or run on a console by the author of this change.** The patch was applied with `git am --keep-cr` (the way

@@ -56,6 +56,9 @@ inline bool IsExperimental(std::string_view key, std::string_view value) {
     if (key == "cpu_ticks") {
         return value != "off";
     }
+    if (key == "sysflex_mib") {
+        return value != "off";
+    }
     if (key == "async_presentation" || key == "skip_cpu_invalidation" || key == "auto_stub") {
         return value == "on";
     }

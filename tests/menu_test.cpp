@@ -141,6 +141,7 @@ void TestSettingsFile() {
         check("overlay_flip_stamp", {"on", "off"}, "on");
         check("memory_profile", {"auto", "roomy", "standard", "tight", "strict"}, "auto");
         check("memory_action", {"warn", "pause"}, "pause"); // 0.8.4: pause by default
+        check("sysflex_mib", {"off", "128", "256", "384", "512"}, "off"); // 0.9.0: off by default
         check("env:ORBIS_ARENA_MIB", {"1024", "1152", "1280", "1536", "1792"}, "1280");
         check("shader_preload", {"0", "128", "256", "1024", "4096", "all"}, "all"); // 0.7.7: no limit by default
         SettingsFile f("overlay_mode=classic\nmemory_profile=tight\nmemory_action=pause\n");

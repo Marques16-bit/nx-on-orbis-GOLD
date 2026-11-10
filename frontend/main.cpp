@@ -594,6 +594,8 @@ void ApplyPs4Settings() {
 // 0.8.4: pause is the default. A Super Mario Odyssey run fell from 1790 MiB to 58 MiB free and died 7 s after the
 // critical level; pausing there turns that crash into a choice (continue, restart, back to the list).
 Ps4Memory::Action g_memory_action = Ps4Memory::Action::Pause;
+/// 0.9.0, settings.txt: sysflex_mib - how much system flexible memory the guest RAM may use (0 = off, the default).
+std::uint64_t g_sysflex_cap_mib = 0;
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
@@ -675,6 +677,9 @@ void ApplyMemoryPlan() {
 ///   overlay_delay=0|1|2|4|8     classic: ms the GPU gets to finish a frame before the HUD is drawn into it (default 2)
 ///   memory_profile=auto|roomy|standard|tight|strict  0.7.6: arena, shader preload and driver cache for this
 ///                               console's memory (default auto: chosen from the direct memory it gives; see memory_guard.h)
+///   sysflex_mib=off|128|256|384|512  0.9.0: guest RAM may take up to N MiB of the console's system flexible memory
+///                               (outside the ~4.5 GiB of direct memory), keeping 128 MiB of that pool for the
+///                               system; default off. Idea from Eden4. Ignored in safe mode.
 ///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
@@ -784,6 +789,8 @@ void ApplySettingsFile() {
             // Already applied by ApplyMemoryPlan(), before this file's other lines.
         } else if (key == "autoshot" && (value == "on" || value == "off")) {
             g_autoshot = value == "on";
+        } else if (key == "sysflex_mib" && Ps4Memory::ParseSystemFlexibleCap(value, &g_sysflex_cap_mib)) {
+            // Applied by ConfigureSystemFlexible() after this file is read, before the core starts.
         } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
             g_memory_action = value == "pause" ? Ps4Memory::Action::Pause : Ps4Memory::Action::Warn;
         } else if (key == "driver_cache" && (value == "on" || value == "off")) {
@@ -1059,6 +1066,7 @@ int main() {
     ApplyPs4Settings();
     ApplyMemoryPlan();
     ApplySettingsFile();
+    Ps4::ConfigureSystemFlexible(g_sysflex_cap_mib);
     Core::System system;
     system.Initialize();
     InputCommon::InputSubsystem input;
@@ -1545,9 +1553,10 @@ int main() {
             last_status = Ps4::NowUs();
             const auto perf = system.GetAndResetPerfStats();
             const auto mem = Common::Orbis::GetStats();
-            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB given back), largest free direct block %lu MiB (%s, %+.0f MiB/min), shaders built %d",
+            Ps4::Log("status: game %.1f fps, speed %.0f%%, frame %.1f ms, guest+tables %lu MiB committed (%lu MiB in system flexible memory, %lu MiB given back), largest free direct block %lu MiB (%s, %+.0f MiB/min), shaders built %d",
                      perf.average_game_fps, perf.emulation_speed * 100.0, perf.frametime * 1000.0,
                      static_cast<unsigned long>(mem.committed_bytes >> 20),
+                     static_cast<unsigned long>(mem.system_flexible_bytes >> 20),
                      static_cast<unsigned long>(mem.decommitted_bytes >> 20),
                      static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20), stage_name(mem_status.stage),
                      mem_status.trend_mib_per_min, shaders_total);

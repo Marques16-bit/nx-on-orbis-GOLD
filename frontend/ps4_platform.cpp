@@ -25,6 +25,7 @@
 #include <orbis_log.h>
 
 #include "common/orbis_lazy_memory.h"
+#include "memory_guard.h"
 #include "ps4_platform.h"
 
 extern "C" {
@@ -50,6 +51,12 @@ int32_t sceSystemServiceLoadExec(const char* path, char* const argv[]) __attribu
 // does. sceKernelDlsym finds it by name at run time. Weak for the same reason: if the stub library lacks
 // it too, the link still works and RestartApp() says so.
 int32_t sceKernelDlsym(int32_t handle, const char* symbol, void** address) __attribute__((weak));
+// 0.9.0: the system flexible memory pool (see ConfigureSystemFlexible). Weak, like sceSystemServiceLoadExec above:
+// not every SDK's stub library exports it; sceKernelDlsym can still find it in the console's libkernel.
+int32_t sceKernelMapNamedSystemFlexibleMemory(void** addr, size_t len, int32_t prot, int32_t flags, const char* name)
+    __attribute__((weak));
+int32_t sceKernelReserveVirtualRange(void** addr, size_t len, int32_t flags, size_t alignment);
+int32_t sceKernelMunmap(void* addr, size_t len);
 // Hooked by frontend.cmake (--wrap): the number of builder threads Eden's pipeline cache starts comes from it.
 unsigned __real__ZNSt3__16thread20hardware_concurrencyEv() __attribute__((weak));
 }
@@ -1100,6 +1107,79 @@ std::uint64_t FreeDirectMemory() {
 
 std::uint64_t DirectMemoryTotal() {
     return sceKernelGetDirectMemorySize();
+}
+
+namespace {
+
+using SystemFlexibleMapFn = int32_t (*)(void**, size_t, int32_t, int32_t, const char*);
+
+SystemFlexibleMapFn FindSystemFlexibleMap() {
+    if (&sceKernelMapNamedSystemFlexibleMemory != nullptr) {
+        Log("system flexible memory: the SDK's stub library exports sceKernelMapNamedSystemFlexibleMemory");
+        return sceKernelMapNamedSystemFlexibleMemory;
+    }
+    if (&sceKernelDlsym == nullptr) {
+        Log("system flexible memory: not in the SDK's stub library, and this SDK has no sceKernelDlsym either");
+        return nullptr;
+    }
+    void* address = nullptr;
+    // 0x2001 is libkernel's module handle in every process homebrew has been seen to start.
+    const int32_t rc = sceKernelDlsym(0x2001, "sceKernelMapNamedSystemFlexibleMemory", &address);
+    Log("system flexible memory: sceKernelDlsym(libkernel, sceKernelMapNamedSystemFlexibleMemory) = 0x%08x, address %p",
+        static_cast<unsigned>(rc), address);
+    return rc == 0 && address != nullptr ? reinterpret_cast<SystemFlexibleMapFn>(address) : nullptr;
+}
+
+/// The most the pool can give right now, up to `max_mib`, in steps: maps a block, unmaps it at once. The block is put
+/// well away from where the kernel library keeps its own objects (Eden4 found those land at 0x200000000).
+std::uint64_t ProbeSystemFlexibleMiB(SystemFlexibleMapFn map, std::uint64_t max_mib) {
+    constexpr std::uint64_t Step = Ps4Memory::SystemFlexibleStepMiB;
+    constexpr size_t Align = 16 * 1024;
+    constexpr int32_t ProtRw = 0x3;
+    constexpr int32_t MapFixed = 0x10;
+    for (std::uint64_t mib = max_mib; mib >= Ps4Memory::SystemFlexibleReserveMiB + Step; mib -= Step) {
+        const size_t len = static_cast<size_t>(mib) << 20;
+        void* at = nullptr;
+        for (const std::uintptr_t hint : {std::uintptr_t{0x1000000000}, std::uintptr_t{0x800000000}, std::uintptr_t{0x600000000}}) {
+            void* want = reinterpret_cast<void*>(hint);
+            if (sceKernelReserveVirtualRange(&want, len, 0, Align) == 0 && reinterpret_cast<std::uintptr_t>(want) >= 0x400000000ull) {
+                at = want;
+                break;
+            }
+        }
+        if (at == nullptr) {
+            Log("system flexible memory: no address range to probe %lu MiB in", static_cast<unsigned long>(mib));
+            return 0;
+        }
+        void* mapped = at;
+        const int32_t rc = map(&mapped, len, ProtRw, MapFixed, "eden probe");
+        sceKernelMunmap(at, len); // the probe block, or just the reservation when the pool said no
+        if (rc == 0) {
+            return mib;
+        }
+        Log("system flexible memory: probe of %lu MiB refused (0x%08x)", static_cast<unsigned long>(mib), static_cast<unsigned>(rc));
+    }
+    return 0;
+}
+
+} // namespace
+
+void ConfigureSystemFlexible(std::uint64_t cap_mib) {
+    if (cap_mib == 0) {
+        Log("system flexible memory: off (sysflex_mib=off); all guest memory comes from direct memory");
+        return;
+    }
+    const SystemFlexibleMapFn map = FindSystemFlexibleMap();
+    if (map == nullptr) {
+        Log("system flexible memory: not available on this console or SDK; all guest memory comes from direct memory");
+        return;
+    }
+    const std::uint64_t pool_mib = ProbeSystemFlexibleMiB(map, cap_mib + Ps4Memory::SystemFlexibleReserveMiB);
+    const std::uint64_t budget_mib = Ps4Memory::SystemFlexibleBudgetMiB(cap_mib, pool_mib);
+    Log("system flexible memory: cap %lu MiB, the pool could map %lu MiB at once, reserve %lu MiB for the system -> budget %lu MiB for guest memory",
+        static_cast<unsigned long>(cap_mib), static_cast<unsigned long>(pool_mib),
+        static_cast<unsigned long>(Ps4Memory::SystemFlexibleReserveMiB), static_cast<unsigned long>(budget_mib));
+    Common::Orbis::ConfigureSystemFlexible(map, static_cast<std::size_t>(budget_mib) << 20);
 }
 
 } // namespace Ps4

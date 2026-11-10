@@ -107,4 +107,11 @@ std::uint64_t FreeDirectMemory();
 /// measured). 0.7.6: the memory profile (memory_guard.h) is chosen from it.
 std::uint64_t DirectMemoryTotal();
 
+/// 0.9.0: lets the game's lazily committed memory (guest RAM and Eden's tables) take up to `cap_mib` MiB from the
+/// console's system flexible pool instead of direct memory (0 = off, the default). It finds the kernel call, probes
+/// how much of the pool is free, keeps a reserve for the system (memory_guard.h) and logs what it decided; if the
+/// call is missing or the pool is empty nothing changes and everything stays in direct memory. Call it before the
+/// first guest memory is touched.
+void ConfigureSystemFlexible(std::uint64_t cap_mib);
+
 } // namespace Ps4
