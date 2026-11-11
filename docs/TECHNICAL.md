@@ -172,6 +172,31 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `ArchiveOldLog()` (`ps4_platform.cpp`) moves the old boot log to `logs/boot_YYYYMMDD-HHMMSS.log` (the time of its
   last line) before the usual rename, and keeps the newest 8.
 
+## JIT page reuse (0.9.2; never run on a console, code generator never compiled)
+
+The optional pack `patches/eden-jit/0001-...` (four Dynarmic files of the pinned Eden; made against Eden's current Dynarmic sources) gives
+the JIT Eden4's "page reuse" for this port's flat page table.
+
+- **Pass** (`ir/opt_passes.cpp`, `PS4PageReusePass`, run after the usual passes by a wrapper around `Optimize` for A64): walks the block,
+  decomposes each address into an IR root plus constant offsets (through `Add64`/`Sub64` with an immediate, no carry-in, at most 8 deep),
+  and puts accesses with the same root into one group while the group's bytes stay within 256. Exclusive accesses and monitor changes,
+  barriers, supervisor calls, exceptions, cache operations and any access type other than NORMAL, VEC and UNPRIV end the open groups.
+  A group of two or more gets `A64EdenPageLookup(root + lowest offset, span)` placed before its first access, and each member's arg 0 (the
+  location descriptor immediate, unused by the emitters) is set to that instruction's value. Runs only if `ps4_page_reuse` is set and the
+  `UserConfig` is the one Eden builds (`PS4PageReuseConfigWhy`; the reason bits go to `boot.log`). The tested part: `tests/jit_pack_test.sh`.
+- **Producer** (`a64_emit_x64_memory.cpp`, `EmitA64EdenPageLookup`): span inside one page (`offset <= 0x1000 - span`), index inside the
+  range-checked address space, load the entry through r14, marked bit, mask, sign extension; any miss makes the result 0. All scratch
+  registers are allocated before the first branch.
+- **Consumers** (`emit_x64_memory.cpp.inc`, the top of `EmitMemoryRead` and `EmitMemoryWrite`): `test value, value; jz slow`, then the access
+  at `[value + vaddr]`; the out-of-line `slow` path is the usual lookup for that one address (`PS4ReuseSlowLookup`, templated on the config
+  so the A32 build compiles without the A64 members), then the usual fallback call.
+- **Why not the Eden4 code:** its producer and slow path read a two-level table (`page_table_two_level_*`) that Eden does not have; the
+  consumer is table-independent and is kept in the same shape.
+- **What was not checked:** that Xbyak accepts every emitted form, that register allocation holds across the longer-lived value (Eden4 had a
+  bug of this kind, fixed in its build 00.12 with a PC harness that runs Dynarmic against AArch64 programs; it is in Eden4's source at
+  `tools/jit-harness/`, needs Xbyak/fmt/Boost, and is the right next step if the option is to stay), and the pinned Eden's differences from
+  the Dynarmic the patch was made against (`git apply --check` in `scripts/apply-jit-pack.sh` catches changed context, not changed meaning).
+
 ## The system flexible pool (0.9.0; seen working on a console, 0.9.1 enlarges it)
 
 The PS4 gives a process two kinds of RAM that this port uses: **direct memory** (4608 MiB measured, GPU-visible, what runs out) and

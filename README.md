@@ -3,7 +3,7 @@
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
-> **Status: experimental, under development (v0.9.1).** It boots, has its own menu, and runs real games, but
+> **Status: experimental, under development (v0.9.2).** It boots, has its own menu, and runs real games, but
 > slowly: the emulated CPU is the limit, not the GPU. Some games run, some close when the console runs out of
 > memory. It is not a way to play Switch games on a PS4 yet. Everything below says what was **measured on a console**
 > and what was only written and tested on a PC.
@@ -13,12 +13,14 @@ próprio (português e inglês), roda jogos de verdade, mas devagar (o limite é
 roda; o Super Mario Odyssey passou a abrir e a ficar rodando, mas deixa pouca memória livre. A 0.9.0 trouxe a memória
 flexível do sistema (`sysflex_mib`), **que funcionou no console** (os logs voltaram). A 0.9.1 a deixa **ligada por padrão e
 maior** (até 1536 MiB), e traz a opção **Controles (jogadores) de 1 a 4** na aba Sistema, **ainda não testada num console**.
-Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
+A 0.9.2 traz a opção **JIT: reaproveitar a busca de página** (aba CPU e Memória, desligada por padrão): o mesmo efeito do JIT do Eden4,
+escrito para a tabela de páginas deste port; **nunca rodou num console** e o código que gera as instruções nem foi compilado aqui.
+Se não compilar no CI, o build segue sem ela. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
 
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 30 patches in `patches/eden/` |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 30 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
 | Renderer | Vulkan only (`-DENABLE_OPENGL=OFF`), on Mesa RADV "PlayStation 4 Liverpool" (Vulkan 1.3) |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Build | GitHub Actions builds the `.pkg` and the ELF from a tag ([docs/BUILDING.md](docs/BUILDING.md)); [Releases](../../releases) |
@@ -71,7 +73,19 @@ Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **n
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
-## What is new in 0.9.1 (not run on a console)
+## What is new in 0.9.2 (not run on a console)
+
+- **JIT: reuse page lookups** (`jit_page_reuse=on|off`; menu: CPU AND MEMORY tab; **off by default**). The JIT reads the page table once
+  for a group of nearby memory accesses instead of once per access, which is less CPU work (the CPU is what limits every game here). It
+  is the effect of Eden4's "page reuse", written for Eden's own flat page table (Eden4's code needs its two-level table), as an optional
+  patch to Dynarmic in `patches/eden-jit/`. The quick profile "More FPS (test)" turns it on.
+  - **Never run on a console, and its code generator was never compiled** (no Xbyak/fmt/Boost where it was written; the grouping logic was
+    run against a stand-in of the IR, 38 checks). If it does not fit the pinned Eden it is skipped, and if it does not compile the CI
+    builds again without it; `boot.log` says `JIT page reuse: ...` with what happened and how many groups were formed.
+  - Not ported from Eden4: the two-level table, the register allocator changes and the code-cache windows (reasons in
+    [CHANGELOG.md](CHANGELOG.md)).
+
+## What was new in 0.9.1 (not run on a console)
 
 - **Game memory in the system flexible memory is no longer an experiment** (`sysflex_mib`; menu: CPU AND MEMORY tab, "Game RAM in
   system flexible memory"). The PS4 has a second pool, outside the ~4.5 GiB of direct memory that big games run out of, and the
@@ -99,9 +113,10 @@ Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim h
 ## What does not work yet, and what is being tried
 
 - **Speed.** The game's own ARM code, translated to x86 and run on a 2.1 GHz Jaguar core, is the bottleneck. The profile in `boot.log`
-  adds up the busy cores per thread. The biggest lever that is known and not done is the JIT: Eden4 changes Dynarmic's code
-  generation, and that is a project of its own ([docs/EDEN4.md](docs/EDEN4.md)). It needs the pinned Eden's source to check each change
-  against, and that source is not in this repository (see the roadmap).
+  adds up the busy cores per thread. The biggest lever that is known is the JIT: Eden4 changes Dynarmic's code
+  generation ([docs/EDEN4.md](docs/EDEN4.md)). 0.9.2 carries one of its changes, the page lookup reuse, as an optional pack written for
+  this port's page table (off by default, never run on a console); the others are not done. The pinned Eden's source is still not in this
+  repository, so none of this is compiled until the CI does it (see the roadmap).
 - **Memory for Odyssey-sized games.** See above. The numbers: a fixed ~2560 MiB is taken before the game starts (driver arena
   1280, C heap carve-outs, JIT caches, stacks, and the 128 MiB GPU stream buffer since 0.8.5); the game then wants about 1.4 GiB more.
   0.9.0 moved 512 MiB of that out of direct memory; 0.9.1 can move up to 1536 MiB.

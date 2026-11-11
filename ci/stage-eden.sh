@@ -34,6 +34,19 @@ set +e
 cmake --build build-eden --target eden-ps4 -j"$JOBS" -- -k 0 2>&1 | tee build-eden-last.log
 status=${PIPESTATUS[0]}
 set -e
+# 0.9.2: the JIT pack (patches/eden-jit/) is optional. When the build failed inside Dynarmic, or at the link on one of the
+# pack's symbols, and the pack is in the tree, it is taken out and the build runs again: a pack that does not compile costs
+# the pack, not the release. The errors are kept in jit-pack-errors.log (the "jit-pack-errors" artifact) so it can be fixed.
+if [ "$status" != 0 ] && grep -qE 'src/dynarmic/[^ :]*:[0-9]+:[0-9]+: (fatal )?error|A64EdenPageLookup|ps4_page_reuse' build-eden-last.log \
+   && bash scripts/drop-jit-pack.sh deps/eden; then
+    { echo "The build failed with the JIT pack in; these are the errors:"; grep -n -E -B2 -A8 'error' build-eden-last.log | head -n 400; } > jit-pack-errors.log || true
+    echo "::warning::the JIT pack did not compile; building again without it (the errors are in jit-pack-errors.log)"
+    sed -n '1,40p' jit-pack-errors.log || true
+    set +e
+    cmake --build build-eden --target eden-ps4 -j"$JOBS" -- -k 0 2>&1 | tee build-eden-last.log
+    status=${PIPESTATUS[0]}
+    set -e
+fi
 if [ "$status" != 0 ] && grep -q "sceKernelGet.*Temperature" build-eden-last.log; then
     echo "::warning::the SDK has no temperature functions: building the HUD without temperatures"
     cmake -S deps/eden -B build-eden -DEDEN_PS4_HUD_TEMPERATURE=OFF >/dev/null

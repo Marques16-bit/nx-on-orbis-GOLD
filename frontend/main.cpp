@@ -76,6 +76,7 @@
 #include "eden_settings.h"
 #include "firmware_zip.h"
 #include "memory_guard.h"
+#include "jit_pack.h"
 #include "safe_mode.h"
 #include "menu/cover_loader.h"
 #include "menu/menu_ui.h"
@@ -599,6 +600,9 @@ Ps4Memory::Action g_memory_action = Ps4Memory::Action::Pause;
 std::uint64_t g_sysflex_cap_mib = Ps4Memory::SystemFlexibleAutoCapMiB;
 /// 0.9.1, settings.txt: players=1|2|3|4 - how many controllers the game is given (default 1, exactly as before).
 int g_players = 1;
+/// 0.9.2, settings.txt: jit_page_reuse=on|off - Dynarmic shares one page table lookup between nearby memory accesses (the
+/// JIT pack, patches/eden-jit/; default off). Applied before the core starts, read by the JIT when it compiles a block.
+bool g_jit_page_reuse = false;
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
@@ -686,6 +690,8 @@ void ApplyMemoryPlan() {
 ///                               pool has); a start after a death before drawing (safe mode) limits it to 512. Idea from Eden4.
 ///   players=1|2|3|4             0.9.1: controllers given to the game (default 1). Controllers 2-4 are the other users
 ///                               logged in to the console (a second DualShock logs in as a guest on its PS button)
+///   jit_page_reuse=on|off       0.9.2: the JIT looks a page up once for a group of nearby accesses instead of once per access
+///                               (default off; experimental; needs the JIT pack, boot.log says whether the build has it)
 ///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
@@ -803,6 +809,8 @@ void ApplySettingsFile() {
                          value.c_str());
                 g_sysflex_cap_mib = Ps4Memory::SystemFlexibleAutoCapMiB;
             }
+        } else if (key == "jit_page_reuse" && Ps4Jit::ParseSwitch(value, &g_jit_page_reuse)) {
+            // Applied by ApplyJitPack() after this file is read, before the core starts.
         } else if (key == "players" && (value == "1" || value == "2" || value == "3" || value == "4")) {
             g_players = std::atoi(value.c_str()); // applied before the core starts (ConnectPlayers) and in the main loop
         } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
@@ -1089,6 +1097,8 @@ int main() {
         g_sysflex_cap_mib = Ps4Memory::SystemFlexibleProvenMiB;
     }
     Ps4::ConfigureSystemFlexible(g_sysflex_cap_mib);
+    Ps4Jit::Apply(g_jit_page_reuse);
+    Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(g_jit_page_reuse)).c_str());
     if (g_players > 1) {
         const Ps4Eden::Result linked = Ps4Eden::ConnectPlayers(Settings::values, g_players);
         const int opened = Ps4::OpenExtraPads(g_players);
@@ -1622,6 +1632,9 @@ int main() {
             if (!safe_start_cleared && tl.flips_total >= Ps4Safe::OpenedAfterFlips) {
                 safe_start_cleared = true;
                 Ps4Safe::MarkOpened(SafeStartFile()); // the game drew: this start is not a crash
+                if (g_jit_page_reuse) {
+                    Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(true)).c_str()); // how many groups the JIT formed by now
+                }
             }
             if (tl.flips > 0) {
                 Ps4::Log("tl: %lu flips/2s, interval avg %.1f ms max %.0f ms, longer than 34/50/100/250 ms: %lu/%lu/%lu/%lu",
@@ -1639,6 +1652,9 @@ int main() {
     Ps4::SetPhase("leaving");
     Ps4::ArmHangWatch(0);
     Ps4Safe::MarkOpened(SafeStartFile()); // leaving on purpose is not a crash
+    if (g_jit_page_reuse) {
+        Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(true)).c_str());
+    }
     system.Pause();
     {
         const auto mem = Common::Orbis::GetStats();

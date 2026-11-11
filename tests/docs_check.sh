@@ -56,6 +56,9 @@ check "sysflex_mib defaults to auto (README, CHANGELOG 0.9.1)" 'settings_default
 check "sysflex_mib offers auto, off, 256, 512, 768, 1024, 1536 and 2048" 'for v in auto off 256 512 768 1024 1536 2048; do grep "^| \`sysflex_mib\` |" docs/SETTINGS.md | grep -q "\`$v\`" || exit 1; done'
 check "players is an option, 1 to 4, default 1 (README, CHANGELOG 0.9.1)" 'settings_key players && settings_default players 1 && for v in 1 2 3 4; do grep "^| \`players\` |" docs/SETTINGS.md | grep -q "\`$v\`" || exit 1; done'
 check "players is in the SYSTEM tab (README)" 'awk "/^## SYSTEM tab/{f=1;next} /^## /{f=0} f" docs/SETTINGS.md | grep -q "^| \`players\` |"'
+check "jit_page_reuse is an option, off by default, in the CPU AND MEMORY tab (README, CHANGELOG 0.9.2)" '
+    settings_key jit_page_reuse && settings_default jit_page_reuse off && awk "/^## CPU AND MEMORY tab/{f=1;next} /^## /{f=0} f" docs/SETTINGS.md | grep -q "^| \`jit_page_reuse\` |"'
+check "the profile More FPS (test) turns jit_page_reuse on (CHANGELOG 0.9.2)" 'grep "^| More FPS (test) |" docs/SETTINGS.md | grep -q "jit_page_reuse=on"'
 check "memory_action defaults to pause (CHANGELOG 0.8.4)" 'settings_default memory_action pause'
 check "colour_swap is on by default (README)" 'settings_default colour_swap on'
 check "async_shaders is off by default (README, CHANGELOG)" 'settings_default async_shaders off'
@@ -157,6 +160,30 @@ check "docs/EDEN4.md has Taken and Not taken sections" 'grep -q "^## Taken" docs
 check "patch 0029 credits Eden4" 'grep -q "Eden4" patches/eden/0029-*.patch'
 check "patch 0030 exists and changes only the lazy-memory files" '[ "$(grep "^diff --git" patches/eden/0030-*.patch | wc -l | tr -d " ")" = 2 ] && ! grep "^diff --git" patches/eden/0030-*.patch | grep -qv "orbis_lazy_memory"'
 check "the menu text of sysflex_mib credits Eden4" 'grep -q "from Eden4" frontend/menu/settings_model.cpp'
+
+echo "== the JIT pack (0.9.2)"
+check "patches/eden-jit has one patch, and MODE says on or off" '
+    [ "$(ls patches/eden-jit/*.patch | wc -l | tr -d " ")" = 1 ] && grep -qx -E "on|off" patches/eden-jit/MODE'
+check "the pack changes only the four Dynarmic files the docs name" '
+    [ "$(grep "^diff --git" patches/eden-jit/*.patch | wc -l | tr -d " ")" = 4 ] &&
+    for f in ir/opcodes.inc ir/opt_passes.cpp backend/x64/a64_emit_x64_memory.cpp backend/x64/emit_x64_memory.cpp.inc; do grep -q "^diff --git a/src/dynarmic/src/dynarmic/$f " patches/eden-jit/*.patch || exit 1; done'
+check "the pack is off at run time until jit_page_reuse=on (the switch starts false)" 'grep -q "^+bool ps4_page_reuse = false;" patches/eden-jit/*.patch'
+check "the pack keeps the register allocation rule: no scratch register after the first branch in the producer" '
+    awk "/EmitA64EdenPageLookup\(A64EmitContext/{f=1} f&&/ScratchGpr|UseScratchGpr/{last=NR} f&&/code\.(ja|jnz|jc|jz)\(/{first=NR; exit} END{exit !(last && first && last < first)}" patches/eden-jit/*.patch'
+check "apply-jit-pack.sh and drop-jit-pack.sh parse; fetch-eden.sh and stage-eden.sh call them" '
+    bash -n scripts/apply-jit-pack.sh && bash -n scripts/drop-jit-pack.sh && grep -q "apply-jit-pack.sh" scripts/fetch-eden.sh && grep -q "drop-jit-pack.sh" ci/stage-eden.sh'
+for phrase in "does not have the pack" "groups of nearby accesses share a page lookup" "this page table setup is not handled"; do
+    check "jit_pack.h has \"$phrase\"" 'grep -qF -- "$phrase" frontend/jit_pack.h'
+done
+check "CHANGELOG quotes the boot.log lines \"JIT page reuse:\" and the jit-pack-errors artifact" 'grep -qF "JIT page reuse:" CHANGELOG.md && grep -qF "jit-pack-errors" CHANGELOG.md'
+check "the CHANGELOG 0.9.2 entry says the code generator was never compiled or run" 'tr "\n" " " < CHANGELOG.md | tr -s " " | grep -q "never compiled"'
+if out="$(bash tests/jit_pack_test.sh 2>&1)"; then
+    n="$(printf '%s\n' "$out" | grep -c '^  ok')"
+    check "the pass test passes and prints $n checks" 'printf "%s\n" "$out" | grep -q "^all ok"'
+    check "README and CHANGELOG say $n checks for it" 'grep -q "$n checks" README.md && grep -q "$n checks" CHANGELOG.md'
+else
+    bad "tests/jit_pack_test.sh fails"; printf '%s\n' "$out" | tail -n 8 | sed 's/^/        /'
+fi
 
 echo "== the lazy-memory test"
 if out="$(bash tests/lazy_memory_test.sh 2>&1)"; then

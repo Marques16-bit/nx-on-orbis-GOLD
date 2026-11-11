@@ -2,6 +2,52 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.2] - The JIT's page reuse, written for this port's page table (optional, off by default)
+
+**Not built or run on a console by the author of this change, and the part that matters most was never compiled.** What was run: the
+page reuse **pass** (the IR side of the patch) cut out of the patch and run on a PC against a stand-in of Dynarmic's IR
+(`tests/jit_pack_test.sh`, 38 checks: what groups, what ends a group, what the lookup instruction holds, and that the pass changes
+nothing when the switch is off or the table setup is not the expected one); the scripts that apply and take out the pack, on throwaway
+git repositories (fits, does not fit, switched off, taken out); `jit_pack_test`, `safe_mode_test`, `menu_test`, `eden_settings_test`,
+`memory_guard_test` and `tests/docs_check.sh`. **Not run: the code that emits the x86 instructions** (it needs Xbyak, fmt and Boost,
+which are not available where this was written, and the pinned Eden's Dynarmic is not in this repository either: the patch was made
+against Eden's current Dynarmic sources). Nothing of it has run on a console.
+
+**What it is.** Eden4 makes the JIT look a memory page up once for a group of nearby accesses instead of once per access (its "page
+reuse" pass, after ProsperoEden). Eden4 does it on top of its own two-level page table with a "direct" mirror, which this port does not
+have (Eden's flat table is what patches 0007 and 0027 are built on), so the code could not be copied. This is the same effect written for
+the flat table (`patches/eden-jit/0001-...`, four Dynarmic files):
+- an IR pass groups the accesses of a block whose addresses are one value plus constants, within 256 bytes, with no exclusive, ordered,
+  barrier, supervisor call or exception in between; a group of two or more shares one new instruction, `A64EdenPageLookup`, which
+  reads the page table entry once (masked and sign-extended like any lookup, "absolute" offsets) or gives 0 when the span crosses a page
+  or the page must take the callback path;
+- each access of the group tests that value and reads or writes `[entry + address]` directly, or runs its own full lookup out of line
+  (a copy of the usual lookup), or the usual callback; a group never changes what an access does, only how many times the table is read.
+- Every register of the lookup is allocated before its first branch (Eden4's own register allocation bug, found with its PC harness, was
+  a late scratch register in the lookup).
+- The pass only runs for the table setup Eden configures (absolute offsets, 8-byte entries, an address space that is range checked and
+  has at most 42 bits, misalignment checked at page boundaries); with another setup it does nothing and `boot.log` says why.
+
+**Safeguards, because it is unverified.**
+- **Off by default.** Menu, CPU AND MEMORY tab, "JIT: reuse page lookups" (`jit_page_reuse=on` in `settings.txt`); the quick profile "More
+  FPS (test)" turns it on. Safe mode ignores it (it counts as experimental).
+- **It cannot break the build.** `scripts/fetch-eden.sh` applies the pack with `git apply --check` first and skips it, with a warning,
+  if it does not fit the pinned Eden. If it fits but does not compile, `ci/stage-eden.sh` takes it out again and builds a second time
+  without it; the compiler's errors are kept in the `jit-pack-errors` artifact of that run. `patches/eden-jit/MODE` (`on` / `off`) or the
+  variable `NXO_JIT_PACK` leave the pack out on purpose.
+- **`boot.log` says what happened:** `JIT page reuse: ...` once at the start (off / on / "this build does not have the pack"), and
+  again when the game has drawn and when it is left, with the number of groups formed and the accesses in them. Zero groups with the
+  switch on means the pass did not run (the line gives the reason bits).
+
+**Not ported from Eden4, and why.** The two-level table and the direct mirror (a different memory layout); the register allocator changes
+(R13 and moves into callee-saved registers: a separate, riskier change to code every block uses); the code cache protection in windows
+(this port's cache is already writable and executable, patch 0005, so there is no per-block protection to save); Eden4's diagnostics.
+
+**What can still go wrong.** A wrong lookup is a game that hangs, closes or runs wrong, not a build error. A page that another thread
+turns into a "callback" page in the few instructions between a group's lookup and its last access is read directly (the same race the
+ordinary lookup has, with a window of up to 256 bytes of code). To check it: open a game with it off and on, look at the `JIT page
+reuse:` lines and the speed, and send `boot.log`.
+
 ## [0.9.1] - The system flexible pool is no longer an experiment, and up to 4 controllers
 
 **Not built or run on a console by the author of this change.** What was run: patch 0030 applied after 0029 and the lazy-memory file it

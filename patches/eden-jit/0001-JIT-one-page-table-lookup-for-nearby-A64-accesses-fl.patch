@@ -1,0 +1,453 @@
+From e0fa8654b445b573957de47a14a4a57d2d581c41 Mon Sep 17 00:00:00 2001
+From: nx-on-orbis <nx-on-orbis@localhost>
+Date: Wed, 11 Nov 2026 09:06:38 -0300
+Subject: [PATCH] JIT: one page table lookup for nearby A64 accesses (flat
+ table)
+
+Accesses whose addresses are one IR value plus constants, within 256 bytes
+and with no exclusive, ordered or exception-raising operation between them,
+share one A64EdenPageLookup (the page table entry for that page, or 0).
+Each access tests it and accesses memory directly, or runs its own full
+lookup out of line. Same effect as Eden4's page reuse pass, written for the
+flat page table Eden configures; off unless ps4_page_reuse is set.
+---
+ .../backend/x64/a64_emit_x64_memory.cpp       |  49 ++++
+ .../backend/x64/emit_x64_memory.cpp.inc       | 107 +++++++++
+ src/dynarmic/src/dynarmic/ir/opcodes.inc      |   1 +
+ src/dynarmic/src/dynarmic/ir/opt_passes.cpp   | 226 +++++++++++++++++-
+ 4 files changed, 382 insertions(+), 1 deletion(-)
+
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp b/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
+index 8bb2fcf..7c35a99 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
+@@ -431,3 +431,52 @@ void A64EmitX64::EmitCheckMemoryAbort(A64EmitContext&, IR::Inst* inst, Xbyak::La
+ }
+ 
++// nx-on-orbis: the page table entry for a group of nearby accesses (see ir/opt_passes.cpp, PS4PageReusePass),
++// as the emitted lookup of one access leaves it: masked, sign-extended, "absolute" (host - guest), so that
++// [value + vaddr] is the host address of any byte of the page. 0 when the span crosses a page boundary,
++// leaves the address space, or the page must take the callback path (unmapped or marked): the accesses then
++// do their own lookup out of line. Every register is allocated before the first branch.
++void A64EmitX64::EmitA64EdenPageLookup(A64EmitContext& ctx, IR::Inst* inst) {
++    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
++    const u32 span = static_cast<u32>(args[1].GetImmediateU64());
++    const Xbyak::Reg64 host = ctx.reg_alloc.UseScratchGpr(code, args[0]);
++    const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr(code);
++    const size_t valid_page_index_bits = conf.page_table_address_space_bits - page_table_const_bits;
++    SharedLabel none = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
++
++    // The whole span inside one page?
++    code.mov(tmp.cvt32(), host.cvt32());
++    code.and_(tmp.cvt32(), static_cast<u32>(page_table_const_size - 1));
++    code.cmp(tmp.cvt32(), static_cast<u32>(page_table_const_size - span));
++    code.ja(*none, code.T_NEAR);
++    // Inside the address space (it is range checked, not mirrored)?
++    code.shr(host, int(page_table_const_bits));
++    code.test(host, u32(-(1 << valid_page_index_bits)));
++    code.jnz(*none, code.T_NEAR);
++    code.mov(host, code.qword[r14 + host * 8]);
++    if (conf.page_table_marked_bit) {
++        code.bt(host, *conf.page_table_marked_bit);
++        code.jc(*none, code.T_NEAR);
++    }
++    if (conf.page_table_pointer_mask != 0) {
++        if (std::in_range<s32>(conf.page_table_pointer_mask)) {
++            code.and_(host, static_cast<u32>(conf.page_table_pointer_mask));
++        } else {
++            code.mov(tmp, conf.page_table_pointer_mask);
++            code.and_(host, tmp);
++        }
++    }
++    if (conf.page_table_sign_extension) {
++        code.shl(host, *conf.page_table_sign_extension);
++        code.sar(host, *conf.page_table_sign_extension);
++    }
++    // An empty entry leaves 0 here, which the accesses treat like "take the slow path".
++    code.L(*end);
++    ctx.deferred_emits.emplace_back([=, this] {
++        code.L(*none);
++        code.xor_(host.cvt32(), host.cvt32());
++        code.jmp(*end, code.T_NEAR);
++    });
++    ctx.reg_alloc.DefineValue(code, inst, host);
++}
++
+ }  // namespace Dynarmic::Backend::X64
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+index 8bb8be3..5649c80 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
++++ b/src/dynarmic/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+@@ -50,8 +50,90 @@ FakeCall AxxEmitX64::FastmemCallback(u64 rip_) {
+ }
+ 
++// nx-on-orbis (ir/opt_passes.cpp, PS4PageReusePass): the full page table lookup of one access whose group
++// lookup gave 0, out of line. The same steps as EmitVAddrLookup<A64EmitContext> for the configuration the
++// pass accepts (absolute offsets, range checked address space, misalignment checked on page boundaries
++// only). On success `page` is the entry (masked, sign-extended) and [page + vaddr] the host address;
++// otherwise it jumps to `abort`. Templated on the config so that the A32 build, where no access is ever
++// grouped, does not need the A64 members.
++template<typename Config>
++inline void PS4ReuseSlowLookup(BlockOfCode& code, [[maybe_unused]] const Config& conf, [[maybe_unused]] size_t bitsize,
++                               Xbyak::Label& abort, [[maybe_unused]] Xbyak::Reg64 vaddr, [[maybe_unused]] Xbyak::Reg64 page,
++                               [[maybe_unused]] Xbyak::Reg64 idx) {
++    if constexpr (requires { conf.page_table_address_space_bits; }) {
++        const size_t valid_page_index_bits = conf.page_table_address_space_bits - page_table_const_bits;
++        if (bitsize != 8 && (conf.detect_misaligned_access_via_page_table & bitsize) != 0) {
++            const u32 align_mask = static_cast<u32>(bitsize / 8 - 1);
++            const u32 page_align_mask = static_cast<u32>(page_table_const_size - 1) & ~align_mask;
++            Xbyak::Label aligned;
++            code.test(vaddr, align_mask);
++            code.jz(aligned);
++            code.mov(page, vaddr);
++            code.and_(page, page_align_mask);
++            code.cmp(page, page_align_mask);
++            code.je(abort, code.T_NEAR);
++            code.L(aligned);
++        }
++        code.mov(idx, vaddr);
++        code.shr(idx, int(page_table_const_bits));
++        code.test(idx, u32(-(1 << valid_page_index_bits)));
++        code.jnz(abort, code.T_NEAR);
++        code.mov(page, code.qword[r14 + idx * 8]);
++        if (conf.page_table_marked_bit) {
++            code.bt(page, *conf.page_table_marked_bit);
++            code.jc(abort, code.T_NEAR);
++        }
++        if (conf.page_table_pointer_mask != 0) {
++            if (std::in_range<s32>(conf.page_table_pointer_mask)) {
++                code.and_(page, static_cast<u32>(conf.page_table_pointer_mask));
++            } else {
++                code.mov(idx, conf.page_table_pointer_mask);
++                code.and_(page, idx);
++            }
++        }
++        if (conf.page_table_sign_extension) {
++            code.shl(page, *conf.page_table_sign_extension);
++            code.sar(page, *conf.page_table_sign_extension);
++        }
++        code.test(page, page);
++        code.jz(abort, code.T_NEAR);
++    } else {
++        code.jmp(abort, code.T_NEAR);  // not reached: A32 accesses are never grouped
++    }
++}
++
+ template<std::size_t bitsize, auto callback>
+ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     const bool ordered = IsOrdered(args[2].GetImmediateAccType());
++    // nx-on-orbis: a grouped access (PS4PageReusePass); its group's page table entry is in args[0].
++    if (!args[0].IsImmediate()) {
++        const Xbyak::Reg64 host = ctx.reg_alloc.UseGpr(code, args[0]);
++        const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
++        const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr(code);
++        const Xbyak::Reg64 idx = ctx.reg_alloc.ScratchGpr(code);
++        const int value_idx = bitsize == 128 ? ctx.reg_alloc.ScratchXmm(code).getIdx() : ctx.reg_alloc.ScratchGpr(code).getIdx();
++        const auto wrapped_fn = read_fallbacks[std::make_tuple(false, bitsize, vaddr.getIdx(), value_idx)];
++        SharedLabel slow = ctx.GenSharedLabel(), abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
++        code.test(host, host);
++        code.jz(*slow, code.T_NEAR);
++        EmitReadMemoryMov<bitsize>(code, value_idx, host + vaddr, false);
++        ctx.deferred_emits.emplace_back([=, this, &ctx] {
++            code.L(*slow);
++            PS4ReuseSlowLookup(code, conf, bitsize, *abort, vaddr, page, idx);
++            EmitReadMemoryMov<bitsize>(code, value_idx, page + vaddr, false);
++            code.jmp(*end, code.T_NEAR);
++            code.L(*abort);
++            code.call(wrapped_fn);
++            EmitCheckMemoryAbort(ctx, inst, end);
++            code.jmp(*end, code.T_NEAR);
++        });
++        code.L(*end);
++        if constexpr (bitsize == 128) {
++            ctx.reg_alloc.DefineValue(code, inst, Xbyak::Xmm{value_idx});
++        } else {
++            ctx.reg_alloc.DefineValue(code, inst, Xbyak::Reg64{value_idx});
++        }
++        return;
++    }
+     const auto fastmem_marker = ShouldFastmem(ctx, inst);
+ 
+@@ -138,4 +220,29 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     const bool ordered = IsOrdered(args[3].GetImmediateAccType());
++    // nx-on-orbis: a grouped access (PS4PageReusePass); its group's page table entry is in args[0].
++    if (!args[0].IsImmediate()) {
++        const Xbyak::Reg64 host = ctx.reg_alloc.UseGpr(code, args[0]);
++        const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
++        const int value_idx = bitsize == 128 ? ctx.reg_alloc.UseXmm(code, args[2]).getIdx() : ctx.reg_alloc.UseGpr(code, args[2]).getIdx();
++        const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr(code);
++        const Xbyak::Reg64 idx = ctx.reg_alloc.ScratchGpr(code);
++        const auto wrapped_fn = write_fallbacks[std::make_tuple(false, bitsize, vaddr.getIdx(), value_idx)];
++        SharedLabel slow = ctx.GenSharedLabel(), abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
++        code.test(host, host);
++        code.jz(*slow, code.T_NEAR);
++        EmitWriteMemoryMov<bitsize>(code, host + vaddr, value_idx, false);
++        ctx.deferred_emits.emplace_back([=, this, &ctx] {
++            code.L(*slow);
++            PS4ReuseSlowLookup(code, conf, bitsize, *abort, vaddr, page, idx);
++            EmitWriteMemoryMov<bitsize>(code, page + vaddr, value_idx, false);
++            code.jmp(*end, code.T_NEAR);
++            code.L(*abort);
++            code.call(wrapped_fn);
++            EmitCheckMemoryAbort(ctx, inst, end);
++            code.jmp(*end, code.T_NEAR);
++        });
++        code.L(*end);
++        return;
++    }
+     const auto fastmem_marker = ShouldFastmem(ctx, inst);
+ 
+diff --git a/src/dynarmic/src/dynarmic/ir/opcodes.inc b/src/dynarmic/src/dynarmic/ir/opcodes.inc
+index b1ba5b2..d0496a3 100644
+--- a/src/dynarmic/src/dynarmic/ir/opcodes.inc
++++ b/src/dynarmic/src/dynarmic/ir/opcodes.inc
+@@ -713,4 +713,5 @@ A64OPC(ExclusiveWriteMemory32,                              U32,            U64,
+ A64OPC(ExclusiveWriteMemory64,                              U32,            U64,            U64,            U64,            AccType         )
+ A64OPC(ExclusiveWriteMemory128,                             U32,            U64,            U64,            U128,           AccType         )
++A64OPC(EdenPageLookup,                                      U64,            U64,            U64                             )
+ 
+ // Remember to update:
+diff --git a/src/dynarmic/src/dynarmic/ir/opt_passes.cpp b/src/dynarmic/src/dynarmic/ir/opt_passes.cpp
+index b32bbd5..3d95b0d 100644
+--- a/src/dynarmic/src/dynarmic/ir/opt_passes.cpp
++++ b/src/dynarmic/src/dynarmic/ir/opt_passes.cpp
+@@ -1462,5 +1462,221 @@ void Optimize(IR::Block& block, const A32::UserConfig& conf, const Optimization:
+ }
+ 
+-void Optimize(IR::Block& block, const A64::UserConfig& conf, const Optimization::PolyfillOptions& polyfill_options) {
++// ---- nx-on-orbis: one page lookup for nearby A64 accesses --------------------------------------------
++// Accesses whose addresses are one IR value plus constants, all within 256 bytes and with no exclusive,
++// ordered or exception-raising operation between them, share one A64EdenPageLookup: the page table's
++// entry for that page (already masked and sign-extended: host - guest, "absolute offset"), or 0 when the
++// group does not fit one page or the page must take the callback path. Each access then tests that value
++// and accesses memory, or runs its own full lookup out of line (backend/x64/emit_x64_memory.cpp.inc).
++// This is the effect of Eden4's "page reuse" pass (which in turn follows ProsperoEden's page-reuse),
++// written for the flat page table that Eden itself uses; it does not need Eden4's two-level table.
++extern "C" {
++// Set from settings.txt (jit_page_reuse). Read when a block is compiled.
++bool ps4_page_reuse = false;
++// 1 here; the frontend's weak definition of the same name says 0, which is how it knows the pack is not in the build.
++int ps4_page_reuse_present = 1;
++// 0 = no block compiled yet, 1 = active, 2 = switched off, 3 = this page table configuration is not
++// handled (the reason bits are in ps4_page_reuse_why).
++int ps4_page_reuse_status = 0;
++unsigned ps4_page_reuse_why = 0;
++// Groups formed and the accesses they hold (for the log).
++unsigned long long ps4_page_reuse_groups = 0, ps4_page_reuse_accesses = 0;
++}
++
++namespace {
++
++constexpr s64 ps4_reuse_span = 256;
++
++struct PS4Address {
++    IR::Inst* root;
++    s64 offset;
++};
++
++std::optional<PS4Address> PS4DecomposeAddress(IR::Value value) {
++    s64 offset = 0;
++    for (int depth = 0; depth < 8; ++depth) {
++        if (value.IsImmediate()) {
++            return std::nullopt;
++        }
++        IR::Inst* const inst = value.GetInst();
++        const IR::Opcode op = inst->GetOpcode();
++        if (op == IR::Opcode::Identity) {
++            value = inst->GetArg(0);
++            continue;
++        }
++        if ((op == IR::Opcode::Add64 || op == IR::Opcode::Sub64) && inst->GetArg(2).IsImmediate() && !inst->GetArg(2).GetU1()) {
++            const bool right = inst->GetArg(1).IsImmediate();
++            const bool left = op == IR::Opcode::Add64 && inst->GetArg(0).IsImmediate();
++            if (right || left) {
++                const s64 constant = static_cast<s64>(inst->GetArg(right ? 1 : 0).GetImmediateAsU64());
++                if (constant < -(s64{1} << 20) || constant > (s64{1} << 20)) {
++                    return PS4Address{inst, offset};
++                }
++                offset += op == IR::Opcode::Add64 ? constant : -constant;
++                value = inst->GetArg(right ? 0 : 1);
++                continue;
++            }
++        }
++        return PS4Address{inst, offset};
++    }
++    return std::nullopt;
++}
++
++// Bytes accessed, or 0 for an operation this pass leaves alone.
++size_t PS4ReusableBytes(const IR::Inst& inst) {
++    switch (inst.GetOpcode()) {
++    case IR::Opcode::A64ReadMemory8: case IR::Opcode::A64WriteMemory8: return 1;
++    case IR::Opcode::A64ReadMemory16: case IR::Opcode::A64WriteMemory16: return 2;
++    case IR::Opcode::A64ReadMemory32: case IR::Opcode::A64WriteMemory32: return 4;
++    case IR::Opcode::A64ReadMemory64: case IR::Opcode::A64WriteMemory64: return 8;
++    case IR::Opcode::A64ReadMemory128: case IR::Opcode::A64WriteMemory128: return 16;
++    default: return 0;
++    }
++}
++
++bool PS4IsWrite(IR::Opcode op) {
++    return op == IR::Opcode::A64WriteMemory8 || op == IR::Opcode::A64WriteMemory16 || op == IR::Opcode::A64WriteMemory32 ||
++           op == IR::Opcode::A64WriteMemory64 || op == IR::Opcode::A64WriteMemory128;
++}
++
++// Operations after which a group's lookup is not reused: exclusive accesses and monitor changes,
++// barriers, supervisor calls, exceptions and cache maintenance.
++bool PS4EndsGroups(IR::Opcode op) {
++    switch (op) {
++    case IR::Opcode::A64CallSupervisor:
++    case IR::Opcode::A64ExceptionRaised:
++    case IR::Opcode::A64DataCacheOperationRaised:
++    case IR::Opcode::A64InstructionCacheOperationRaised:
++    case IR::Opcode::A64DataMemoryBarrier:
++    case IR::Opcode::A64DataSynchronizationBarrier:
++    case IR::Opcode::A64InstructionSynchronizationBarrier:
++    case IR::Opcode::A64ClearExclusive:
++    case IR::Opcode::A64ExclusiveReadMemory8:
++    case IR::Opcode::A64ExclusiveReadMemory16:
++    case IR::Opcode::A64ExclusiveReadMemory32:
++    case IR::Opcode::A64ExclusiveReadMemory64:
++    case IR::Opcode::A64ExclusiveReadMemory128:
++    case IR::Opcode::A64ExclusiveWriteMemory8:
++    case IR::Opcode::A64ExclusiveWriteMemory16:
++    case IR::Opcode::A64ExclusiveWriteMemory32:
++    case IR::Opcode::A64ExclusiveWriteMemory64:
++    case IR::Opcode::A64ExclusiveWriteMemory128:
++        return true;
++    default:
++        return false;
++    }
++}
++
++// The page table configuration this pass (and its emitters) handle: the flat table Eden configures for
++// the A64 JIT, read through r14, 8-byte entries, absolute offsets, an address space that is range checked
++// rather than mirrored and has at most 30 page index bits, page-boundary-only misalignment detection.
++// Returns the bits of what does not fit (0 = fine).
++unsigned PS4PageReuseConfigWhy(const A64::UserConfig& conf) {
++    unsigned why = 0;
++    if (!conf.page_table) why |= 1u << 0;
++    if (conf.fastmem_pointer) why |= 1u << 1;
++    if (conf.check_halt_on_memory_access) why |= 1u << 2;
++    if (!conf.absolute_offset_page_table) why |= 1u << 3;
++    if (conf.silently_mirror_page_table) why |= 1u << 4;
++    if (conf.page_table_log2_stride != 3) why |= 1u << 5;
++    if (conf.page_table_address_space_bits <= 12 || conf.page_table_address_space_bits > 42) why |= 1u << 6;
++    if (!conf.only_detect_misalignment_via_page_table_on_page_boundary) why |= 1u << 7;
++    if (conf.page_table_marked_bit && *conf.page_table_marked_bit > 63) why |= 1u << 8;
++    if (conf.page_table_sign_extension && (*conf.page_table_sign_extension == 0 || *conf.page_table_sign_extension > 63)) why |= 1u << 9;
++    return why;
++}
++
++// Returns whether the block changed.
++bool PS4PageReusePass(IR::Block& block, const A64::UserConfig& conf) {
++    if (!ps4_page_reuse) {
++        ps4_page_reuse_status = 2;
++        return false;
++    }
++    if (const unsigned why = PS4PageReuseConfigWhy(conf); why != 0) {
++        ps4_page_reuse_why = why;
++        ps4_page_reuse_status = 3;
++        return false;
++    }
++    ps4_page_reuse_status = 1;
++    struct Member {
++        IR::Block::iterator at;
++        s64 offset;
++    };
++    struct Group {
++        IR::Inst* root;
++        s64 low, high;
++        boost::container::small_vector<Member, 8> members;
++    };
++    boost::container::small_vector<Group, 8> closed;
++    boost::container::small_vector<Group, 8> open;
++    const auto close_all = [&] {
++        for (auto& group : open) {
++            closed.push_back(std::move(group));
++        }
++        open.clear();
++    };
++    for (auto it = block.instructions.begin(); it != block.instructions.end(); ++it) {
++        IR::Inst& inst = *it;
++        if (PS4EndsGroups(inst.GetOpcode())) {
++            close_all();
++            continue;
++        }
++        const size_t bytes = PS4ReusableBytes(inst);
++        if (bytes == 0 || !inst.GetArg(0).IsImmediate()) {
++            continue;
++        }
++        const IR::AccType type = inst.GetArg(PS4IsWrite(inst.GetOpcode()) ? 3 : 2).GetAccType();
++        if (type != IR::AccType::NORMAL && type != IR::AccType::VEC && type != IR::AccType::UNPRIV) {
++            close_all();
++            continue;
++        }
++        const auto address = PS4DecomposeAddress(inst.GetArg(1));
++        if (!address) {
++            continue;
++        }
++        const s64 end = address->offset + static_cast<s64>(bytes);
++        auto group = std::find_if(open.begin(), open.end(), [&](const Group& g) { return g.root == address->root; });
++        if (group != open.end()) {
++            const s64 low = std::min(group->low, address->offset), high = std::max(group->high, end);
++            if (high - low <= ps4_reuse_span) {
++                group->low = low;
++                group->high = high;
++                group->members.push_back({it, address->offset});
++                continue;
++            }
++            closed.push_back(std::move(*group));
++            open.erase(group);
++        }
++        Group fresh{address->root, address->offset, end, {}};
++        fresh.members.push_back({it, address->offset});
++        open.push_back(std::move(fresh));
++    }
++    close_all();
++    bool changed = false;
++    for (const Group& group : closed) {
++        if (group.members.size() < 2) {
++            continue;
++        }
++        const IR::Block::iterator first = group.members.front().at;
++        IR::Value low{group.root};
++        if (group.low != 0) {
++            low = IR::Value{&*block.PrependNewInst(first, IR::Opcode::Add64,
++                {IR::Value{group.root}, IR::Value{static_cast<u64>(group.low)}, IR::Value{false}})};
++        }
++        IR::Inst* const lookup = &*block.PrependNewInst(first, IR::Opcode::A64EdenPageLookup,
++            {low, IR::Value{static_cast<u64>(group.high - group.low)}});
++        for (const Member& member : group.members) {
++            member.at->SetArg(0, IR::Value{lookup});
++        }
++        __atomic_fetch_add(&ps4_page_reuse_groups, 1ull, __ATOMIC_RELAXED);
++        __atomic_fetch_add(&ps4_page_reuse_accesses, static_cast<unsigned long long>(group.members.size()), __ATOMIC_RELAXED);
++        changed = true;
++    }
++    return changed;
++}
++
++}  // namespace
++// ---- end of nx-on-orbis page reuse ---------------------------------------------------------------------
++
++static void OptimizeA64Core(IR::Block& block, const A64::UserConfig& conf, const Optimization::PolyfillOptions& polyfill_options) {
+     Optimization::PolyfillPass(block, polyfill_options);
+     Optimization::A64CallbackConfigPass(block, conf);
+@@ -1480,3 +1696,11 @@ void Optimize(IR::Block& block, const A64::UserConfig& conf, const Optimization:
+ }
+ 
++// A64: the usual passes, then nx-on-orbis' page reuse pass (a no-op unless jit_page_reuse=on).
++void Optimize(IR::Block& block, const A64::UserConfig& conf, const Optimization::PolyfillOptions& polyfill_options) {
++    OptimizeA64Core(block, conf, polyfill_options);
++    if (PS4PageReusePass(block, conf) && !conf.HasOptimization(OptimizationFlag::DisableVerification)) {
++        Optimization::VerificationPass(block);
++    }
++}
++
+ }  // namespace Dynarmic::Optimization
+-- 
+2.43.0
+
