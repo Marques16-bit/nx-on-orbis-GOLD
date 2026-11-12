@@ -603,6 +603,9 @@ int g_players = 1;
 /// 0.9.2, settings.txt: jit_page_reuse=on|off - Dynarmic shares one page table lookup between nearby memory accesses (the
 /// JIT pack, patches/eden-jit/; default off). Applied before the core starts, read by the JIT when it compiles a block.
 bool g_jit_page_reuse = false;
+/// 0.9.3, settings.txt: jit_direct_table=on|off - Dynarmic reads a decoded copy of the page table (the JIT pack's part 2; default off).
+/// Applied before the core starts: the copy is made when the first page table is sized.
+bool g_jit_direct_table = false;
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
@@ -692,6 +695,8 @@ void ApplyMemoryPlan() {
 ///                               logged in to the console (a second DualShock logs in as a guest on its PS button)
 ///   jit_page_reuse=on|off       0.9.2: the JIT looks a page up once for a group of nearby accesses instead of once per access
 ///                               (default off; experimental; needs the JIT pack, boot.log says whether the build has it)
+///   jit_direct_table=on|off     0.9.3: the JIT reads a decoded copy of the page table: four instructions fewer per memory access
+///                               (default off; experimental; needs part 2 of the JIT pack, boot.log says whether the build has it)
 ///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
@@ -811,6 +816,8 @@ void ApplySettingsFile() {
             }
         } else if (key == "jit_page_reuse" && Ps4Jit::ParseSwitch(value, &g_jit_page_reuse)) {
             // Applied by ApplyJitPack() after this file is read, before the core starts.
+        } else if (key == "jit_direct_table" && Ps4Jit::ParseSwitch(value, &g_jit_direct_table)) {
+            // Likewise.
         } else if (key == "players" && (value == "1" || value == "2" || value == "3" || value == "4")) {
             g_players = std::atoi(value.c_str()); // applied before the core starts (ConnectPlayers) and in the main loop
         } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
@@ -1099,6 +1106,8 @@ int main() {
     Ps4::ConfigureSystemFlexible(g_sysflex_cap_mib);
     Ps4Jit::Apply(g_jit_page_reuse);
     Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(g_jit_page_reuse)).c_str());
+    Ps4Jit::ApplyDirect(g_jit_direct_table);
+    Ps4::Log("%s", Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(g_jit_direct_table)).c_str());
     if (g_players > 1) {
         const Ps4Eden::Result linked = Ps4Eden::ConnectPlayers(Settings::values, g_players);
         const int opened = Ps4::OpenExtraPads(g_players);
@@ -1635,6 +1644,9 @@ int main() {
                 if (g_jit_page_reuse) {
                     Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(true)).c_str()); // how many groups the JIT formed by now
                 }
+                if (g_jit_direct_table) {
+                    Ps4::Log("%s", Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(true)).c_str());
+                }
             }
             if (tl.flips > 0) {
                 Ps4::Log("tl: %lu flips/2s, interval avg %.1f ms max %.0f ms, longer than 34/50/100/250 ms: %lu/%lu/%lu/%lu",
@@ -1654,6 +1666,9 @@ int main() {
     Ps4Safe::MarkOpened(SafeStartFile()); // leaving on purpose is not a crash
     if (g_jit_page_reuse) {
         Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(true)).c_str());
+    }
+    if (g_jit_direct_table) {
+        Ps4::Log("%s", Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(true)).c_str());
     }
     system.Pause();
     {

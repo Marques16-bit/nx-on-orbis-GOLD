@@ -161,6 +161,38 @@ check "patch 0029 credits Eden4" 'grep -q "Eden4" patches/eden/0029-*.patch'
 check "patch 0030 exists and changes only the lazy-memory files" '[ "$(grep "^diff --git" patches/eden/0030-*.patch | wc -l | tr -d " ")" = 2 ] && ! grep "^diff --git" patches/eden/0030-*.patch | grep -qv "orbis_lazy_memory"'
 check "the menu text of sysflex_mib credits Eden4" 'grep -q "from Eden4" frontend/menu/settings_model.cpp'
 
+echo "== the JIT direct table (0.9.3)"
+check "jit_direct_table is an option, off by default, in the CPU AND MEMORY tab" '
+    settings_key jit_direct_table && settings_default jit_direct_table off && awk "/^## CPU AND MEMORY tab/{f=1;next} /^## /{f=0} f" docs/SETTINGS.md | grep -q "jit_direct_table"'
+check "the profile More FPS (test) turns jit_direct_table on" 'grep "^| More FPS (test) |" docs/SETTINGS.md | grep -q "jit_direct_table=on"'
+check "part 2 of the pack is a script next to the patch, and the docs say it edits six files" '
+    [ -f patches/eden-jit/0002-JIT-direct-page-table-copy.py ] && python3 -I -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" patches/eden-jit/0002-JIT-direct-page-table-copy.py &&
+    [ "$(grep -c "^    (\"src/" patches/eden-jit/0002-JIT-direct-page-table-copy.py)" = 6 ]'
+check "part 2 only writes after every edit worked (the files are written in a loop after the try)" '
+    awk "/except Miss/{m=NR} /for path, text in out.items/{w=NR} END{exit !(m && w && m < w)}" patches/eden-jit/0002-JIT-direct-page-table-copy.py'
+check "everything part 2 adds to Edens page table code is under ifdef ORBIS (tests/jit_direct_test.sh checks it)" 'grep -q "outside #ifdef __ORBIS__" tests/jit_direct_test.sh'
+check "the switch starts false in jit_pack.h, so the table exists only after jit_direct_table=on" 'grep -q "^__attribute__((weak)) bool ps4_direct_table = false;" frontend/jit_pack.h'
+for phrase in "JIT direct table:" "does not have it" "no page table got a direct copy" "read the direct copy"; do
+    check "jit_pack.h has \"$phrase\"" 'grep -qF -- "$phrase" frontend/jit_pack.h'
+done
+check "stage-eden.sh takes out the last part first, then the whole pack" 'grep -q "drop-jit-pack.sh deps/eden --last" ci/stage-eden.sh && grep -q "drop-jit-pack.sh deps/eden || break" ci/stage-eden.sh'
+check "CHANGELOG 0.9.3 says the code generator was never compiled and quotes the boot.log line" '
+    awk "/^## \\[0.9.3\\]/{f=1;next} /^## \\[/{f=0} f" CHANGELOG.md | tr "\n" " " | tr -s " " | grep -q "never compiled" && grep -qF "JIT direct table:" CHANGELOG.md'
+if out="$(bash tests/jit_direct_test.sh 2>&1)"; then
+    n="$(printf '%s\n' "$out" | sed -n 's/^direct table: \([0-9]*\) checks.*/\1/p' | head -n 1)"
+    s="$(printf '%s\n' "$out" | sed -n 's/^jit_direct_test: \([0-9]*\) structure checks.*/\1/p')"
+    check "the direct table test passes ($n checks of the page table half, $s structure checks)" '[ -n "$n" ] && [ -n "$s" ]'
+    check "README and CHANGELOG say $n checks for the page table half and CHANGELOG $s structure checks" 'grep -q "$n checks" README.md && grep -q "$n checks" CHANGELOG.md && grep -q "$s structure checks" CHANGELOG.md'
+else
+    bad "tests/jit_direct_test.sh fails"; printf '%s\n' "$out" | tail -n 8 | sed 's/^/        /'
+fi
+if out="$(bash tests/jit_pack_scripts_test.sh 2>&1)"; then
+    n="$(printf '%s\n' "$out" | sed -n 's/^jit_pack_scripts_test: \([0-9]*\) checks.*/\1/p')"
+    check "the apply/drop stages test passes, and CHANGELOG says $n checks for it" 'grep -q "$n checks: .tests/jit_pack_scripts_test.sh" CHANGELOG.md'
+else
+    bad "tests/jit_pack_scripts_test.sh fails"; printf '%s\n' "$out" | tail -n 8 | sed 's/^/        /'
+fi
+
 echo "== the JIT pack (0.9.2)"
 check "patches/eden-jit has one patch, and MODE says on or off" '
     [ "$(ls patches/eden-jit/*.patch | wc -l | tr -d " ")" = 1 ] && grep -qx -E "on|off" patches/eden-jit/MODE'

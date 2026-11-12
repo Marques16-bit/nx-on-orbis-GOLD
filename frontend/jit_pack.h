@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// eden-ps4 0.9.2: the JIT page reuse pack (patches/eden-jit/). The pack is an optional patch to Eden's Dynarmic; when it
+// eden-ps4 0.9.2: the JIT pack (patches/eden-jit/), part 1 (page reuse); 0.9.3 adds part 2 (the direct table, below). The pack is an optional patch to Eden's Dynarmic; when it
 // is in the build its strong definitions of the symbols below replace the weak ones here; when it is not (it did not fit the
 // Eden commit, or it did not compile and the CI built without it) the weak ones stay, ps4_page_reuse_present is 0, and the
 // menu option does nothing except say so in boot.log.
@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -22,6 +23,17 @@ __attribute__((weak)) int ps4_page_reuse_status = 0;
 __attribute__((weak)) unsigned ps4_page_reuse_why = 0;
 __attribute__((weak)) unsigned long long ps4_page_reuse_groups = 0;
 __attribute__((weak)) unsigned long long ps4_page_reuse_accesses = 0;
+
+// 0.9.3, part 2 (patches/eden-jit/0002-*.py): the direct table. The pack's page table code (Eden's common/page_table.h/.cpp) and the JIT read
+// and write these; this file defines them (weak: only the frontend's own definitions exist, none of them is in the pack), except
+// ps4_direct_present and ps4_direct_emitted, which the pack defines too (strong) when it is in the build.
+__attribute__((weak)) bool ps4_direct_table = false;                    // asked for in settings.txt; set before the first page table is sized
+__attribute__((weak)) bool ps4_direct_live = false;                     // a page table has a direct copy
+__attribute__((weak)) std::uintptr_t ps4_direct_entries_base = 0;
+__attribute__((weak)) std::uintptr_t ps4_direct_entries_bytes = 0;
+__attribute__((weak)) std::uintptr_t ps4_direct_mirror_base = 0;
+__attribute__((weak)) int ps4_direct_present = 0;
+__attribute__((weak)) unsigned long long ps4_direct_emitted = 0;
 }
 
 namespace Ps4Jit {
@@ -92,6 +104,51 @@ inline bool ParseSwitch(const std::string& value, bool* out) {
         return true;
     }
     return false;
+}
+
+/// 0.9.3, part 2: the direct table (a decoded copy of the page table the JIT reads with fewer instructions).
+struct DirectState {
+    bool in_build = false;
+    bool wanted = false;
+    bool live = false;
+    unsigned long long emitted = 0;
+};
+
+inline std::string DescribeDirect(const DirectState& s) {
+    char line[256];
+    if (!s.in_build) {
+        std::snprintf(line, sizeof line, "JIT direct table: %s, but this build does not have it (it did not fit this Eden or did not compile)",
+                      s.wanted ? "asked for" : "off");
+        return line;
+    }
+    if (!s.wanted) {
+        return "JIT direct table: off (this build has it; settings.txt jit_direct_table=on switches it on)";
+    }
+    if (!s.live) {
+        return "JIT direct table: on, but no page table got a direct copy: the JIT reads the entries as before";
+    }
+    if (s.emitted == 0) {
+        return "JIT direct table: on; the page table has its direct copy; no memory access compiled yet";
+    }
+    std::snprintf(line, sizeof line, "JIT direct table: on; %llu memory lookups read the direct copy", s.emitted);
+    return line;
+}
+
+inline DirectState ReadDirect(bool wanted) {
+    DirectState s;
+    s.wanted = wanted;
+    s.in_build = ps4_direct_present != 0;
+    if (s.in_build) {
+        s.live = ps4_direct_live;
+        s.emitted = ps4_direct_emitted;
+    }
+    return s;
+}
+
+/// Sets the switch Eden's page table code reads when it sizes the first page table. False when this build does not have part 2.
+inline bool ApplyDirect(bool on) {
+    ps4_direct_table = on;
+    return ps4_direct_present != 0;
 }
 
 } // namespace Ps4Jit

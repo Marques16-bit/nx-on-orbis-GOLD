@@ -2,6 +2,54 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.3] - The JIT's direct table (the 0.9.2 fix: more of the JIT's cost removed; optional, off by default)
+
+**The 0.9.2 test on the console showed what the page reuse does alone: a gain, but a very small one. This is the next step on the same
+road, and it is also unverified.** What was run: the edits of the new part on copies of Eden master's files they change (24 structure checks,
+`tests/jit_direct_test.sh`: they apply, apply only once, and with any one anchor missing change nothing); the **page table half** of the
+part (`common/page_table.h/.cpp` as the edits leave them) built and run on a PC with the console's lazy vector stood in, with address, undefined-behaviour
+and thread sanitizers (32 checks: after every `Store`, `MarkRasterizerCached` and zeroing a slot is 0 or exactly the entry's pointer, also
+with four threads storing and marking the same entries); the scripts that apply and take out the pack in stages, on throwaway git repositories
+(16 checks: `tests/jit_pack_scripts_test.sh`); `jit_pack_test`, `safe_mode_test`, `menu_test`, `eden_settings_test` and `tests/docs_check.sh`.
+**Not run: the code that emits the x86 instructions, which was never compiled** (it needs Xbyak, fmt and Boost: not available where this was written), **and Eden's
+pinned sources, which are not in this repository: the edits were written against Eden's current ones and made to need as little as possible
+of them.** Nothing of it has run on a console.
+
+**What it is.** Each guest memory access the JIT compiles walks the page table: load the 8-byte entry, test its marked bit, mask the
+attribute bits off, shift left and arithmetic-shift right to sign-extend, test for zero (about 12 instructions with the address
+arithmetic). Eden4 shortens that with a "direct" table that holds `host - guest` ready to use. This port keeps Eden's table and adds one
+beside it (`patches/eden-jit/0002-...py`): one 8-byte slot per entry holding exactly the decoded pointer, 0 when the entry is marked, unmapped
+or empty. The JIT loads the slot and tests it for zero: **4 instructions fewer per access** (`mov imm64, base; mov slot, [base + index*8]; test; jz`
+instead of `mov; bt; jc; mov imm64; and; shl; sar; jz`), and the same short sequence in the page reuse's group lookup and its out-of-line slow
+path. Eden's own entries are not changed, so nothing but the JIT reads the new table; A32 games keep the usual lookup.
+- **Who writes the slots:** only `PageEntryData` itself (`Store`, `MarkRasterizerCached`; `MarkDebug` goes through `Store`) and the one place that
+  zeroes entries (`core/memory.cpp`, unmapping). A slot is zeroed *first* whenever its entry changes (so while it changes the JIT takes the
+  callbacks), written *after*, and written again if the entry changed in between (another thread storing or marking the same entry): the last
+  write of a slot is always made from an entry that did not change after it. That is tested with threads on a PC.
+- **Memory:** 8 bytes per mapped 4 KiB page (about 2 MiB for 1 GiB of guest memory in use), lazy like Eden's own table here: memory only where it is touched. The table's memory is given to a slot's chunk when touched, by the same fault handler as the entries.
+- **What it needs:** the table setup Eden configures (absolute offsets, 8-byte entries, no mirroring) and the first page table sized after
+  `jit_direct_table=on` is read (the guest process's); for another table the JIT uses the usual lookup.
+- **What to expect, honestly:** the lookup is only part of what a memory access costs and this removes about a third of it. Fastmem (no
+  lookup at all) measured +10-30% on this console in the 0.8 tests (`docs/STATUS.md`), so a few percent is what this can give, with the page
+  reuse (0.9.2) that it works together with. It is not a doubling, and the CPU-bound games' limit is not only the JIT.
+
+**Safeguards, because it is unverified.**
+- **Off by default.** Menu, CPU AND MEMORY tab, "JIT: direct page table" (`jit_direct_table=on` in `settings.txt`, independent of
+  `jit_page_reuse`); the quick profile "More FPS (test)" turns it on. Safe mode ignores it (experimental).
+- **It cannot break the build, in two steps.** The edits are a script of anchored changes (`patches/eden-jit/0002-...py`) and not a diff,
+  because the pinned Eden is not at hand: each needs only a line or a few to be there, and if one is missing **nothing is written** and the
+  build goes on with part 1 only (page reuse); if the edits fit but do not compile, `ci/stage-eden.sh` takes out **only part 2** and builds
+  again, and if that fails too, the whole pack. The errors of each step are in the `jit-pack-errors` artifact. The "Check patches" workflow
+  says which parts fit the pinned Eden and runs the page table test against that Eden's own `page_table.h`.
+- **`boot.log` says what happened:** `JIT direct table: ...` at the start (off / on / "this build does not have it") and when the game has drawn and
+  when it is left, with the number of lookups compiled to read the table. "on, but no page table got a direct copy" means the option was on and
+  no table was made for it (the JIT then reads the entries as before).
+
+**What can still go wrong.** A bug in the emitted code is a game that hangs, closes or runs wrong; a slot that is not zero when its entry is
+(a path that changes an entry without `Store`) is a write to memory that is not the game's any more. The paths that change entries in Eden
+master are the ones above; the pinned Eden may have another. To check it: open a game with it off and on, look at the `JIT direct table:` lines
+and the speed, and send `boot.log`. If it breaks, `jit_direct_table=off` is back to 0.9.2.
+
 ## [0.9.2] - The JIT's page reuse, written for this port's page table (optional, off by default)
 
 **Not built or run on a console by the author of this change, and the part that matters most was never compiled.** What was run: the

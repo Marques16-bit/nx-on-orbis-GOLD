@@ -3,7 +3,7 @@
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
-> **Status: experimental, under development (v0.9.2).** It boots, has its own menu, and runs real games, but
+> **Status: experimental, under development (v0.9.3).** It boots, has its own menu, and runs real games, but
 > slowly: the emulated CPU is the limit, not the GPU. Some games run, some close when the console runs out of
 > memory. It is not a way to play Switch games on a PS4 yet. Everything below says what was **measured on a console**
 > and what was only written and tested on a PC.
@@ -15,7 +15,8 @@ flexível do sistema (`sysflex_mib`), **que funcionou no console** (os logs volt
 maior** (até 1536 MiB), e traz a opção **Controles (jogadores) de 1 a 4** na aba Sistema, **ainda não testada num console**.
 A 0.9.2 traz a opção **JIT: reaproveitar a busca de página** (aba CPU e Memória, desligada por padrão): o mesmo efeito do JIT do Eden4,
 escrito para a tabela de páginas deste port; **nunca rodou num console** e o código que gera as instruções nem foi compilado aqui.
-Se não compilar no CI, o build segue sem ela. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
+Se não compilar no CI, o build segue sem ela.
+A 0.9.3 (a "0.9.2 fix") soma a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
 
 | | |
 |---|---|
@@ -73,7 +74,19 @@ Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **n
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
-## What is new in 0.9.2 (not run on a console)
+## What is new in 0.9.3 (not run on a console): the 0.9.2 fix
+
+The 0.9.2 test showed the page reuse alone gives a very small gain. 0.9.3 adds the next piece of the JIT:
+
+- **JIT: direct page table** (`jit_direct_table=on|off`; menu: CPU AND MEMORY tab; **off by default**; turn it on together with the page
+  reuse). Beside Eden's page table the port keeps a second table with every entry already decoded, and the JIT reads that instead of decoding
+  the entry each time: 4 instructions fewer per memory access. It is the effect of Eden4's direct table, made without changing Eden's own
+  table. The quick profile "More FPS (test)" turns it on.
+  - **Never run on a console, and its code generator was never compiled.** Expect a few percent, not a doubling. The page table side is
+    tested on a PC (32 checks, with threads); the edits are a script that changes nothing if the pinned Eden does not look as expected, and the
+    CI builds again without them if they do not compile (`boot.log` says `JIT direct table: ...`). Details in [CHANGELOG.md](CHANGELOG.md).
+
+## What was new in 0.9.2 (not run on a console)
 
 - **JIT: reuse page lookups** (`jit_page_reuse=on|off`; menu: CPU AND MEMORY tab; **off by default**). The JIT reads the page table once
   for a group of nearby memory accesses instead of once per access, which is less CPU work (the CPU is what limits every game here). It
@@ -114,7 +127,7 @@ Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim h
 
 - **Speed.** The game's own ARM code, translated to x86 and run on a 2.1 GHz Jaguar core, is the bottleneck. The profile in `boot.log`
   adds up the busy cores per thread. The biggest lever that is known is the JIT: Eden4 changes Dynarmic's code
-  generation ([docs/EDEN4.md](docs/EDEN4.md)). 0.9.2 carries one of its changes, the page lookup reuse, as an optional pack written for
+  generation ([docs/EDEN4.md](docs/EDEN4.md)). 0.9.2 carries one of its changes, the page lookup reuse, and 0.9.3 a second one, the direct table, as an optional pack written for
   this port's page table (off by default, never run on a console); the others are not done. The pinned Eden's source is still not in this
   repository, so none of this is compiled until the CI does it (see the roadmap).
 - **Memory for Odyssey-sized games.** See above. The numbers: a fixed ~2560 MiB is taken before the game starts (driver arena

@@ -38,6 +38,7 @@ int main() {
     Check(IsExperimental("skip_cpu_invalidation", "on") && !IsExperimental("skip_cpu_invalidation", "off"), "skip_cpu_invalidation");
     Check(IsExperimental("auto_stub", "on") && !IsExperimental("auto_stub", "off"), "auto_stub");
     Check(IsExperimental("jit_page_reuse", "on") && !IsExperimental("jit_page_reuse", "off"), "jit_page_reuse (0.9.2): on is experimental");
+    Check(IsExperimental("jit_direct_table", "on") && !IsExperimental("jit_direct_table", "off"), "jit_direct_table (0.9.3): on is experimental");
     Check(IsExperimental("astc", "gpu") && IsExperimental("astc", "async") && !IsExperimental("astc", "cpu"), "astc: only the CPU mode is safe");
     Check(!IsExperimental("sysflex_mib", "384") && !IsExperimental("sysflex_mib", "2048") && !IsExperimental("sysflex_mib", "auto") &&
               !IsExperimental("sysflex_mib", "off") && !IsExperimental("players", "4"),

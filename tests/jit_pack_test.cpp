@@ -50,6 +50,24 @@ int main() {
     Check(Ps4Jit::ParseSwitch("off", &v) && !v, "ParseSwitch: off");
     Check(!Ps4Jit::ParseSwitch("yes", &v) && !v, "ParseSwitch: anything else is refused and leaves the value");
 
+    // 0.9.3, part 2: the direct table.
+    const Ps4Jit::DirectState dnone = Ps4Jit::ReadDirect(true);
+    Check(!dnone.in_build && dnone.wanted && !dnone.live, "direct, no pack: not in the build, and it was asked for");
+    Check(!Ps4Jit::ApplyDirect(true) && ps4_direct_table, "direct, no pack: Apply says it is not there, and sets the switch the page table code reads");
+    Check(!Ps4Jit::ApplyDirect(false) && !ps4_direct_table, "direct: Apply(false) clears the switch");
+    Check(Has(Ps4Jit::DescribeDirect(dnone), "does not have it"), "direct, no pack: the log line says the build does not have it");
+    Check(Has(Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(false)), "off") && Has(Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(false)), "does not have it"),
+          "direct, no pack and off: still says it is not there");
+    Ps4Jit::DirectState d;
+    d.in_build = true;
+    Check(Has(Ps4Jit::DescribeDirect(d), "off (this build has it") && Has(Ps4Jit::DescribeDirect(d), "jit_direct_table=on"), "direct, off: says how to switch it on");
+    d.wanted = true;
+    Check(Has(Ps4Jit::DescribeDirect(d), "no page table got a direct copy"), "direct, on, not live: says the JIT goes on as before");
+    d.live = true;
+    Check(Has(Ps4Jit::DescribeDirect(d), "no memory access compiled yet"), "direct, live, nothing compiled");
+    d.emitted = 4096;
+    Check(Has(Ps4Jit::DescribeDirect(d), "4096 memory lookups read the direct copy"), "direct, live: counts the lookups");
+
     std::printf("%s\n", g_failures == 0 ? "all ok" : "FAILED");
     return g_failures == 0 ? 0 : 1;
 }

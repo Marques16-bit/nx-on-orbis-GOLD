@@ -197,6 +197,29 @@ the JIT Eden4's "page reuse" for this port's flat page table.
   `tools/jit-harness/`, needs Xbyak/fmt/Boost, and is the right next step if the option is to stay), and the pinned Eden's differences from
   the Dynarmic the patch was made against (`git apply --check` in `scripts/apply-jit-pack.sh` catches changed context, not changed meaning).
 
+## JIT direct table (0.9.3; never run on a console, code generator never compiled)
+
+Part 2 of the JIT pack, `patches/eden-jit/0002-JIT-direct-page-table-copy.py`. The pinned Eden's sources are not at hand when it is written, so it
+is a script of anchored edits (each anchor is a line or a few of Eden master's; a missing or repeated anchor refuses all edits) and not a diff.
+
+- **The table** (`common/page_table.h`, `page_table.cpp`; everything under `#ifdef __ORBIS__`): `PageTable::direct_entries`, a
+  `SparseLargeVector<std::atomic<u64>>` of the same size as `entries`, allocated by `Resize` for the first table sized while
+  `ps4_direct_table` is set. Slot `i` is the pointer of entry `i` when the entry is not marked (`ExtractPointer`, i.e. `host - guest`, sign-extended),
+  else 0. `ps4_direct_entries_base/_bytes` and `ps4_direct_mirror_base` (defined weakly in `frontend/jit_pack.h`) name the table for
+  `PageEntryData` (which finds its slot by address) and for the JIT. The table's destructor clears them.
+- **Writers:** `Store` and `MarkRasterizerCached` zero the slot, change the entry, then `SyncDirect` (write the slot from the entry; if the
+  entry changed meanwhile, again). `MarkDebug` goes through `Store`. `Memory::Impl::MapPages` with no target calls `PageTable::ZeroDirect` before
+  `entries.ZeroRegion`; it zeroes the slots only of host pages that have memory (`&entries.GetOrDefault(i) == &entries.data()[i]`), so an
+  unmapped part of the address space gets no memory for its slots.
+- **Readers:** `PS4DirectOk(conf)` (`emit_x64_memory.h`) is true when `ps4_direct_live`, `conf.page_table` is the mirrored table, offsets are
+  absolute, the table is not mirrored and the stride is 3. `EmitVAddrLookup<A64EmitContext>`: after the range check, `mov page, imm64(mirror);
+  mov page, [page + index*8]; test; jz abort; [page + vaddr]`, with a separate scratch register for the index. The page reuse's group lookup
+  (`EmitA64EdenPageLookup`) and slow path (`PS4ReuseSlowLookup`) do the same. A32 is untouched.
+- **What was not checked:** that Xbyak accepts the emitted forms (`mov r64, imm64`, `[r64 + r64*8]`), that the pinned Eden has the places the
+  script edits (the workflow "Check patches" says), and every path that might change an entry without `Store` in the pinned Eden.
+- **Tests:** `tests/jit_direct_test.sh` (the script on fixtures of Eden master, a missing anchor per edit, structure of the emitters, the page
+  table half on a PC with sanitizers and threads: `tests/jit_pack/direct_test.cpp`) and `tests/jit_pack_scripts_test.sh` (apply and drop in stages).
+
 ## The system flexible pool (0.9.0; seen working on a console, 0.9.1 enlarges it)
 
 The PS4 gives a process two kinds of RAM that this port uses: **direct memory** (4608 MiB measured, GPU-visible, what runs out) and
