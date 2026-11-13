@@ -171,6 +171,27 @@ check "tools/jit-harness has the harness, the generator, the stubs, the source l
 check "CHANGELOG 0.9.4 names the boot.log line of 0.9.3 and the cause" '
     awk "/^## \\[0.9.4\\]/{f=1;next} /^## \\[/{f=0} f" CHANGELOG.md | tr "\n" " " | tr -s " " | grep -q "does not have it" && awk "/^## \\[0.9.4\\]/{f=1;next} /^## \\[/{f=0} f" CHANGELOG.md | grep -q "constexpr"'
 
+echo "== the 0.9.4 fix: the build reports on the pack, the JIT cache size"
+if out="$(bash tests/pack_fallback_test.sh 2>&1)"; then
+    n="$(printf '%s\n' "$out" | sed -n 's/^pack_fallback_test: \([0-9]*\) checks.*/\1/p' | head -n 1)"
+    check "the pack fallback test passes, and CHANGELOG says $n checks for it" 'grep -q "$n checks: .tests/pack_fallback_test.sh" CHANGELOG.md'
+else
+    bad "tests/pack_fallback_test.sh fails"; printf '%s\n' "$out" | tail -n 8 | sed 's/^/        /'
+fi
+if g++ -std=c++20 -Wall -Wextra -Ifrontend tests/jit_cache_test.cpp -o "$WORK/jit_cache_test" 2>/dev/null && out="$("$WORK/jit_cache_test" 2>&1)"; then
+    n="$(printf '%s\n' "$out" | grep -c '^  ok')"
+    check "the JIT cache test passes, and CHANGELOG says $n checks for it" 'grep -q "$n checks: .tests/jit_cache_test.cpp" CHANGELOG.md'
+else
+    bad "tests/jit_cache_test.cpp fails"
+fi
+check "patch 0031 is a git patch that touches the two cores' config and Dynarmic's A64 interface only" '
+    [ "$(grep "^diff --git" patches/eden/0031-*.patch | wc -l | tr -d " ")" = 3 ] && grep "^diff --git" patches/eden/0031-*.patch | grep -q "a64_interface.cpp" &&
+    grep -q "extern \"C\" unsigned ps4_jit_cache_mib" patches/eden/0031-*.patch'
+check "frontend/jit_cache.h defines the three symbols patch 0031 declares (weak)" '
+    for sym in ps4_jit_cache_mib ps4_jit_cache_full ps4_jit_cache_asked; do grep -q "weak)) [a-z ]* $sym" frontend/jit_cache.h && grep -q "$sym" patches/eden/0031-*.patch || exit 1; done'
+check "package-eden.sh puts jit-pack-report.txt in the package, and boot.log quotes it" '
+    grep -q "assets/misc/jit-pack-report.txt" package-eden.sh && grep -q "assets/misc/jit-pack-report.txt" frontend/main.cpp && grep -q "ReportLines" frontend/main.cpp'
+
 echo "== the JIT direct table (0.9.3)"
 check "jit_direct_table is an option, off by default, in the CPU AND MEMORY tab" '
     settings_key jit_direct_table && settings_default jit_direct_table off && awk "/^## CPU AND MEMORY tab/{f=1;next} /^## /{f=0} f" docs/SETTINGS.md | grep -q "jit_direct_table"'
@@ -185,7 +206,7 @@ check "the switch starts false in jit_pack.h, so the table exists only after jit
 for phrase in "JIT direct table:" "does not have it" "no page table got a direct copy" "read the direct copy"; do
     check "jit_pack.h has \"$phrase\"" 'grep -qF -- "$phrase" frontend/jit_pack.h'
 done
-check "stage-eden.sh takes out the last part first, then the whole pack" 'grep -q "drop-jit-pack.sh deps/eden --last" ci/stage-eden.sh && grep -q "drop-jit-pack.sh deps/eden || break" ci/stage-eden.sh'
+check "pack-fallback.sh takes out the last part first, then the whole pack, and stage-eden.sh calls it" 'grep -q "drop-jit-pack.sh \"\$EDEN\" --last" ci/pack-fallback.sh && grep -q "drop-jit-pack.sh \"\$EDEN\" || break" ci/pack-fallback.sh && grep -q "ci/pack-fallback.sh" ci/stage-eden.sh'
 check "CHANGELOG 0.9.3 says the code generator was never compiled and quotes the boot.log line" '
     awk "/^## \\[0.9.3\\]/{f=1;next} /^## \\[/{f=0} f" CHANGELOG.md | tr "\n" " " | tr -s " " | grep -q "never compiled" && grep -qF "JIT direct table:" CHANGELOG.md'
 if out="$(bash tests/jit_direct_test.sh 2>&1)"; then
@@ -213,7 +234,7 @@ check "the pack is off at run time until jit_page_reuse=on (the switch starts fa
 check "the pack keeps the register allocation rule: no scratch register after the first branch in the producer" '
     awk "/EmitA64EdenPageLookup\(A64EmitContext/{f=1} f&&/ScratchGpr|UseScratchGpr/{last=NR} f&&/code\.(ja|jnz|jc|jz)\(/{first=NR; exit} END{exit !(last && first && last < first)}" patches/eden-jit/*.patch'
 check "apply-jit-pack.sh and drop-jit-pack.sh parse; fetch-eden.sh and stage-eden.sh call them" '
-    bash -n scripts/apply-jit-pack.sh && bash -n scripts/drop-jit-pack.sh && grep -q "apply-jit-pack.sh" scripts/fetch-eden.sh && grep -q "drop-jit-pack.sh" ci/stage-eden.sh'
+    bash -n scripts/apply-jit-pack.sh && bash -n scripts/drop-jit-pack.sh && bash -n ci/pack-fallback.sh && grep -q "apply-jit-pack.sh" scripts/fetch-eden.sh && grep -q "drop-jit-pack.sh" ci/pack-fallback.sh'
 for phrase in "does not have the pack" "groups of nearby accesses share a page lookup" "this page table setup is not handled"; do
     check "jit_pack.h has \"$phrase\"" 'grep -qF -- "$phrase" frontend/jit_pack.h'
 done

@@ -1,0 +1,122 @@
+From 51d2b025a5d89c44c6dfabfe86c29744df368790 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 13 Nov 2026 17:07:11 -0300
+Subject: [PATCH 31/31] PS4: JIT code cache size from settings.txt (jit_cache_mib)
+ and a count of whole-cache flushes
+
+The cache of each core was fixed at 32 MiB (patch 0008). A game whose compiled code does not fit throws the whole cache away and compiles every
+block again, which shows as a stall; whether that happens in the games on this console was not known. The size now comes from ps4_jit_cache_mib
+(the frontend's jit_cache_mib, 16..256 MiB, 0 = 32 as before) and the two ways a whole flush happens are counted (cache full / the game asked),
+for the frontend to log.
+---
+ src/core/arm/dynarmic/arm_dynarmic_32.cpp         | 15 ++++++++++++++-
+ src/core/arm/dynarmic/arm_dynarmic_64.cpp         | 15 ++++++++++++++-
+ .../src/dynarmic/backend/x64/a64_interface.cpp    | 12 ++++++++++++
+ 3 files changed, 40 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_32.cpp b/src/core/arm/dynarmic/arm_dynarmic_32.cpp
+index 02acf57..851fba2 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_32.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_32.cpp
+@@ -12,6 +12,19 @@
+ #include "core/core_timing.h"
+ #include "core/hle/kernel/k_process.h"
+ 
++#if defined(__ORBIS__)
++// 0.9.4: the JIT code cache of each core is jit_cache_mib of settings.txt (the frontend sets it before the cores are made; 0 = not set = 32 MiB,
++// the size since test 5). A cache that fills up is thrown away whole and every block is compiled again, which is slow on this CPU.
++extern "C" unsigned ps4_jit_cache_mib;
++namespace {
++std::uint32_t Ps4JitCacheBytes() {
++    unsigned mib = ps4_jit_cache_mib;
++    mib = mib == 0 ? 32 : (mib < 16 ? 16 : (mib > 256 ? 256 : mib));
++    return std::uint32_t(mib) * 1024u * 1024u;
++}
++} // namespace
++#endif
++
+ namespace Core {
+ 
+ using namespace Common::Literals;
+@@ -213,7 +226,7 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
+ #if defined(__ORBIS__)
+     // PS4: the code cache is direct memory taken up front (32 MiB since test 5: memory ran out), from ~3.4 GiB shared with the guest
+     // RAM; four cores at 512 MiB would take most of it. A smaller cache flushes more often.
+-    config.code_cache_size = std::uint32_t(32_MiB);
++    config.code_cache_size = Ps4JitCacheBytes();
+ #elif defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
+     config.code_cache_size = std::uint32_t(128_MiB);
+ #else
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_64.cpp b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+index 6aaf699..e8cf928 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_64.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+@@ -11,6 +11,19 @@
+ #include "core/core_timing.h"
+ #include "core/hle/kernel/k_process.h"
+ 
++#if defined(__ORBIS__)
++// 0.9.4: the JIT code cache of each core is jit_cache_mib of settings.txt (the frontend sets it before the cores are made; 0 = not set = 32 MiB,
++// the size since test 5). A cache that fills up is thrown away whole and every block is compiled again, which is slow on this CPU.
++extern "C" unsigned ps4_jit_cache_mib;
++namespace {
++std::uint32_t Ps4JitCacheBytes() {
++    unsigned mib = ps4_jit_cache_mib;
++    mib = mib == 0 ? 32 : (mib < 16 ? 16 : (mib > 256 ? 256 : mib));
++    return std::uint32_t(mib) * 1024u * 1024u;
++}
++} // namespace
++#endif
++
+ namespace Core {
+ 
+ using namespace Common::Literals;
+@@ -265,7 +278,7 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
+ #if defined(__ORBIS__)
+     // PS4: the code cache is direct memory taken up front (32 MiB since test 5: memory ran out), from ~3.4 GiB shared with the guest
+     // RAM; four cores at 512 MiB would take most of it. A smaller cache flushes more often.
+-    config.code_cache_size = std::uint32_t(32_MiB);
++    config.code_cache_size = Ps4JitCacheBytes();
+ #elif defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
+     config.code_cache_size = std::uint32_t(128_MiB);
+ #else
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
+index bb07212..43c1d2b 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
+@@ -27,6 +27,12 @@
+ #include "dynarmic/ir/basic_block.h"
+ #include "dynarmic/ir/opt_passes.h"
+ 
++#if defined(__ORBIS__)
++// 0.9.4: how often a JIT code cache was thrown away whole (the frontend logs both): because it was full, and because the game asked (IC IALLU).
++extern "C" unsigned long long ps4_jit_cache_full;
++extern "C" unsigned long long ps4_jit_cache_asked;
++#endif
++
+ namespace Dynarmic::A64 {
+ 
+ using namespace Backend::X64;
+@@ -103,6 +109,9 @@ public:
+ 
+     void ClearCache() {
+         std::unique_lock lock{invalidation_mutex};
++#if defined(__ORBIS__)
++        __atomic_fetch_add(&ps4_jit_cache_asked, 1ull, __ATOMIC_RELAXED);
++#endif
+         invalidate_entire_cache = true;
+         HaltExecution(HaltReason::CacheInvalidation);
+     }
+@@ -248,6 +257,9 @@ private:
+         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
+         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+             // Immediately evacuate cache
++#if defined(__ORBIS__)
++            __atomic_fetch_add(&ps4_jit_cache_full, 1ull, __ATOMIC_RELAXED);
++#endif
+             invalidate_entire_cache = true;
+             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+         }
+-- 
+2.43.0
+

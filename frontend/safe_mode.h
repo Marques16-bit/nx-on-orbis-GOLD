@@ -58,6 +58,9 @@ inline bool IsExperimental(std::string_view key, std::string_view value) {
     }
     // sysflex_mib (0.9.0: experimental) is not one any more: it worked on the console in the 0.9.0 test. Safe mode still
     // limits it to the amount that test proved (main.cpp), instead of ignoring the line.
+    if (key == "jit_cache_mib") {
+        return value != "auto" && value != "32"; // a bigger cache takes direct memory up front: not on a start after a death
+    }
     if (key == "async_presentation" || key == "skip_cpu_invalidation" || key == "auto_stub" || key == "jit_page_reuse" ||
         key == "jit_direct_table") {
         return value == "on";

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 extern "C" {
 // The pack (Dynarmic, ir/opt_passes.cpp) defines these too, with ps4_page_reuse_present = 1, and its definitions win over the
@@ -149,6 +150,46 @@ inline DirectState ReadDirect(bool wanted) {
 inline bool ApplyDirect(bool on) {
     ps4_direct_table = on;
     return ps4_direct_present != 0;
+}
+
+/// 0.9.4: the build's own report on the pack (jit-pack-report.txt, written by scripts/apply-jit-pack.sh and ci/stage-eden.sh, packaged under
+/// /app0/assets/misc/). Returns the lines for boot.log: each cut at 200 characters, at most 24 of them (the rest is counted), carriage returns
+/// and tabs made harmless. An empty text gives no lines.
+inline std::vector<std::string> ReportLines(const std::string& text) {
+    std::vector<std::string> out;
+    std::size_t start = 0, dropped = 0;
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        std::string line = text.substr(start, end - start);
+        start = end + 1;
+        for (char& c : line) {
+            if (c == '\r' || c == '\t') {
+                c = ' ';
+            }
+        }
+        while (!line.empty() && line.back() == ' ') {
+            line.pop_back();
+        }
+        if (line.empty()) {
+            continue;
+        }
+        if (out.size() >= 24) {
+            ++dropped;
+            continue;
+        }
+        if (line.size() > 200) {
+            line.resize(200);
+            line += "...";
+        }
+        out.push_back("JIT pack, as the build made it: " + line);
+    }
+    if (dropped > 0) {
+        out.push_back("JIT pack, as the build made it: (" + std::to_string(dropped) + " more line(s) in the jit-pack-errors artifact of the build)");
+    }
+    return out;
 }
 
 } // namespace Ps4Jit

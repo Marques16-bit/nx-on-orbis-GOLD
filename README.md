@@ -16,12 +16,12 @@ maior** (até 1536 MiB), e traz a opção **Controles (jogadores) de 1 a 4** na 
 A 0.9.2 traz a opção **JIT: reaproveitar a busca de página** (aba CPU e Memória, desligada por padrão): o mesmo efeito do JIT do Eden4,
 escrito para a tabela de páginas deste port; **nunca rodou num console** e o código que gera as instruções nem foi compilado aqui.
 Se não compilar no CI, o build segue sem ela.
-A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não entrou: o Eden fixado era diferente do que o patch esperava) e o emissor foi rodado pela primeira vez, num PC. A 0.9.3 (a "0.9.2 fix") somou a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
+A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não entrou: o Eden fixado era diferente do que o patch esperava) e o emissor foi rodado pela primeira vez, num PC. A 0.9.3 (a "0.9.2 fix") somou a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md). A **0.9.4 fix** faz o build contar no `boot.log` o que fez com o pacote do JIT (e por que uma parte ficou de fora), tira o pacote aos poucos se o build falhar, e acrescenta o cache de código do JIT (`jit_cache_mib`) com um contador de quantas vezes ele foi esvaziado (travadas de recompilação).
 
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 30 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 31 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
 | Renderer | Vulkan only (`-DENABLE_OPENGL=OFF`), on Mesa RADV "PlayStation 4 Liverpool" (Vulkan 1.3) |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Build | GitHub Actions builds the `.pkg` and the ELF from a tag ([docs/BUILDING.md](docs/BUILDING.md)); [Releases](../../releases) |
@@ -75,6 +75,10 @@ entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as 
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
 ## What is new in 0.9.4: the direct table is in the build now, and the JIT's code ran for the first time (on a PC)
+
+**0.9.4 fix:** the first 0.9.4 `boot.log` still said the build had no direct table, and showed that a faster page lookup is only a few per cent of the CPU time (the JIT's code is 28-50% of
+what the CPU threads do). So the fix makes the build explain itself (`boot.log` now quotes what the CI did with the JIT pack and why a part is missing), takes a failing pack out one part at a time
+whatever the error, and adds the one thing the log points at: the JIT code cache (32 MiB per core, `jit_cache_mib`) with a counter of how often it is thrown away whole (a recompile stall).
 
 The 0.9.3 `boot.log` said the build did not have the direct table: its edit script was written against Eden master and the pinned Eden differs in two
 places. 0.9.4 fixes the script, tests it on the pinned Eden's own files, and runs Dynarmic's x64 backend (pinned Eden + this pack) on a PC against

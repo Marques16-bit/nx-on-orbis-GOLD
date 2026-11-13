@@ -332,3 +332,15 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - `main.cpp` sends pad `i` to `PollPad(..., i)`. The pause menu, the memory panel and the quit combination read pad 0 only.
 - Not checked: that the OpenOrbis stub library exports `sceUserServiceGetLoginUserIdList` (if not, only controller 1 works and the log says so), that a guest
   user's pad can be opened by this process, and how a game reacts to the extra Pro Controllers while Eden is in handheld mode.
+
+## JIT code cache and the build's report on the JIT pack (0.9.4 fix)
+
+- **Cache size.** Eden patch 0031 makes `config.code_cache_size` in `arm_dynarmic_64.cpp` / `_32.cpp` come from `ps4_jit_cache_mib` (0 = 32 MiB, clamped to 16..256), which `frontend/main.cpp` sets from
+  `jit_cache_mib` before the core starts; the PC's value is 512 MiB. Dynarmic's A64 interface (`a64_interface.cpp`) counts the two ways a whole flush happens: `GetBlock` finding less than 1 MiB left
+  (`ps4_jit_cache_full`) and `Jit::ClearCache()` (`ps4_jit_cache_asked`, the guest's `IC IALLU`). Range invalidations (`IC IVAU`, code mapped or protected by the kernel) do not flush the whole cache and are not counted.
+  The symbols are defined weak in `frontend/jit_cache.h`, like the pack's.
+- **Report.** `scripts/apply-jit-pack.sh` starts `jit-pack-report.txt` (`NXO_JIT_REPORT` overrides the path), `ci/pack-fallback.sh` adds what it took out and the first error lines, `package-eden.sh` copies it to
+  `/app0/assets/misc/`, and `main.cpp` logs it (24 lines at most, 200 characters each) before the JIT lines. A build outside the CI has "no report".
+- **Reading the 0.9.4 boot.log** (Mario vs. Donkey Kong, Nov 13): the `profile` lines count a sample as "jit" when the instruction pointer is outside the eboot image and the kernel library, so the rest of a busy thread is the
+  emulator itself (compiling blocks, memory callbacks, the emulated kernel). On the three busy `CPUCore_` threads the JIT share was 28-50% of 56-79% busy; the GPU thread 4-11% busy. The stalls (1.0-7.3 s) came with one core at 91% busy.
+

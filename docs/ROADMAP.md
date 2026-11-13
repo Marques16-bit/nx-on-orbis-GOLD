@@ -19,7 +19,7 @@ anything (see "How a version is tested").
 | Path | What it is | Change it? |
 |---|---|---|
 | `patches/eden-jit/` (2 parts, optional) | The JIT pack. Part 1 (0.9.2), page reuse: one patch to Dynarmic (an IR pass, one new IR instruction, its emitter and the access emitters), Part 2 (0.9.3), the direct table: `0002-...py`, anchored edits to Eden's page table, memory.cpp and the Dynarmic memory emitters (a script because the pinned Eden is not at hand). `MODE` (`on`/`off`). Applied by `scripts/apply-jit-pack.sh` only if it fits; `scripts/drop-jit-pack.sh` takes out the last part and then the whole pack when the CI build fails inside Dynarmic or the page table | Console run, off and on |
-| `patches/eden/` (30) | The whole port, as patches on Eden `5f142c79`: memory (0002, 0007, 0027, 0028, 0029, 0030), JIT (0003, 0005, 0008), GPU driver workarounds (0009, 0015, 0025), texture-cache fixes (0016, 0017, 0020), colour self-tests and diagnostics (0010-0014, 0018-0023, 0026), containers (0024) | One patch at a time, each tested on the console |
+| `patches/eden/` (31) | The whole port, as patches on Eden `5f142c79`: memory (0002, 0007, 0027, 0028, 0029, 0030), JIT (0003, 0005, 0008, 0031), GPU driver workarounds (0009, 0015, 0025), texture-cache fixes (0016, 0017, 0020), colour self-tests and diagnostics (0010-0014, 0018-0023, 0026), containers (0024) | One patch at a time, each tested on the console |
 | `frontend/` | The PS4 executable: boot, settings, pad, logs, crash reports, profiler, game picker | Yes |
 | `frontend/libc_wide_fixes.cpp` | 4-byte `wmemchr` & co. | **No** (see section 2) |
 | `toolchain/`, `tools/`, `configure-eden.sh`, `package-eden.sh` | Windows-only build with the original machine's paths | Yes: make it reproducible (v0.3.0) |

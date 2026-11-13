@@ -40,6 +40,10 @@ grep -q "part 1 applied" "$WORK/a/eden/part1.txt" && grep -q "ps4_direct_live" "
 (cd "$WORK/a/eden" && [ "$(git tag -l 'nxo-jit-pack-[0-9]*' | wc -l)" -eq 2 ] && [ "$(git rev-parse nxo-jit-pack)" = "$(git rev-parse nxo-jit-pack-2)" ] && [ "$(git rev-parse HEAD)" = "$(git rev-parse nxo-jit-pack-2)" ]) || fail "tags after apply"; ok
 [ -z "$(cd "$WORK/a/eden" && git status --porcelain)" ] || fail "the tree is not clean after apply"; ok
 
+# 1b. The report (0.9.4): both parts named as applied, in <repo root>/jit-pack-report.txt (or the file NXO_JIT_REPORT names).
+[ -f "$WORK/a/repo/jit-pack-report.txt" ] || fail "no report written next to the repo root"
+grep -q "^apply: 0001-part1.patch: applied" "$WORK/a/repo/jit-pack-report.txt" && grep -q "^apply: 0002-JIT-direct-page-table-copy.py: applied" "$WORK/a/repo/jit-pack-report.txt" || fail "report does not name both parts"; ok
+
 # 2. Drop only the last part: part 1 stays, the direct table is gone, and the pack is still "in".
 bash scripts/drop-jit-pack.sh "$WORK/a/eden" --last >/dev/null || fail "drop --last"
 grep -q "part 1 applied" "$WORK/a/eden/part1.txt" || fail "part 1 went with --last"; ok
@@ -71,6 +75,7 @@ grep -q "part 1 applied" "$WORK/c/eden/part1.txt" || fail "part 1 lost when part
 if grep -q "ps4_direct" "$WORK/c/eden/src/common/page_table.h"; then fail "part 2 half applied"; fi
 [ -z "$(cd "$WORK/c/eden" && git status --porcelain)" ] || fail "tree not clean after a refused part 2"
 (cd "$WORK/c/eden" && [ "$(git rev-parse nxo-jit-pack)" = "$(git rev-parse nxo-jit-pack-1)" ]) || fail "tag after a refused part 2"; ok
+grep -q "^apply: 0002-JIT-direct-page-table-copy.py: does not fit this Eden" "$WORK/c/repo/jit-pack-report.txt" && grep -q "^apply:   " "$WORK/c/repo/jit-pack-report.txt" && grep -q "^apply: 0001-part1.patch: applied" "$WORK/c/repo/jit-pack-report.txt" || { cat "$WORK/c/repo/jit-pack-report.txt"; fail "report of a refused part 2"; }; ok
 # With only one part in, the CI's first step (--last) has nothing to do, the second one takes part 1 out.
 if bash scripts/drop-jit-pack.sh "$WORK/c/eden" --last >/dev/null 2>&1; then fail "--last with part 1 only"; fi
 bash scripts/drop-jit-pack.sh "$WORK/c/eden" >/dev/null; grep -q "part 1 applied" "$WORK/c/eden/part1.txt" && fail "part 1 stayed"; ok
@@ -81,6 +86,7 @@ echo "// something else" >>"$WORK/d/eden/part1.txt"
 (cd "$WORK/d/eden" && "${G[@]}" commit -qam "different Eden")
 bash scripts/apply-jit-pack.sh "$WORK/d/repo" "$WORK/d/eden" >"$WORK/d.out" 2>&1
 grep -q "0001-part1.patch does not fit" "$WORK/d.out" || { cat "$WORK/d.out"; fail "part 1 refusal"; }
+grep -q "^apply: 0001-part1.patch: does not fit this Eden" "$WORK/d/repo/jit-pack-report.txt" && ! grep -q "0002" "$WORK/d/repo/jit-pack-report.txt" || fail "report of a refused part 1"; ok
 if grep -q "applied 0002" "$WORK/d.out" || grep -q "ps4_direct" "$WORK/d/eden/src/common/page_table.h"; then fail "part 2 applied without part 1"; fi
 (cd "$WORK/d/eden" && [ -z "$(git tag -l 'nxo-jit-pack-[0-9]*')" ] && ! git rev-parse -q --verify refs/tags/nxo-jit-pack >/dev/null) || fail "tags although nothing applied"; ok
 
@@ -89,4 +95,5 @@ newcase e
 echo off >"$WORK/e/repo/patches/eden-jit/MODE"
 bash scripts/apply-jit-pack.sh "$WORK/e/repo" "$WORK/e/eden" >"$WORK/e.out" 2>&1
 grep -q "not applied" "$WORK/e.out" && [ -z "$(cd "$WORK/e/eden" && git status --porcelain)" ]; ok
+grep -q "^apply: the pack is off" "$WORK/e/repo/jit-pack-report.txt" || fail "report with MODE off"; ok
 echo "jit_pack_scripts_test: $pass checks passed"

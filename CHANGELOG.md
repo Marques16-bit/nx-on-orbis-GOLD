@@ -4,6 +4,35 @@ Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub a
 
 ## [0.9.4] - The direct table now fits the Eden the build uses (the 0.9.3 build did not have it)
 
+### 0.9.4 fix (second zip of 0.9.4; the version number stays 0.9.4, the build id's time tells the two apart)
+
+**What the first 0.9.4 test showed** (`boot.log` of Mario vs. Donkey Kong, Nov 13): `JIT direct table: asked for, but this build does not have it (it did not fit
+this Eden or did not compile)` - again - although the script was fixed and runs on the pinned Eden's files here (tests/ below). The log cannot say which of the
+two it was: the CI's answer (`jit-pack-errors` artifact, job summary) is not on the console. And the log shows where the time goes: `CPUCore_x` threads are 56-79% busy
+but only 28-50% of that is JIT code (the rest is the emulator itself); the GPU is 4-11% busy; a stall of 1-7 s comes about every 15 s, with one core at 91%.
+A faster page lookup is a few per cent of the JIT's share of that. So the direct table cannot be "the" big gain; it is kept, and made to show up.
+
+**What changed**
+- **The build tells the console what it did with the JIT pack.** `scripts/apply-jit-pack.sh` and the new `ci/pack-fallback.sh` write `jit-pack-report.txt`
+  (which parts applied; for one that did not fit, the first lines of why; for one that did not compile, the first error lines; the parts in the end), `package-eden.sh`
+  puts it in the package (`/app0/assets/misc/`), and `boot.log` quotes it at start (`JIT pack, as the build made it: ...`). The next `boot.log` says why part 2 is missing, if it is.
+- **The CI no longer waits for an error that looks like the pack's** before taking the pack out (the old rule matched file names; an error anywhere else, say in `core/memory.cpp`,
+  failed the build instead of dropping part 2). Any failed build with the pack in now drops the last part and builds again, then the whole pack, `ci/pack-fallback.sh`:
+  11 checks: `tests/pack_fallback_test.sh` (with a fake cmake: part 2 fails, part 1 fails, the failure is not the pack's, no pack, the build worked). A failure that is only
+  the SDK's missing temperature functions still does not cost the pack.
+- **Patch 0031: the JIT code cache size and a count of whole flushes.** The cache of each core was fixed at 32 MiB since test 5 (memory ran out then; the PC uses 512 MiB). When it
+  fills, Dynarmic throws all of it away and compiles every block again, which on this CPU is a stall of a second or more, like the ones in the log. New `jit_cache_mib=auto|16..256`
+  (default `auto` = 32, exactly as before; in the menu under CPU; the "More FPS (test)" profile sets 64; safe mode ignores a value above 32). `boot.log` says `JIT cache: N MiB per core;
+  thrown away whole X time(s) because it was full and Y time(s) because the game asked`, at start, in the `status:` cycle whenever a count changes, and at the exit. If it always says
+  0, more cache will not help and this is not the cause of the stalls; if it counts, 128 gives the game room (4 cores x 128 MiB = 512 MiB of direct memory taken up front).
+  Frontend: `frontend/jit_cache.h`, 12 checks: `tests/jit_cache_test.cpp`. The Eden side is a plain patch (`patches/eden/0031-*.patch`, 3 files), applied on the pinned Eden with the other 30 and
+  the JIT pack after it, here, and the three files compile (`-fsyntax-only`, `-D__ORBIS__`, the real headers).
+- `scripts/apply-jit-pack.sh` tests: 20 checks: `tests/jit_pack_scripts_test.sh` (the report is in them).
+
+**Not known:** whether any game fills a 32 MiB cache, and what the part 2 of the pack does on the console. Both numbers are in the next `boot.log`.
+Nothing here was built with the PS4 toolchain or run on a console by the author of this change.
+
+
 **What the 0.9.3 test showed:** `boot.log` said `JIT direct table: asked for, but this build does not have it`, while the page reuse of 0.9.2 was in
 (`217366 groups ... 1058953 accesses`). The cause: part 2 is a script of anchored edits and its anchors were written against Eden *master*; the
 CI's rule "a part that does not fit is left out, the build goes on" did what it is for, and left part 2 out. The pinned Eden (`5f142c79`) differs in two places

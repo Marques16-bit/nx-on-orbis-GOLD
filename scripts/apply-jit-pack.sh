@@ -7,11 +7,16 @@
 #     as it was) and the build goes on without the pack;
 #   - ci/stage-eden.sh takes the pack out again (scripts/drop-jit-pack.sh) if the build then fails inside Dynarmic.
 # patches/eden-jit/MODE holds "on" (default) or "off"; the environment variable NXO_JIT_PACK overrides it.
-# Either way the console's boot.log says whether the build has the pack ("JIT page reuse: ...").
+# Either way the console's boot.log says whether the build has the pack ("JIT page reuse: ..."), and (0.9.4) quotes the report this script and
+# ci/stage-eden.sh write: $NXO_JIT_REPORT, default <repo root>/jit-pack-report.txt, which package-eden.sh puts in the package. It says which parts
+# applied, and for one that did not fit or did not compile, the first lines of the reason; so a build without a part explains itself.
 set -euo pipefail
 ROOT="$1"
 DEST="$2"
 JITDIR="$ROOT/patches/eden-jit"
+REPORT="${NXO_JIT_REPORT:-$ROOT/jit-pack-report.txt}"
+: >"$REPORT"
+note() { printf '%s\n' "$*" >>"$REPORT"; }
 
 mode="${NXO_JIT_PACK:-}"
 if [ -z "$mode" ] && [ -f "$JITDIR/MODE" ]; then
@@ -20,6 +25,7 @@ fi
 mode="${mode:-on}"
 if [ "$mode" != "on" ]; then
     echo "JIT pack: $mode (patches/eden-jit/MODE or NXO_JIT_PACK): not applied"
+    note "apply: the pack is $mode (patches/eden-jit/MODE or NXO_JIT_PACK): not applied"
     exit 0
 fi
 
@@ -57,9 +63,12 @@ done | sort | while IFS= read -r p; do
         applied=$((applied + 1))
         git tag -f "nxo-jit-pack-$applied" >/dev/null
         echo "JIT pack: applied $(basename "$p")"
+        note "apply: $(basename "$p"): applied"
     else
         echo "::warning::JIT pack: $(basename "$p") does not fit this Eden commit; the build goes on without it and without any part after it"
         sed 's/^/    /' "$err" | head -n 12
+        note "apply: $(basename "$p"): does not fit this Eden; it and the parts after it are left out. Why:"
+        head -n 8 "$err" | cut -c1-200 | sed 's/^/apply:   /' >>"$REPORT"
         break
     fi
 done

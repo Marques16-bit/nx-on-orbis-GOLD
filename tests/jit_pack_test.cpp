@@ -68,6 +68,23 @@ int main() {
     d.emitted = 4096;
     Check(Has(Ps4Jit::DescribeDirect(d), "4096 memory lookups read the direct copy"), "direct, live: counts the lookups");
 
+    // 0.9.4: the report of the build, as boot.log quotes it.
+    Check(Ps4Jit::ReportLines("").empty() && Ps4Jit::ReportLines("\n\n  \n").empty(), "report: nothing to say gives no lines");
+    const auto two = Ps4Jit::ReportLines("apply: 0001.patch: applied\r\napply: 0002.py: applied\n");
+    Check(two.size() == 2 && two[0] == "JIT pack, as the build made it: apply: 0001.patch: applied" && two[1].find('\r') == std::string::npos,
+          "report: one log line per report line, prefixed, carriage returns gone");
+    const auto tab = Ps4Jit::ReportLines("build:\tfailed   \n");
+    Check(tab.size() == 1 && tab[0] == "JIT pack, as the build made it: build: failed", "report: tabs become spaces and trailing blanks go");
+    const auto longline = Ps4Jit::ReportLines(std::string(500, 'x') + "\n");
+    Check(longline.size() == 1 && longline[0].size() == std::string("JIT pack, as the build made it: ").size() + 203 && longline[0].substr(longline[0].size() - 3) == "...",
+          "report: a long line is cut at 200 characters");
+    std::string many;
+    for (int i = 0; i < 40; ++i) {
+        many += "line " + std::to_string(i) + "\n";
+    }
+    const auto capped = Ps4Jit::ReportLines(many);
+    Check(capped.size() == 25 && Has(capped[0], "line 0") && Has(capped[23], "line 23") && Has(capped[24], "16 more line(s)"), "report: 24 lines at most, the rest counted");
+
     std::printf("%s\n", g_failures == 0 ? "all ok" : "FAILED");
     return g_failures == 0 ? 0 : 1;
 }

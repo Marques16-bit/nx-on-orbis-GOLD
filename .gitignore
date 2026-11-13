@@ -24,3 +24,4 @@ diagnostics/
 eden-sources/
 .ccache/
 release-notes.md
+jit-pack-report.txt

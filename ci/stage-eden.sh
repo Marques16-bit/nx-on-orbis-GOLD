@@ -34,28 +34,15 @@ set +e
 cmake --build build-eden --target eden-ps4 -j"$JOBS" -- -k 0 2>&1 | tee build-eden-last.log
 status=${PIPESTATUS[0]}
 set -e
-# The JIT pack (patches/eden-jit/) is optional. When the build failed inside Dynarmic, or at the link on one of the pack's symbols, or in
-# the page table code the direct table (part 2) edits, and the pack is in the tree, it is taken out in two steps, each followed by another
-# build: first only the last part (0.9.3: the direct table; part 1, page reuse, stays), then the whole pack. A pack that does not
-# compile costs the pack, not the release. The errors of each step are kept in jit-pack-errors.log (the "jit-pack-errors" artifact).
-pack_error='src/dynarmic/[^ :]*:[0-9]+:[0-9]+: (fatal )?error|A64EdenPageLookup|ps4_page_reuse|ps4_direct|PS4DirectOk|ZeroDirect|SyncDirect|DirectSlot|common/page_table\.(h|cpp):[0-9]+:[0-9]+: (fatal )?error'
-for stage in last all; do
-    if [ "$status" = 0 ] || ! grep -qE "$pack_error" build-eden-last.log; then
-        break
-    fi
-    if [ "$stage" = last ]; then
-        bash scripts/drop-jit-pack.sh deps/eden --last || continue
-    else
-        bash scripts/drop-jit-pack.sh deps/eden || break
-    fi
-    { echo "The build failed with the JIT pack ($stage) in; these are the errors:"; grep -n -E -B2 -A8 'error' build-eden-last.log | head -n 400; } >> jit-pack-errors.log || true
-    echo "::warning::the JIT pack did not compile; building again without its $stage part (the errors are in jit-pack-errors.log)"
-    sed -n '1,40p' jit-pack-errors.log || true
+# The JIT pack (patches/eden-jit/) is optional: when the build failed and the pack is in the tree, ci/pack-fallback.sh takes it out one part at a
+# time and builds again (the errors go to jit-pack-errors.log and, shortened, to jit-pack-report.txt, which boot.log quotes).
+# (A failure that is only the SDK's missing temperature functions is dealt with below and does not cost the pack.)
+if [ "$status" != 0 ] && ! grep -q "sceKernelGet.*Temperature" build-eden-last.log; then
     set +e
-    cmake --build build-eden --target eden-ps4 -j"$JOBS" -- -k 0 2>&1 | tee build-eden-last.log
-    status=${PIPESTATUS[0]}
+    bash ci/pack-fallback.sh "$status"
+    status=$?
     set -e
-done
+fi
 if [ "$status" != 0 ] && grep -q "sceKernelGet.*Temperature" build-eden-last.log; then
     echo "::warning::the SDK has no temperature functions: building the HUD without temperatures"
     cmake -S deps/eden -B build-eden -DEDEN_PS4_HUD_TEMPERATURE=OFF >/dev/null

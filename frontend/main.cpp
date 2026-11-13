@@ -76,6 +76,7 @@
 #include "eden_settings.h"
 #include "firmware_zip.h"
 #include "memory_guard.h"
+#include "jit_cache.h"
 #include "jit_pack.h"
 #include "safe_mode.h"
 #include "menu/cover_loader.h"
@@ -606,6 +607,8 @@ bool g_jit_page_reuse = false;
 /// 0.9.3, settings.txt: jit_direct_table=on|off - Dynarmic reads a decoded copy of the page table (the JIT pack's part 2; default off).
 /// Applied before the core starts: the copy is made when the first page table is sized.
 bool g_jit_direct_table = false;
+/// 0.9.4, settings.txt: jit_cache_mib=auto|16..256 - the JIT code cache of each core (Eden patch 0031; auto = 32 MiB as before).
+unsigned g_jit_cache_mib = 0;
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
@@ -697,6 +700,8 @@ void ApplyMemoryPlan() {
 ///                               (default off; experimental; needs the JIT pack, boot.log says whether the build has it)
 ///   jit_direct_table=on|off     0.9.3: the JIT reads a decoded copy of the page table: four instructions fewer per memory access
 ///                               (default off; experimental; needs part 2 of the JIT pack, boot.log says whether the build has it)
+///   jit_cache_mib=auto|16..256  0.9.4: the JIT code cache of each core in MiB (auto = 32). A cache that fills up is emptied whole and
+///                               every block compiled again (a stall); boot.log counts how often that happened
 ///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
@@ -818,6 +823,8 @@ void ApplySettingsFile() {
             // Applied by ApplyJitPack() after this file is read, before the core starts.
         } else if (key == "jit_direct_table" && Ps4Jit::ParseSwitch(value, &g_jit_direct_table)) {
             // Likewise.
+        } else if (key == "jit_cache_mib" && Ps4JitCache::Parse(value, &g_jit_cache_mib)) {
+            // Applied before the core starts (ps4_jit_cache_mib is read when a core is made).
         } else if (key == "players" && (value == "1" || value == "2" || value == "3" || value == "4")) {
             g_players = std::atoi(value.c_str()); // applied before the core starts (ConnectPlayers) and in the main loop
         } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
@@ -1108,6 +1115,16 @@ int main() {
     Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(g_jit_page_reuse)).c_str());
     Ps4Jit::ApplyDirect(g_jit_direct_table);
     Ps4::Log("%s", Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(g_jit_direct_table)).c_str());
+    {
+        // 0.9.4: what the build did with the JIT pack: which parts applied, and why one is missing (the first lines of its errors).
+        std::ifstream report_file("/app0/assets/misc/jit-pack-report.txt");
+        const std::string report_text((std::istreambuf_iterator<char>(report_file)), std::istreambuf_iterator<char>());
+        for (const std::string& line : Ps4Jit::ReportLines(report_text)) {
+            Ps4::Log("%s", line.c_str());
+        }
+    }
+    ps4_jit_cache_mib = g_jit_cache_mib;
+    Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, Ps4JitCache::Read()).c_str());
     if (g_players > 1) {
         const Ps4Eden::Result linked = Ps4Eden::ConnectPlayers(Settings::values, g_players);
         const int opened = Ps4::OpenExtraPads(g_players);
@@ -1338,6 +1355,7 @@ int main() {
                            pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
     };
     std::uint64_t last_status = Ps4::NowUs(), last_notice = 0, last_mem_check = 0, last_timeline = Ps4::NowUs();
+    Ps4JitCache::Counts jit_cache_logged; // the JIT cache flush counts as last logged (0.9.4)
     // 0.8.2: safe mode says so on the screen for the first 15 s, and the file is cleared once the game has drawn.
     const std::uint64_t safe_notice_until = g_safe_mode ? Ps4::NowUs() + 15000000 : 0;
     bool safe_start_cleared = false;
@@ -1626,6 +1644,10 @@ int main() {
                      static_cast<unsigned long>(Ps4::FreeDirectMemory() >> 20), stage_name(mem_status.stage),
                      mem_status.trend_mib_per_min, shaders_total, static_cast<unsigned long>(mem.guest_free_calls),
                      static_cast<unsigned long>(mem.guest_free_bytes >> 20), static_cast<unsigned long>(mem.guest_free_small));
+            if (const Ps4JitCache::Counts now = Ps4JitCache::Read(); now != jit_cache_logged) {
+                jit_cache_logged = now; // each time a core's cache is thrown away whole, the next status says so
+                Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, now).c_str());
+            }
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
                 Ps4::Log("%s", Ps4Hook::Describe().c_str());
@@ -1670,6 +1692,7 @@ int main() {
     if (g_jit_direct_table) {
         Ps4::Log("%s", Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(true)).c_str());
     }
+    Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, Ps4JitCache::Read()).c_str());
     system.Pause();
     {
         const auto mem = Common::Orbis::GetStats();

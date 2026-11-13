@@ -59,7 +59,14 @@ FILES="eboot.bin sce_sys/param.sfo sce_sys/icon0.png$EXTRA_FILES sce_sys/about/r
 mkdir -p "$ST/assets/misc"
 cp "$ROOT/testroms/hbmenu.nro" "$ST/assets/misc/hbmenu.nro"
 cp "$ROOT/testroms/hbmenu-LICENSE.txt" "$ST/assets/misc/hbmenu-LICENSE.txt"
-FILES="$FILES assets/misc/hbmenu.nro assets/misc/hbmenu-LICENSE.txt"
+# 0.9.4: what the build did with the JIT pack (scripts/apply-jit-pack.sh, ci/stage-eden.sh); boot.log quotes it, so a build that is missing a
+# part of the pack says why. A build outside the CI has no report.
+if [ -s "$ROOT/jit-pack-report.txt" ]; then
+    cp "$ROOT/jit-pack-report.txt" "$ST/assets/misc/jit-pack-report.txt"
+else
+    echo "no report: this build did not go through the CI's pack step" > "$ST/assets/misc/jit-pack-report.txt"
+fi
+FILES="$FILES assets/misc/hbmenu.nro assets/misc/hbmenu-LICENSE.txt assets/misc/jit-pack-report.txt"
 (
     cd "$ST"
     SFO=sce_sys/param.sfo
