@@ -104,4 +104,41 @@ g++ -std=c++20 -O1 -fsanitize=thread -D__ORBIS__ -I"$WORK/ok/src" -I"$SH" \
     "$ROOT/tests/jit_pack/direct_test.cpp" "$WORK/ok/src/common/page_table.cpp" -o "$WORK/direct_test_tsan" -pthread
 echo "(thread sanitizer run: its report would be above this line)"
 TSAN_OPTIONS="halt_on_error=0 report_signal_unsafe=0" "$WORK/direct_test_tsan" || true
+# 5. The same on the files the build really has (the pinned Eden + patches + part 1): this is the case 0.9.3 got wrong.
+FXP="$ROOT/tests/jit_pack/fixtures_pinned"
+mktree_pinned() {
+    mkdir -p "$1/src/common" "$1/src/core" "$1/$D"
+    cp "$FXP/page_table.h" "$FXP/page_table.cpp" "$1/src/common/"
+    cp "$FXP/memory.cpp" "$1/src/core/memory.cpp"
+    cp "$FXP/emit_x64_memory.h" "$1/$D/emit_x64_memory.h"
+    cp "$FXP/emit_x64_memory.cpp.inc" "$1/$D/emit_x64_memory.cpp.inc"
+    cp "$FXP/a64_emit_x64_memory.cpp" "$1/$D/a64_emit_x64_memory.cpp"
+}
+mktree_pinned "$WORK/pin"
+python3 -I "$SCRIPT" "$WORK/pin" >"$WORK/pin.txt" 2>&1 || { cat "$WORK/pin.txt"; fail "the script does not apply to the pinned Eden files"; }
+grep -q "6 files edited" "$WORK/pin.txt" || fail "pinned: unexpected output: $(cat "$WORK/pin.txt")"; ok
+if python3 -I "$SCRIPT" "$WORK/pin" >/dev/null 2>&1; then fail "pinned: the script applied a second time"; fi; ok
+P="$WORK/pin/$D"
+grep -q 'constexpr void Store(' "$WORK/pin/src/common/page_table.h" || fail "pinned fixture is not the constexpr form"; ok
+grep -q 'SyncDirect' "$WORK/pin/src/common/page_table.h" || fail "pinned: no SyncDirect in page_table.h"; ok
+[ "$(grep -c 'PS4DirectOk(' "$P/emit_x64_memory.h")" -eq 2 ] || fail "pinned: PS4DirectOk in emit_x64_memory.h"; ok
+[ "$(grep -c 'PS4DirectOk(' "$P/emit_x64_memory.cpp.inc")" -eq 1 ] || fail "pinned: PS4DirectOk in the slow lookup"; ok
+[ "$(grep -c 'PS4DirectOk(' "$P/a64_emit_x64_memory.cpp")" -eq 1 ] || fail "pinned: PS4DirectOk in the group lookup"; ok
+grep -q 'ps4_direct_mirror_base' "$P/emit_x64_memory.h" || fail "pinned: A64 lookup does not read the mirror"; ok
+g++ -std=c++20 -Wall -Wextra -O1 -fsanitize=address,undefined -D__ORBIS__ -I"$SH" -I"$WORK/pin/src" \
+    "$ROOT/tests/jit_pack/direct_test.cpp" "$WORK/pin/src/common/page_table.cpp" -o "$WORK/direct_test_pin" -pthread
+"$WORK/direct_test_pin"
+# every anchor of the script must be needed on the pinned files too: breaking one leaves all six files untouched
+for brk in "src/common/page_table.h|s/constexpr void Store(/constexpr void Put(/" \
+           "src/common/page_table.h|s/constexpr void MarkRasterizerCached(/constexpr void MarkRC(/" \
+           "src/core/memory.cpp|s/page_table.entries.ZeroRegion(base, end);/page_table.entries.ZeroRegion(base, end, 0);/" \
+           "$D/emit_x64_memory.h|s/code.shl(tmp, int(ctx.conf.page_table_log2_stride));/code.shl(tmp, 3);/"; do
+    rm -rf "$WORK/neg"; mktree_pinned "$WORK/neg"
+    sed -i "${brk#*|}" "$WORK/neg/${brk%%|*}"
+    before="$(sums "$WORK/neg")"
+    if python3 -I "$SCRIPT" "$WORK/neg" >/dev/null 2>"$WORK/neg.err"; then fail "pinned: applied although '${brk#*|}' broke ${brk%%|*}"; fi
+    [ "$before" = "$(sums "$WORK/neg")" ] || fail "pinned: files changed although '${brk#*|}' broke ${brk%%|*}"
+    grep -q "does not fit this Eden" "$WORK/neg.err" || fail "pinned: no explanation for '${brk#*|}'"
+    ok
+done
 echo "jit_direct_test: $pass structure checks passed"

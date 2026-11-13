@@ -3,7 +3,7 @@
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
-> **Status: experimental, under development (v0.9.3).** It boots, has its own menu, and runs real games, but
+> **Status: experimental, under development (v0.9.4).** It boots, has its own menu, and runs real games, but
 > slowly: the emulated CPU is the limit, not the GPU. Some games run, some close when the console runs out of
 > memory. It is not a way to play Switch games on a PS4 yet. Everything below says what was **measured on a console**
 > and what was only written and tested on a PC.
@@ -16,7 +16,7 @@ maior** (até 1536 MiB), e traz a opção **Controles (jogadores) de 1 a 4** na 
 A 0.9.2 traz a opção **JIT: reaproveitar a busca de página** (aba CPU e Memória, desligada por padrão): o mesmo efeito do JIT do Eden4,
 escrito para a tabela de páginas deste port; **nunca rodou num console** e o código que gera as instruções nem foi compilado aqui.
 Se não compilar no CI, o build segue sem ela.
-A 0.9.3 (a "0.9.2 fix") soma a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
+A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não entrou: o Eden fixado era diferente do que o patch esperava) e o emissor foi rodado pela primeira vez, num PC. A 0.9.3 (a "0.9.2 fix") somou a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md).
 
 | | |
 |---|---|
@@ -73,6 +73,13 @@ The speeds above come from console logs of 0.7.9 to 0.9.0. The 0.8.5 and 0.9.0 l
 Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **not confirmed**: [CHANGELOG.md](CHANGELOG.md) says so
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
+
+## What is new in 0.9.4: the direct table is in the build now, and the JIT's code ran for the first time (on a PC)
+
+The 0.9.3 `boot.log` said the build did not have the direct table: its edit script was written against Eden master and the pinned Eden differs in two
+places. 0.9.4 fixes the script, tests it on the pinned Eden's own files, and runs Dynarmic's x64 backend (pinned Eden + this pack) on a PC against
+random AArch64 memory programs in four configurations, with identical results ([tools/jit-harness/](tools/jit-harness/README.md)). What a console will
+show is the gain: turn on `jit_page_reuse` and `jit_direct_table` (or the "More FPS (test)" profile). Details in [CHANGELOG.md](CHANGELOG.md).
 
 ## What is new in 0.9.3 (not run on a console): the 0.9.2 fix
 

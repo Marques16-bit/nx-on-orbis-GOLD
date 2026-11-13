@@ -52,7 +52,7 @@ extern std::uintptr_t ps4_direct_mirror_base;      // its direct copy: the slot 
 
 '''
 
-PT_STORE = '''inline void Store(bool marked, PageType type, u16 block, uintptr_t pointer) noexcept {
+PT_STORE = '''{spec} void Store(bool marked, PageType type, u16 block, uintptr_t pointer) noexcept {
 #ifdef __ORBIS__
             std::atomic<u64>* const direct = DirectSlot();
             if (direct) {
@@ -67,7 +67,7 @@ PT_STORE = '''inline void Store(bool marked, PageType type, u16 block, uintptr_t
 #endif
         }'''
 
-PT_MARK = '''inline void MarkRasterizerCached() noexcept {
+PT_MARK = '''{spec} void MarkRasterizerCached() noexcept {
 #ifdef __ORBIS__
             std::atomic<u64>* const direct = DirectSlot();
             if (direct) {
@@ -135,15 +135,16 @@ PT_MEMBERS = '''
 def edit_page_table_h(t):
     t = once(t, "#include <atomic>\n", "#include <algorithm>\n#include <atomic>\n#include <cstdint>\n#include <cstring>\n", "page_table.h includes")
     t = once(t, "namespace Common {\n", PT_EXTERNS + "namespace Common {\n", "page_table.h namespace")
+    # Eden master writes these two as `inline`, the pinned Eden as `constexpr`: keep whichever it is.
     t = once(
         t,
-        r"inline void Store\(bool marked, PageType type, u16 block, uintptr_t pointer\) noexcept \{\s*"
+        r"(inline|constexpr) void Store\(bool marked, PageType type, u16 block, uintptr_t pointer\) noexcept \{\s*"
         r"data_raw\.store\(std::bit_cast<u64>\(Data\{marked, type, block, pointer\}\)\);\s*\}",
-        PT_STORE, "PageEntryData::Store", regex=True)
+        lambda m: PT_STORE.replace("{spec}", m.group(1)), "PageEntryData::Store", regex=True)
     t = once(
         t,
-        r"inline void MarkRasterizerCached\(\) noexcept \{\s*data_raw\.fetch_or\(0b111\);\s*\}",
-        PT_MARK, "PageEntryData::MarkRasterizerCached", regex=True)
+        r"(inline|constexpr) void MarkRasterizerCached\(\) noexcept \{\s*data_raw\.fetch_or\(0b111\);\s*\}",
+        lambda m: PT_MARK.replace("{spec}", m.group(1)), "PageEntryData::MarkRasterizerCached", regex=True)
     t = once(t, r"private:(\s*\n\s*)std::atomic<u64> data_raw;", lambda m: PT_PRIVATE + m.group(1).lstrip("\n") + "std::atomic<u64> data_raw;",
              "PageEntryData::data_raw", regex=True)
     t = once(t, r"(SparseLargeVector<PageEntryData> entries;\n)", lambda m: m.group(1) + PT_MEMBERS, "PageTable::entries", regex=True)
@@ -241,7 +242,7 @@ H_BLOCK = '''if (direct) {
         return page + vaddr;
     }
 
-    if (ctx.conf.page_table_log2_stride > 3) {'''
+    '''
 
 
 def edit_emit_h(t):
@@ -260,7 +261,17 @@ def edit_emit_h(t):
                "    const Xbyak::Reg64 tmp = ctx.conf.absolute_offset_page_table && ctx.conf.page_table_pointer_mask == 0 && !direct\n"
                "        ? page : ctx.reg_alloc.ScratchGpr(code);")
     body = once(body, tmp_old, tmp_new, "EmitVAddrLookup<A64> tmp")
-    body = once(body, "if (ctx.conf.page_table_log2_stride > 3) {", H_BLOCK, "EmitVAddrLookup<A64> stride")
+    # The direct branch goes in front of the first use of the stride: `if (stride > 3) {` in Eden master, `shl tmp, stride` in the pinned Eden.
+    # The second form only counts when the shift is at the top level of the function (four spaces): inside an `if` (Eden master's shape with its
+    # `if` mangled) the direct branch would be skipped for stride 3 and the script would go on without noticing.
+    a_if = "if (ctx.conf.page_table_log2_stride > 3) {"
+    a_shl = "\n    code.shl(tmp, int(ctx.conf.page_table_log2_stride));"
+    if body.count(a_if) == 1:
+        body = body.replace(a_if, H_BLOCK + a_if, 1)
+    elif a_if not in body and "log2_stride > 3" not in body and body.count(a_shl) == 1:
+        body = body.replace(a_shl, "\n    " + H_BLOCK + a_shl[5:], 1)
+    else:
+        raise Miss("EmitVAddrLookup<A64> stride: no anchor found")
     return t[: start.end()] + body + t[end + 3:]
 
 

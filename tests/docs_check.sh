@@ -161,6 +161,16 @@ check "patch 0029 credits Eden4" 'grep -q "Eden4" patches/eden/0029-*.patch'
 check "patch 0030 exists and changes only the lazy-memory files" '[ "$(grep "^diff --git" patches/eden/0030-*.patch | wc -l | tr -d " ")" = 2 ] && ! grep "^diff --git" patches/eden/0030-*.patch | grep -qv "orbis_lazy_memory"'
 check "the menu text of sysflex_mib credits Eden4" 'grep -q "from Eden4" frontend/menu/settings_model.cpp'
 
+echo "== the JIT direct table fits the pinned Eden (0.9.4)"
+check "fixtures_pinned has the six files the script edits, from the pinned build" '
+    for f in page_table.h page_table.cpp memory.cpp emit_x64_memory.h emit_x64_memory.cpp.inc a64_emit_x64_memory.cpp; do [ -s tests/jit_pack/fixtures_pinned/$f ] || exit 1; done
+    grep -q "constexpr void Store(" tests/jit_pack/fixtures_pinned/page_table.h'
+check "the CI builds the page table half with the PC stand-ins first in the include path" 'grep -q -- "-Itests/jit_pack/direct_shim -Ideps/eden/src" .github/workflows/check-patches.yml'
+check "tools/jit-harness has the harness, the generator, the stubs, the source list and a README" '
+    for f in harness.cpp gen.py stubs.cpp dynarmic-sources.txt README.md; do [ -s tools/jit-harness/$f ] || exit 1; done'
+check "CHANGELOG 0.9.4 names the boot.log line of 0.9.3 and the cause" '
+    awk "/^## \\[0.9.4\\]/{f=1;next} /^## \\[/{f=0} f" CHANGELOG.md | tr "\n" " " | tr -s " " | grep -q "does not have it" && awk "/^## \\[0.9.4\\]/{f=1;next} /^## \\[/{f=0} f" CHANGELOG.md | grep -q "constexpr"'
+
 echo "== the JIT direct table (0.9.3)"
 check "jit_direct_table is an option, off by default, in the CPU AND MEMORY tab" '
     settings_key jit_direct_table && settings_default jit_direct_table off && awk "/^## CPU AND MEMORY tab/{f=1;next} /^## /{f=0} f" docs/SETTINGS.md | grep -q "jit_direct_table"'

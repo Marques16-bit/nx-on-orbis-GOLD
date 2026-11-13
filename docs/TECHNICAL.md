@@ -197,10 +197,12 @@ the JIT Eden4's "page reuse" for this port's flat page table.
   `tools/jit-harness/`, needs Xbyak/fmt/Boost, and is the right next step if the option is to stay), and the pinned Eden's differences from
   the Dynarmic the patch was made against (`git apply --check` in `scripts/apply-jit-pack.sh` catches changed context, not changed meaning).
 
-## JIT direct table (0.9.3; never run on a console, code generator never compiled)
+## JIT direct table (0.9.3, fitted to the pinned Eden in 0.9.4; never run on a console)
 
-Part 2 of the JIT pack, `patches/eden-jit/0002-JIT-direct-page-table-copy.py`. The pinned Eden's sources are not at hand when it is written, so it
-is a script of anchored edits (each anchor is a line or a few of Eden master's; a missing or repeated anchor refuses all edits) and not a diff.
+Part 2 of the JIT pack, `patches/eden-jit/0002-JIT-direct-page-table-copy.py`. It is a script of anchored edits (each anchor is a line or a few; a missing or repeated anchor
+refuses all edits) and not a diff. 0.9.3 wrote its anchors from Eden master and did not fit the pinned Eden; 0.9.4 takes both forms (`constexpr`/`inline` on `Store` and
+`MarkRasterizerCached`; the stride branch or the plain `shl`), is tested on copies of the pinned files (`tests/jit_pack/fixtures_pinned/`), and its emitters were run on
+a PC with `tools/jit-harness/` (identical results in the four configurations).
 
 - **The table** (`common/page_table.h`, `page_table.cpp`; everything under `#ifdef __ORBIS__`): `PageTable::direct_entries`, a
   `SparseLargeVector<std::atomic<u64>>` of the same size as `entries`, allocated by `Resize` for the first table sized while

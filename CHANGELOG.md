@@ -2,6 +2,29 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.4] - The direct table now fits the Eden the build uses (the 0.9.3 build did not have it)
+
+**What the 0.9.3 test showed:** `boot.log` said `JIT direct table: asked for, but this build does not have it`, while the page reuse of 0.9.2 was in
+(`217366 groups ... 1058953 accesses`). The cause: part 2 is a script of anchored edits and its anchors were written against Eden *master*; the
+CI's rule "a part that does not fit is left out, the build goes on" did what it is for, and left part 2 out. The pinned Eden (`5f142c79`) differs in two places
+the script needed: `Store` and `MarkRasterizerCached` are `constexpr` there (master: `inline`), and the A64 lookup does `shl tmp, stride`
+without master's `if (stride > 3)`.
+
+**What changed**
+- `patches/eden-jit/0002-...py` takes both forms (the `if` form, or the shift at the top level of the function; a shift nested in an `if` is not taken for the second form).
+  Run on the pinned Eden's own files it now edits all six and writes exactly what was checked below.
+- `tests/jit_pack/fixtures_pinned/`: the six files as the build has them (pinned Eden + the 30 patches + part 1), and `tests/jit_direct_test.sh` runs the
+  script on them too (apply, apply only once, each anchor needed, the page table half compiled and run on them): **36 structure checks** (24 in 0.9.3), the page table half still 32 checks.
+  `check-patches.yml` builds the page table half against the real Eden headers with the PC stand-ins first in the include path (the other order let the real headers win).
+- **`tools/jit-harness/`: the emitters were run for the first time.** Dynarmic's x64 backend, built from the pinned Eden with both parts of the pack, executes
+  random AArch64 memory programs in four configurations (pack off, part 1, part 2, both) with pages that are fast, rasterizer-cached, debug and unmapped,
+  re-drawn between epochs while the compiled code stays. Registers, vectors, memory and the callback sequence are identical in all four, over three seeds
+  (3800 runs per configuration); zeroing the direct table's slots by hand changes the results, so the JIT does read it. The code ran on x86-64 Linux and not on the PS4.
+- Version 0.9.4; nothing else changed in the options: `jit_direct_table` is still off by default (and on in "More FPS (test)").
+
+**Still not known:** how much it gains on the console. It removes 4 of about 12 instructions of each memory lookup, so expect a few per cent on a game that is limited by the CPU.
+Run the same game with `jit_page_reuse=on` and `jit_direct_table=on` and send `boot.log`: it must say `JIT direct table: on; N memory lookups read the direct copy`.
+
 ## [0.9.3] - The JIT's direct table (the 0.9.2 fix: more of the JIT's cost removed; optional, off by default)
 
 **The 0.9.2 test on the console showed what the page reuse does alone: a gain, but a very small one. This is the next step on the same
