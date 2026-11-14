@@ -350,12 +350,14 @@ def main(argv):
             path = root / rel
             if not path.is_file():
                 raise Miss(f"{rel}: not in the checkout")
-            out[path] = fn(path.read_text(encoding="utf-8", newline=""))
+            # bytes in, bytes out: keeps CRLF as it is, and works on every Python 3
+            # (the newline argument of Path.read_text exists only from Python 3.13; the GitHub runner has 3.12)
+            out[path] = fn(path.read_bytes().decode("utf-8"))
     except Miss as e:
         print(f"JIT direct table: does not fit this Eden ({e})", file=sys.stderr)
         return 1
     for path, text in out.items():   # all edits worked: only now is anything written
-        path.write_text(text, encoding="utf-8", newline="")
+        path.write_bytes(text.encode("utf-8"))
     print(f"JIT direct table: {len(out)} files edited")
     return 0
 

@@ -21,7 +21,7 @@ A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não en
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 31 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 32 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
 | Renderer | Vulkan only (`-DENABLE_OPENGL=OFF`), on Mesa RADV "PlayStation 4 Liverpool" (Vulkan 1.3) |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Build | GitHub Actions builds the `.pkg` and the ELF from a tag ([docs/BUILDING.md](docs/BUILDING.md)); [Releases](../../releases) |
@@ -75,6 +75,11 @@ entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as 
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
 ## What is new in 0.9.4: the direct table is in the build now, and the JIT's code ran for the first time (on a PC)
+
+**0.9.4 fix 2:** the test of the fix ran in safe mode (a crash of another game, hours before, had turned it on: every experimental option was ignored) and the build still left out part 2 of the
+JIT pack: its script needed Python 3.13 and the GitHub runner has 3.12 (the new report in `boot.log` showed the `TypeError`). Fixed both: the script runs on every Python 3, safe mode now applies only to the same
+game that died (or after two deaths in a row), and the JIT code cache, which the same log showed being thrown away whole 6 times in 200 s at 32 MiB, is 64 MiB per core by default on this console
+(`jit_cache_mib`, menu CPU) and is taken on 2 MiB boundaries (patch 0032). `boot.log` now also counts the blocks the JIT compiles every 10 s. Details in [CHANGELOG.md](CHANGELOG.md).
 
 **0.9.4 fix:** the first 0.9.4 `boot.log` still said the build had no direct table, and showed that a faster page lookup is only a few per cent of the CPU time (the JIT's code is 28-50% of
 what the CPU threads do). So the fix makes the build explain itself (`boot.log` now quotes what the CI did with the JIT pack and why a part is missing), takes a failing pack out one part at a time

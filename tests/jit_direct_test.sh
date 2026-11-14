@@ -141,4 +141,20 @@ for brk in "src/common/page_table.h|s/constexpr void Store(/constexpr void Put(/
     grep -q "does not fit this Eden" "$WORK/neg.err" || fail "pinned: no explanation for '${brk#*|}'"
     ok
 done
+# 6. Every Python 3 the build could run the script with: the GitHub runner (ubuntu-24.04) has 3.12, and 0.9.4 shipped a script that
+#    needed 3.13 (Path.read_text(newline=...)), so the direct table never got into a build. Each interpreter found here must leave
+#    the same six files, byte for byte.
+ref=""
+nvers=0
+for py in python3.9 python3.10 python3.11 python3.12 python3.13 python3.14 python3; do
+    command -v "$py" >/dev/null 2>&1 || continue
+    rm -rf "$WORK/py"; mktree_pinned "$WORK/py"
+    "$py" -I "$SCRIPT" "$WORK/py" >"$WORK/py.txt" 2>&1 || { cat "$WORK/py.txt"; fail "$py ($("$py" --version 2>&1)): the script does not apply"; }
+    grep -q "6 files edited" "$WORK/py.txt" || fail "$py: unexpected output: $(cat "$WORK/py.txt")"
+    got="$(sums "$WORK/py")"
+    if [ -z "$ref" ]; then ref="$got"; else [ "$ref" = "$got" ] || fail "$py leaves other bytes than the first interpreter"; fi
+    nvers=$((nvers + 1)); ok
+done
+[ "$nvers" -ge 1 ] || fail "no python3 found"
+echo "jit_direct_test: $nvers python version(s) tried"
 echo "jit_direct_test: $pass structure checks passed"

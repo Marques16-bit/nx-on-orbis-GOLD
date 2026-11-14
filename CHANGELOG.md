@@ -4,6 +4,39 @@ Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub a
 
 ## [0.9.4] - The direct table now fits the Eden the build uses (the 0.9.3 build did not have it)
 
+### 0.9.4 fix 2 (third zip of 0.9.4; the version number stays 0.9.4, the build id's time tells the zips apart)
+
+**What the test of the fix showed** (Nov 13 evening, Mario vs. Donkey Kong; `boot.old.log`, `eden_*.log`, `mesa_*.log`). Two things, neither of them the JIT:
+1. **The test ran in safe mode.** `boot.log` said `safe mode: the last start ended before the game drew anything; experimental lines of settings.txt are ignored`: the game before it, SpongeBob
+   (UE5), had crashed before drawing (nine hours earlier), and safe mode then applied to the next start whatever the game. `jit_page_reuse`, `jit_direct_table`, `jit_cache_mib=256`, `cpu_ticks`,
+   `cpu_clock` and `astc_recompress` were all ignored, so the test measured none of what the fix brought.
+2. **Part 2 of the JIT pack never reached the build, and the new report said why**: `TypeError: Path.read_text() got an unexpected keyword argument 'newline'`. `Path.read_text(newline=...)`
+   exists only from Python 3.13; the GitHub runner (ubuntu-24.04) has 3.12; the author's tests ran on 3.13. The script failed on every build since 0.9.3 before it looked at a single file.
+
+And the same log showed what a game does to the code cache: at the default 32 MiB per core it was **thrown away whole 6 times in 200 s** (the first within 10 s of the game starting), with freezes of
+1.5 to 5.7 s and 6 to 12 FPS for tens of seconds after the flushes (everything is compiled again); once the cache stayed (the last 50 s) the game ran at about 20 FPS in the level.
+
+**What changed**
+- **Part 2 runs on every Python 3** (`patches/eden-jit/0002-...py` reads and writes bytes). `tests/jit_direct_test.sh` now runs it with every interpreter it finds (3.11, 3.12, 3.13 here; the
+  CI's 3.12 is one of them) and compares the six files byte for byte: **40 structure checks** (36 before). The whole pack was also applied here with `python3` = 3.12 on the pinned Eden + 32 patches.
+- **Safe mode follows the game** (`frontend/safe_mode.h`). `safe_start.txt` now names the game and counts the starts in a row that died. Safe mode is on when the start that died was of the SAME game
+  (the retry of a crash) or when two starts in a row died (whatever the games: an option that kills every game is still caught). After one death of another game it is NOT on, and `boot.log` says
+  `safe mode: not used - the last start (...) ended before the game drew anything, but that was another game`. When it is on, `boot.log` names the game and the count, and the notice on the screen
+  lasts 30 s instead of 15 and says what is off. Tests: `tests/safe_mode_test.cpp` (more checks for the game, the count, old files and CRLF).
+- **`jit_cache_mib=auto` is now 64 MiB per core on a roomy console** (4.3 GiB of direct memory or more: the PS4 Pro) and 32 on any other, and in safe mode. A value in `settings.txt` is used as it is
+  (the menu now also has `32`). The "More FPS (test)" profile sets 128 (4 cores x 128 MiB = 512 MiB of direct memory taken when the game opens). `boot.log` says whether the size is automatic.
+- **Patch 0032: the code cache on 2 MiB boundaries, and two more counts.** The cache of each core was taken on 16 KiB boundaries (patch 0005). It is now asked for on 2 MiB boundaries first, physical
+  and virtual, which lets the kernel use large pages for it (generated code of tens of MiB behind 16 KiB pages needs a TLB entry for every few KiB), and falls back to the 16 KiB block when
+  there is none. `boot.log` says `JIT cache memory: N core cache(s) on 2 MiB boundaries ..., M on 16 KiB boundaries`. Whether the kernel really backs it with large pages, and what that is worth, is not
+  known: it is the one change here that is a try, not a measurement. Also counted: blocks compiled and cache ranges invalidated, in the `status:` cycle (`JIT work in the last 10 s: N block(s) compiled,
+  M cache range(s) invalidated`) and at the exit, to show what fills the cache between two flushes. Patch 0032 applies after the other 31 with `git am`, the pack applies after it, and the files compile
+  (`-fsyntax-only`, `-D__ORBIS__`, the real headers, clang).
+- `frontend/jit_cache.h`: `ForStart`, `DescribePages`, `DescribeActivity`, `DescribeTotals`; 23 checks (12 before).
+
+**What to expect.** The direct table saves four instructions of about twelve per memory access: a few per cent. The cache sizes are the part that should be seen: no flush stalls in the first minutes, and
+no 6 to 12 FPS stretches after them. The steady rate of a level (about 20 FPS in the log, with the CPU threads 70-80% busy and 55-85% of that in JIT code) is limited by the speed of the generated
+code, and the only large lever there (fastmem) is not in this repository and is not safe to make without a console to test on.
+
 ### 0.9.4 fix (second zip of 0.9.4; the version number stays 0.9.4, the build id's time tells the two apart)
 
 **What the first 0.9.4 test showed** (`boot.log` of Mario vs. Donkey Kong, Nov 13): `JIT direct table: asked for, but this build does not have it (it did not fit
@@ -25,7 +58,7 @@ A faster page lookup is a few per cent of the JIT's share of that. So the direct
   (default `auto` = 32, exactly as before; in the menu under CPU; the "More FPS (test)" profile sets 64; safe mode ignores a value above 32). `boot.log` says `JIT cache: N MiB per core;
   thrown away whole X time(s) because it was full and Y time(s) because the game asked`, at start, in the `status:` cycle whenever a count changes, and at the exit. If it always says
   0, more cache will not help and this is not the cause of the stalls; if it counts, 128 gives the game room (4 cores x 128 MiB = 512 MiB of direct memory taken up front).
-  Frontend: `frontend/jit_cache.h`, 12 checks: `tests/jit_cache_test.cpp`. The Eden side is a plain patch (`patches/eden/0031-*.patch`, 3 files), applied on the pinned Eden with the other 30 and
+  Frontend: `frontend/jit_cache.h`, 23 checks: `tests/jit_cache_test.cpp`. The Eden side is a plain patch (`patches/eden/0031-*.patch`, 3 files), applied on the pinned Eden with the other 30 and
   the JIT pack after it, here, and the three files compile (`-fsyntax-only`, `-D__ORBIS__`, the real headers).
 - `scripts/apply-jit-pack.sh` tests: 20 checks: `tests/jit_pack_scripts_test.sh` (the report is in them).
 
@@ -43,7 +76,7 @@ without master's `if (stride > 3)`.
 - `patches/eden-jit/0002-...py` takes both forms (the `if` form, or the shift at the top level of the function; a shift nested in an `if` is not taken for the second form).
   Run on the pinned Eden's own files it now edits all six and writes exactly what was checked below.
 - `tests/jit_pack/fixtures_pinned/`: the six files as the build has them (pinned Eden + the 30 patches + part 1), and `tests/jit_direct_test.sh` runs the
-  script on them too (apply, apply only once, each anchor needed, the page table half compiled and run on them): **36 structure checks** (24 in 0.9.3), the page table half still 32 checks.
+  script on them too (apply, apply only once, each anchor needed, the page table half compiled and run on them): **40 structure checks** (24 in 0.9.3), the page table half still 32 checks.
   `check-patches.yml` builds the page table half against the real Eden headers with the PC stand-ins first in the include path (the other order let the real headers win).
 - **`tools/jit-harness/`: the emitters were run for the first time.** Dynarmic's x64 backend, built from the pinned Eden with both parts of the pack, executes
   random AArch64 memory programs in four configurations (pack off, part 1, part 2, both) with pages that are fast, rasterizer-cached, debug and unmapped,

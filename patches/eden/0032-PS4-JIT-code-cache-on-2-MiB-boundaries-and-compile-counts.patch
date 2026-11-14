@@ -1,0 +1,117 @@
+From 37897cbf48d4a25a9d06a1b84f4a2e40ffa6dcdf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 14 Nov 2026 09:21:50 -0300
+Subject: [PATCH 32/32] PS4: JIT code cache on 2 MiB boundaries, and counts of
+ compiled blocks and invalidated ranges
+
+0.9.4 fix 2. The code cache of each core was taken on 16 KiB boundaries (patch 0005). It is now asked for on 2 MiB boundaries first, physical and
+virtual, the way the guest memory's own blocks are taken, so the kernel can back it with large pages (the generated code of a core is tens of MiB);
+if the kernel has no such block it is the 16 KiB block as before. The frontend logs how many caches got which.
+
+Two more counters for the frontend's log, to see what fills the cache between two flushes: blocks compiled, and cache ranges the guest asked to
+invalidate (each one halts the core that gets it).
+---
+ .../dynarmic/backend/x64/a64_interface.cpp    |  8 ++++
+ .../dynarmic/backend/x64/block_of_code.cpp    | 44 ++++++++++++-------
+ 2 files changed, 36 insertions(+), 16 deletions(-)
+
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
+index 43c1d2b..1e12e58 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp
+@@ -31,6 +31,8 @@
+ // 0.9.4: how often a JIT code cache was thrown away whole (the frontend logs both): because it was full, and because the game asked (IC IALLU).
+ extern "C" unsigned long long ps4_jit_cache_full;
+ extern "C" unsigned long long ps4_jit_cache_asked;
++extern "C" unsigned long long ps4_jit_blocks_compiled;
++extern "C" unsigned long long ps4_jit_ranges_invalidated;
+ #endif
+ 
+ namespace Dynarmic::A64 {
+@@ -118,6 +120,9 @@ public:
+ 
+     void InvalidateCacheRange(u64 start_address, size_t length) {
+         std::unique_lock lock{invalidation_mutex};
++#if defined(__ORBIS__)
++        __atomic_fetch_add(&ps4_jit_ranges_invalidated, 1ull, __ATOMIC_RELAXED);
++#endif
+         const auto end_address = static_cast<u64>(start_address + length - 1);
+         const auto range = boost::icl::discrete_interval<u64>::closed(start_address, end_address);
+         invalid_cache_ranges.add(range);
+@@ -272,6 +277,9 @@ private:
+         ir_block.Reset(arch_descriptor);
+         A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
+         Optimization::Optimize(ir_block, conf, polyfill_options);
++#if defined(__ORBIS__)
++        __atomic_fetch_add(&ps4_jit_blocks_compiled, 1ull, __ATOMIC_RELAXED);
++#endif
+         return emitter.Emit(ir_block).entrypoint;
+     }
+ 
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
+index f006130..fc354f6 100644
+--- a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
+@@ -160,6 +160,9 @@ int32_t sceKernelMprotect(const void*, size_t, int);
+ int32_t sceKernelReleaseDirectMemory(off_t, size_t);
+ int32_t sceKernelMunmap(void*, size_t);
+ size_t sceKernelGetDirectMemorySize(void);
++// How many code caches got a 2 MiB-aligned block and how many had to settle for 16 KiB (read by the frontend, which defines them).
++extern unsigned long long ps4_jit_cache_large;
++extern unsigned long long ps4_jit_cache_small;
+ }
+ 
+ namespace Dynarmic::Backend::X64 {
+@@ -173,24 +176,33 @@ struct OrbisCodeAllocator final : Xbyak::Allocator {
+     };
+     std::vector<Block> blocks;
+ 
++    // 0.9.4 fix 2: first try the block on 2 MiB boundaries, physical and virtual (the way the guest memory's own carve-outs are
++    // taken), which lets the kernel back it with large pages: the code of a core is tens of MiB, and with 16 KiB pages every few
++    // KiB of it needs its own TLB entry. If the kernel has no such block (fragmented direct memory) it is the 16 KiB block as before.
++    static constexpr size_t Large = 0x200000;
++
+     uint8_t* alloc(size_t size) override {
+-        size = (size + Granule - 1) & ~(Granule - 1);
+-        off_t phys = 0;
+-        if (sceKernelAllocateDirectMemory(0, off_t(sceKernelGetDirectMemorySize()), size, Granule, 0 /*WB_ONION*/, &phys) != 0) {
+-            return nullptr;
+-        }
+-        void* addr = nullptr;
+-        if (sceKernelMapDirectMemory(&addr, size, 0x03 /*CPU RW*/, 0, phys, Granule) != 0) {
+-            sceKernelReleaseDirectMemory(phys, size);
+-            return nullptr;
+-        }
+-        if (sceKernelMprotect(addr, size, 0x07 /*CPU RWX*/) != 0) {
+-            sceKernelMunmap(addr, size);
+-            sceKernelReleaseDirectMemory(phys, size);
+-            return nullptr;
++        for (const size_t align : {Large, Granule}) {
++            const size_t len = (size + align - 1) & ~(align - 1);
++            off_t phys = 0;
++            if (sceKernelAllocateDirectMemory(0, off_t(sceKernelGetDirectMemorySize()), len, align, 0 /*WB_ONION*/, &phys) != 0) {
++                continue;
++            }
++            void* addr = nullptr;
++            if (sceKernelMapDirectMemory(&addr, len, 0x03 /*CPU RW*/, 0, phys, align) != 0) {
++                sceKernelReleaseDirectMemory(phys, len);
++                continue;
++            }
++            if (sceKernelMprotect(addr, len, 0x07 /*CPU RWX*/) != 0) {
++                sceKernelMunmap(addr, len);
++                sceKernelReleaseDirectMemory(phys, len);
++                continue;
++            }
++            blocks.push_back({static_cast<uint8_t*>(addr), len, phys});
++            __atomic_fetch_add(align == Large ? &ps4_jit_cache_large : &ps4_jit_cache_small, 1ull, __ATOMIC_RELAXED);
++            return static_cast<uint8_t*>(addr);
+         }
+-        blocks.push_back({static_cast<uint8_t*>(addr), size, phys});
+-        return static_cast<uint8_t*>(addr);
++        return nullptr;
+     }
+     void free(uint8_t* p) override {
+         for (size_t i = 0; i < blocks.size(); ++i) {
+-- 
+2.43.0
+

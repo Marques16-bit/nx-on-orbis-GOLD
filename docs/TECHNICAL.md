@@ -344,3 +344,16 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - **Reading the 0.9.4 boot.log** (Mario vs. Donkey Kong, Nov 13): the `profile` lines count a sample as "jit" when the instruction pointer is outside the eboot image and the kernel library, so the rest of a busy thread is the
   emulator itself (compiling blocks, memory callbacks, the emulated kernel). On the three busy `CPUCore_` threads the JIT share was 28-50% of 56-79% busy; the GPU thread 4-11% busy. The stalls (1.0-7.3 s) came with one core at 91% busy.
 
+### 0.9.4 fix 2: what the test log showed, safe mode, the cache's pages
+
+- **Reading the 0.9.4 fix boot.log** (`boot.old.log`, Nov 13 evening). Part 2's report line was `TypeError: Path.read_text() got an unexpected keyword argument 'newline'` (3.13-only; the runner has 3.12).
+  The same start was in safe mode (`safe mode: the last start ended before the game drew anything`), so `jit_page_reuse`, `jit_direct_table`, `jit_cache_mib=256`, `cpu_ticks`, `cpu_clock` and `astc_recompress`
+  were ignored and the 32 MiB cache was used: `thrown away whole 1 time(s)` at the first status, 2 at ~110 s, 3 at ~120 s, 4 at ~140 s, 6 at ~150 s. The freezes (5.75, 2.4, 1.4 s) and 6-12 FPS stretches sit in
+  that window (a level load: new code on three cores, each with its own cache, so the same blocks are compiled up to three times). After the last flush the level ran at ~20 FPS (flips alternating 34 and 67 ms)
+  with `CPUCore_0..2` 42-79% busy and 54-84% of that in JIT code; the `mesa_*.log` budget lines show the GPU never waited (`waited 0 ms for the GPU ... 0%`).
+- **Safe mode** (`frontend/safe_mode.h`): `safe_start.txt` = game name, then the number of starts in a row that did not get to draw. `PreviousStartDied(path, game)` is true for the same game or a count of 2 or more.
+  A file without the second line (older zips) counts as one death.
+- **Patch 0032**: `OrbisCodeAllocator::alloc` (patch 0005's allocator) tries `sceKernelAllocateDirectMemory` / `sceKernelMapDirectMemory` with alignment and size rounded to 2 MiB, then the old 16 KiB way; it counts
+  each outcome in `ps4_jit_cache_large` / `ps4_jit_cache_small`. `a64_interface.cpp` counts `ps4_jit_blocks_compiled` (in `Impl::Compile`, once per block) and `ps4_jit_ranges_invalidated` (in
+  `Impl::InvalidateCacheRange`, each of which halts the core that receives it). All four are defined weak in `frontend/jit_cache.h`. Compile counts are relaxed atomics shared by the cores: one add per compiled block
+  (a block costs tens of microseconds to compile), nothing on the execution path.

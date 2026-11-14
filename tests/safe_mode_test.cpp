@@ -21,14 +21,44 @@ int main() {
     const std::string path = "safe_mode_test.tmp";
     std::remove(path.c_str());
 
-    Check(!Ps4Safe::PreviousStartDied(path), "no file: the last start was fine");
-    Check(Ps4Safe::MarkStart(path, "game"), "a start writes its file");
-    Check(Ps4Safe::PreviousStartDied(path), "the file is still there: the next start sees a death");
+    Check(!Ps4Safe::PreviousStartDied(path, "A"), "no file: the last start was fine");
+    Check(Ps4Safe::MarkStart(path, "A"), "a start writes its file");
+    Check(Ps4Safe::PreviousStartDied(path, "A"), "the file is still there and it is the same game: the retry of a death gets safe mode");
     Ps4Safe::MarkOpened(path);
-    Check(!Ps4Safe::PreviousStartDied(path), "once the game drew, the file is gone");
+    Check(!Ps4Safe::PreviousStartDied(path, "A"), "once the game drew, the file is gone");
     Ps4Safe::MarkOpened(path); // removing twice is harmless
-    Check(!Ps4Safe::PreviousStartDied(path), "removing a missing file is harmless");
+    Check(!Ps4Safe::PreviousStartDied(path, "A"), "removing a missing file is harmless");
     Check(!Ps4Safe::MarkStart("no_such_dir/safe_start.txt", "game"), "a folder that is not there: MarkStart says so, nothing throws");
+
+    // 0.9.4 fix 2: safe mode follows the game, and two deaths in a row.
+    Ps4Safe::MarkStart(path, "SpongeBob"); // the crash of 11:41
+    Check(!Ps4Safe::PreviousStartDied(path, "Mario vs. Donkey Kong") && Ps4Safe::PreviousStartDiedOtherGame(path, "Mario vs. Donkey Kong"),
+          "another game after one death: NO safe mode (the 0.9.4 test lost its options this way), and the log can say why");
+    Check(Ps4Safe::PreviousStartDied(path, "SpongeBob") && !Ps4Safe::PreviousStartDiedOtherGame(path, "SpongeBob"), "the same game again: safe mode");
+    Ps4Safe::MarkStart(path, "Mario vs. Donkey Kong"); // that start died too: two in a row, two games
+    Check(Ps4Safe::ReadRecord(path).deaths == 2 && Ps4Safe::ReadRecord(path).game == "Mario vs. Donkey Kong", "the file counts the starts in a row and names the last game");
+    Check(Ps4Safe::PreviousStartDied(path, "Zelda") && !Ps4Safe::PreviousStartDiedOtherGame(path, "Zelda"),
+          "two deaths in a row, whatever the games: safe mode (an option that kills every game is still caught)");
+    Ps4Safe::MarkOpened(path);
+    Check(!Ps4Safe::PreviousStartDied(path, "Zelda") && !Ps4Safe::PreviousStartDiedOtherGame(path, "Zelda") && !Ps4Safe::ReadRecord(path).present, "a start that drew resets all of it");
+    // a file written before 0.9.4 fix 2: the game's name alone, no count (one death)
+    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+        std::fputs("old game\n", f);
+        std::fclose(f);
+    }
+    Check(Ps4Safe::PreviousStartDied(path, "old game") && !Ps4Safe::PreviousStartDied(path, "other") && Ps4Safe::ReadRecord(path).deaths == 1,
+          "an old file without a count means one death of that game");
+    // a file saved with CRLF line ends (edited by hand on a PC): the name is cut clean
+    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+        std::fputs("A\r\n2\r\n", f);
+        std::fclose(f);
+    }
+    Check(Ps4Safe::ReadRecord(path).game == "A" && Ps4Safe::ReadRecord(path).deaths == 2, "CRLF line ends are cut from the name");
+    // a game name with spaces, dots and brackets survives the round trip
+    Ps4Safe::MarkOpened(path);
+    Ps4Safe::MarkStart(path, "/data/edenps4/roms/Mario vs. Donkey Kong [0100B99019412000][v0].nsp");
+    Check(Ps4Safe::PreviousStartDied(path, "/data/edenps4/roms/Mario vs. Donkey Kong [0100B99019412000][v0].nsp"), "a real game path is compared whole");
+    Ps4Safe::MarkOpened(path);
 
     using Ps4Safe::IsExperimental;
     Check(IsExperimental("cpu_clock", "boost") && IsExperimental("cpu_clock", "overclock") && !IsExperimental("cpu_clock", "normal"),

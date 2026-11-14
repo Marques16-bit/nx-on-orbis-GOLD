@@ -607,8 +607,10 @@ bool g_jit_page_reuse = false;
 /// 0.9.3, settings.txt: jit_direct_table=on|off - Dynarmic reads a decoded copy of the page table (the JIT pack's part 2; default off).
 /// Applied before the core starts: the copy is made when the first page table is sized.
 bool g_jit_direct_table = false;
-/// 0.9.4, settings.txt: jit_cache_mib=auto|16..256 - the JIT code cache of each core (Eden patch 0031; auto = 32 MiB as before).
+/// 0.9.4, settings.txt: jit_cache_mib=auto|16..256 - the JIT code cache of each core (Eden patch 0031; auto = 64 MiB on a roomy console since 0.9.4 fix 2, else 32).
 unsigned g_jit_cache_mib = 0;
+unsigned g_jit_cache_used_mib = 0; // what ForStart made of it for this start (0 = Eden's 32)
+bool g_memory_roomy = false;       // the memory plan's tier is Roomy (ApplyMemoryPlan)
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 bool g_autoshot = true;
@@ -642,6 +644,7 @@ void ApplyMemoryPlan() {
     const std::uint64_t budget_mib = Ps4::DirectMemoryTotal() >> 20;
     const Ps4Memory::Tier detected = Ps4Memory::TierForBudget(budget_mib);
     const Ps4Memory::Plan plan = Ps4Memory::PlanFor(profile, detected);
+    g_memory_roomy = plan.tier == Ps4Memory::Tier::Roomy;
     setenv("ORBIS_ARENA_MIB", std::to_string(plan.arena_mib).c_str(), 1);
     Ps4Hook::Pending().shader_preload = plan.shader_preload;
     if (!plan.driver_cache) {
@@ -700,7 +703,7 @@ void ApplyMemoryPlan() {
 ///                               (default off; experimental; needs the JIT pack, boot.log says whether the build has it)
 ///   jit_direct_table=on|off     0.9.3: the JIT reads a decoded copy of the page table: four instructions fewer per memory access
 ///                               (default off; experimental; needs part 2 of the JIT pack, boot.log says whether the build has it)
-///   jit_cache_mib=auto|16..256  0.9.4: the JIT code cache of each core in MiB (auto = 32). A cache that fills up is emptied whole and
+///   jit_cache_mib=auto|16..256  0.9.4: the JIT code cache of each core in MiB (auto = 64 on a roomy console, else 32). A cache that fills up is emptied whole and
 ///                               every block compiled again (a stall); boot.log counts how often that happened
 ///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
@@ -1095,9 +1098,16 @@ int main() {
 
     Ps4::SetPhase("core init");
     // 0.8.2: safe mode. If the previous start never got as far as drawing, its experimental options stay off for this one.
-    g_safe_mode = Ps4Safe::PreviousStartDied(SafeStartFile());
+    // 0.9.4 fix 2: only when the start that died was this same game, or the second death in a row (safe_mode.h): a crash of one game no longer takes the
+    // options away from the next, other game (the 0.9.4 test of Mario vs. Donkey Kong ran without any of them because SpongeBob had crashed before it).
+    g_safe_mode = Ps4Safe::PreviousStartDied(SafeStartFile(), game);
     if (g_safe_mode) {
-        Ps4::Log("safe mode: the last start ended before the game drew anything; experimental lines of settings.txt are ignored for this start (settings.txt is not changed)");
+        const Ps4Safe::Record last = Ps4Safe::ReadRecord(SafeStartFile());
+        Ps4::Log("safe mode: the last start (%s) ended before the game drew anything (%u start(s) in a row); experimental lines of settings.txt are ignored for this start (settings.txt is not changed)",
+                 last.game.c_str(), last.deaths);
+    } else if (Ps4Safe::PreviousStartDiedOtherGame(SafeStartFile(), game)) {
+        Ps4::Log("safe mode: not used - the last start (%s) ended before the game drew anything, but that was another game; if this one dies too, the next start is in safe mode",
+                 Ps4Safe::ReadRecord(SafeStartFile()).game.c_str());
     }
     Ps4Safe::MarkStart(SafeStartFile(), game);
     ApplyPs4Settings();
@@ -1123,8 +1133,9 @@ int main() {
             Ps4::Log("%s", line.c_str());
         }
     }
-    ps4_jit_cache_mib = g_jit_cache_mib;
-    Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, Ps4JitCache::Read()).c_str());
+    g_jit_cache_used_mib = Ps4JitCache::ForStart(g_jit_cache_mib, g_memory_roomy, g_safe_mode);
+    ps4_jit_cache_mib = g_jit_cache_used_mib;
+    Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, g_jit_cache_used_mib, Ps4JitCache::Read()).c_str());
     if (g_players > 1) {
         const Ps4Eden::Result linked = Ps4Eden::ConnectPlayers(Settings::values, g_players);
         const int opened = Ps4::OpenExtraPads(g_players);
@@ -1356,8 +1367,10 @@ int main() {
     };
     std::uint64_t last_status = Ps4::NowUs(), last_notice = 0, last_mem_check = 0, last_timeline = Ps4::NowUs();
     Ps4JitCache::Counts jit_cache_logged; // the JIT cache flush counts as last logged (0.9.4)
+    Ps4JitCache::Activity jit_activity_logged; // the JIT work counts as last logged (0.9.4 fix 2)
+    std::string jit_pages_logged;              // how the code caches were taken, as last logged (0.9.4 fix 2)
     // 0.8.2: safe mode says so on the screen for the first 15 s, and the file is cleared once the game has drawn.
-    const std::uint64_t safe_notice_until = g_safe_mode ? Ps4::NowUs() + 15000000 : 0;
+    const std::uint64_t safe_notice_until = g_safe_mode ? Ps4::NowUs() + 30000000 : 0;
     bool safe_start_cleared = false;
     unsigned status_count = 0;
     int shaders_last = 0, shaders_total = 0;
@@ -1622,7 +1635,7 @@ int main() {
             // shader text: its own low-memory line is switched off by passing a huge free size.
             std::string text = Ps4Shader::NoticeText(shaders_last, shaders_total, std::uint64_t{1} << 40, pt);
             if (safe_notice_until != 0 && Ps4::NowUs() < safe_notice_until) {
-                text = std::string(pt ? "Modo seguro: opcoes experimentais desligadas nesta partida" : "Safe mode: experimental options off for this start") +
+                text = std::string(pt ? "Modo seguro: o ultimo inicio caiu antes de abrir; JIT, cache e relogio experimentais desligados so nesta partida" : "Safe mode: the last start died before opening; experimental JIT, cache and clock options are off for this start only") +
                        (text.empty() ? "" : "   ") + text;
             }
             const std::string banner = Ps4Memory::BannerText(mem_status, pt);
@@ -1646,7 +1659,17 @@ int main() {
                      static_cast<unsigned long>(mem.guest_free_bytes >> 20), static_cast<unsigned long>(mem.guest_free_small));
             if (const Ps4JitCache::Counts now = Ps4JitCache::Read(); now != jit_cache_logged) {
                 jit_cache_logged = now; // each time a core's cache is thrown away whole, the next status says so
-                Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, now).c_str());
+                Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, g_jit_cache_used_mib, now).c_str());
+            }
+            if (const std::string pages = Ps4JitCache::DescribePages(ps4_jit_cache_large, ps4_jit_cache_small); pages != jit_pages_logged) {
+                jit_pages_logged = pages; // once the cores have their caches (empty before), and again if that changes
+                if (!pages.empty()) {
+                    Ps4::Log("%s", pages.c_str());
+                }
+            }
+            if (const Ps4JitCache::Activity act = Ps4JitCache::ReadActivity(); act != jit_activity_logged) {
+                Ps4::Log("%s", Ps4JitCache::DescribeActivity(jit_activity_logged, act, 10).c_str());
+                jit_activity_logged = act;
             }
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
@@ -1692,7 +1715,8 @@ int main() {
     if (g_jit_direct_table) {
         Ps4::Log("%s", Ps4Jit::DescribeDirect(Ps4Jit::ReadDirect(true)).c_str());
     }
-    Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, Ps4JitCache::Read()).c_str());
+    Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, g_jit_cache_used_mib, Ps4JitCache::Read()).c_str());
+    Ps4::Log("%s", Ps4JitCache::DescribeTotals(Ps4JitCache::ReadActivity()).c_str());
     system.Pause();
     {
         const auto mem = Common::Orbis::GetStats();

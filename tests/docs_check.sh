@@ -189,6 +189,15 @@ check "patch 0031 is a git patch that touches the two cores' config and Dynarmic
     grep -q "extern \"C\" unsigned ps4_jit_cache_mib" patches/eden/0031-*.patch'
 check "frontend/jit_cache.h defines the three symbols patch 0031 declares (weak)" '
     for sym in ps4_jit_cache_mib ps4_jit_cache_full ps4_jit_cache_asked; do grep -q "weak)) [a-z ]* $sym" frontend/jit_cache.h && grep -q "$sym" patches/eden/0031-*.patch || exit 1; done'
+check "patch 0032 is a git patch that touches the code allocator and Dynarmic's A64 interface only, and frontend/jit_cache.h defines what it declares (weak)" '
+    [ "$(grep "^diff --git" patches/eden/0032-*.patch | wc -l | tr -d " ")" = 2 ] && grep "^diff --git" patches/eden/0032-*.patch | grep -q "block_of_code.cpp" &&
+    for sym in ps4_jit_cache_large ps4_jit_cache_small ps4_jit_blocks_compiled ps4_jit_ranges_invalidated; do grep -q "weak)) [a-z ]* $sym" frontend/jit_cache.h && grep -q "$sym" patches/eden/0032-*.patch || exit 1; done'
+check "part 2 of the pack reads and writes bytes (Path.read_text(newline=) is Python 3.13 only; the runner has 3.12), and its test tries every interpreter" '
+    ! grep -q "newline=" patches/eden-jit/0002-*.py && grep -q "read_bytes" patches/eden-jit/0002-*.py && grep -q "python3.12" tests/jit_direct_test.sh'
+check "safe mode names the game and counts the deaths, and main.cpp asks with the game" '
+    grep -q "PreviousStartDied(const std::string& path, const std::string& game)" frontend/safe_mode.h && grep -q "PreviousStartDied(SafeStartFile(), game)" frontend/main.cpp'
+check "CHANGELOG has the 0.9.4 fix 2 section and names the TypeError and the safe mode cause" '
+    grep -q "^### 0.9.4 fix 2" CHANGELOG.md && grep -q "unexpected keyword argument .newline." CHANGELOG.md && grep -q "The test ran in safe mode" CHANGELOG.md'
 check "package-eden.sh puts jit-pack-report.txt in the package, and boot.log quotes it" '
     grep -q "assets/misc/jit-pack-report.txt" package-eden.sh && grep -q "assets/misc/jit-pack-report.txt" frontend/main.cpp && grep -q "ReportLines" frontend/main.cpp'
 
