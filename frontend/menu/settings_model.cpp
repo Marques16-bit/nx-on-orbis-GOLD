@@ -15,7 +15,8 @@ const char* const HeaderComment = "# Escrito pelo menu do NX on Orbis. Pode ser 
 
 const std::vector<Option>& Catalog() {
     // The defaults here are the ones main.cpp sets in ApplyPs4Settings(): keep them in step.
-    static const std::vector<Option> catalog = {
+    static const std::vector<Option> catalog = [] {
+    std::vector<Option> list = {
         // ---------------------------------------------------------------- Video / GPU
         {"mode", Group::Video, "Modo do console", "Console mode",
          "Portátil renderiza em 720p (mais leve). TV renderiza em 1080p (bem mais pesado).",
@@ -171,15 +172,13 @@ const std::vector<Option>& Catalog() {
          {{"off", "Desligado", "Off"}, {"1000", "1000", "1000"}, {"4000", "4000", "4000"}, {"16000", "16000 (padrão do Eden)", "16000 (Eden's default)"}, {"21000", "21000", "21000"}}, 0},
         // 0.9.2: the JIT pack (patches/eden-jit/). The effect of Eden4's page reuse, written for Eden's own page table.
         {"jit_page_reuse", Group::Cpu, "JIT: reaproveitar a busca de página", "JIT: reuse page lookups",
-         "Experimental. O JIT (o tradutor do código do Switch) procura a página de memória uma vez para um grupo de acessos próximos, em vez de uma vez por acesso: menos trabalho de CPU, o ponto fraco do PS4. Mesmo efeito do que o Eden4 faz, escrito para a tabela de páginas deste port. NUNCA foi rodado num console: se um jogo travar, fechar sozinho ou ficar errado, desligue. O boot.log diz se esta versão tem o pacote do JIT e quantos grupos foram formados. Vale para o próximo jogo que abrir.",
-         "Experimental. The JIT (the translator of the Switch's code) looks a memory page up once for a group of nearby accesses instead of once per access: less CPU work, the PS4's weak point. The same effect as Eden4's, written for this port's page table. It has NEVER been run on a console: if a game hangs, closes by itself or looks wrong, turn it off. boot.log says whether this version has the JIT pack and how many groups were formed. Applies from the next game you open.",
-         {{"off", "Desligado (padrão)", "Off (default)"}, {"on", "Ligado (experimental)", "On (experimental)"}}, 0},
-        // 0.9.3: part 2 of the JIT pack. The effect of Eden4's direct page table, written beside Eden's own table instead of replacing it.
+         "Obrigatória (escondida no menu): o JIT procura a página de memória uma vez para um grupo de acessos próximos, em vez de uma vez por acesso. Ligada por padrão desde a 0.9.5; depois de duas quedas seguidas num jogo o app desliga sozinho (modo seguro). O boot.log diz se esta versão tem o pacote do JIT e quantos grupos foram formados.",
+         "Mandatory (hidden in the menu): the JIT looks a memory page up once for a group of nearby accesses instead of once per access. On by default since 0.9.5; after two deaths in a row in one game the app switches it off by itself (safe mode). boot.log says whether this build has the JIT pack and how many groups were formed.",
+         {{"on", "Ligado (padrão)", "On (default)"}, {"off", "Desligado", "Off"}}, 0},
         {"jit_direct_table", Group::Cpu, "JIT: tabela de páginas direta", "JIT: direct page table",
-         "Experimental. Guarda, ao lado da tabela de páginas do Eden, uma cópia já decodificada (endereço do PS4 pronto ou zero). Cada acesso à memória do jogo lê essa cópia e confere se é zero: 4 instruções a menos por acesso, que é onde o JIT gasta CPU. É o ganho que o Eden4 tem com a tabela direta, feito sem mexer na tabela do Eden. Usa um pouco mais de memória (8 bytes por página de 4 KiB mapeada). NUNCA foi rodado num console: se um jogo travar, fechar sozinho ou ficar errado, desligue. O boot.log diz se esta versão tem essa parte e quantos acessos usam a cópia. Vale para o próximo jogo que abrir. Pode ser usada junto com o reaproveitamento de busca de página.",
-         "Experimental. Keeps, beside Eden's page table, a copy that is already decoded (the PS4 address ready to use, or zero). Every guest memory access reads that copy and tests it for zero: 4 instructions fewer per access, which is where the JIT spends its CPU. It is the gain Eden4 gets from its direct table, made without changing Eden's own table. It uses a little more memory (8 bytes per mapped 4 KiB page). It has NEVER been run on a console: if a game hangs, closes by itself or looks wrong, turn it off. boot.log says whether this version has that part and how many accesses use the copy. Applies from the next game you open. It can be used together with the page lookup reuse.",
-         {{"off", "Desligado (padrão)", "Off (default)"}, {"on", "Ligado (experimental)", "On (experimental)"}}, 0},
-        // 0.9.4: Eden patch 0031. The size was fixed at 32 MiB per core since test 5 (memory ran out then). 0.9.4 fix 2: auto is 64 on a roomy console.
+         "Obrigatória (escondida no menu): guarda, ao lado da tabela de páginas do Eden, uma cópia já decodificada: 4 instruções a menos por acesso à memória do jogo. Usa um pouco mais de memória (8 bytes por página de 4 KiB mapeada). Ligada por padrão desde a 0.9.5; o modo seguro a desliga depois de duas quedas seguidas num jogo. O boot.log diz se esta versão tem essa parte.",
+         "Mandatory (hidden in the menu): keeps, beside Eden's page table, a copy that is already decoded: 4 instructions fewer per guest memory access. It uses a little more memory (8 bytes per mapped 4 KiB page). On by default since 0.9.5; safe mode switches it off after two deaths in a row in one game. boot.log says whether this build has that part.",
+         {{"on", "Ligado (padrão)", "On (default)"}, {"off", "Desligado", "Off"}}, 0},
         {"jit_cache_mib", Group::Cpu, "JIT: cache de código por núcleo", "JIT: code cache per core",
          "Quando o cache de código do JIT enche, ele é esvaziado inteiro e todos os blocos são traduzidos de novo: no PS4 isso aparece como uma travada de 1 a 6 segundos, seguida de FPS baixo até tudo ser traduzido outra vez (no teste do Mario vs. Donkey Kong, com 32 MiB, o cache foi esvaziado 6 vezes em 200 s). Automático usa 64 MiB por núcleo num PS4 com memória de sobra (4,3 GiB ou mais de memória direta) e 32 MiB nos outros e depois de uma queda ao abrir. Com 128 ou 256 MiB o cache enche menos, mas leva 4 vezes isso de memória direta logo ao abrir o jogo (4 núcleos: 128 MiB viram 512 MiB; os jogos que já ficam apertados de memória podem piorar). O boot.log conta quantas vezes o cache foi esvaziado e quantos blocos o JIT traduziu a cada 10 s. Vale para o próximo jogo que abrir.",
          "When the JIT's code cache fills up it is emptied whole and every block is translated again: on the PS4 that shows as a stall of 1 to 6 seconds, followed by low FPS until everything is translated again (in the Mario vs. Donkey Kong test, at 32 MiB, the cache was emptied 6 times in 200 s). Automatic uses 64 MiB per core on a PS4 with memory to spare (4.3 GiB or more of direct memory) and 32 MiB on others and after a start that died while opening. With 128 or 256 MiB it fills less often, but it takes 4 times that in direct memory as soon as the game opens (4 cores: 128 MiB becomes 512 MiB; games that are already tight on memory may get worse). boot.log counts how often the cache was emptied and how many blocks the JIT translated every 10 s. Applies from the next game you open.",
@@ -248,11 +247,6 @@ const std::vector<Option>& Catalog() {
          "Preenche automaticamente serviços e funções que faltam. Pode ajudar um jogo que para por falta de um serviço, mas também causa falhas e instabilidade. Só para testar.",
          "Fills in missing services and functions automatically. It can help a game that stops for lack of a service, but also causes crashes and instability. For testing only.",
          {{"off", "Desligado", "Off"}, {"on", "Ligado (experimental)", "On (experimental)"}}, 0},
-        {"region", Group::Advanced, "Região da emulação", "Emulation region",
-         "A região do console que o jogo enxerga. Use a do seu jogo se ele reclamar de região ou abrir com idioma ou conteúdo errados.",
-         "The console region the game sees. Use your game's own if it complains about region or opens with the wrong language or content.",
-         {{"japan", "Japão", "Japan"}, {"usa", "EUA", "USA"}, {"europe", "Europa", "Europe"}, {"australia", "Austrália", "Australia"},
-          {"china", "China", "China"}, {"korea", "Coreia", "Korea"}, {"taiwan", "Taiwan", "Taiwan"}}, 1},
         // ---------------------------------------------------------------- System
         {"language", Group::System, "Idioma do menu", "Menu language",
          "Idioma dos textos deste menu.", "Language of this menu's texts.",
@@ -262,14 +256,62 @@ const std::vector<Option>& Catalog() {
          "Colour of the menu: blue (default), green, purple, orange, pink, red or grey. Applies at once, and to the HUD and the in-game menu too.",
          {{"blue", "Azul", "Blue"}, {"green", "Verde", "Green"}, {"purple", "Roxo", "Purple"}, {"orange", "Laranja", "Orange"},
           {"pink", "Rosa", "Pink"}, {"red", "Vermelho", "Red"}, {"grey", "Cinza", "Grey"}}, 0},
+        {"region", Group::System, "Região da emulação", "Emulation region",
+         "A região do console que o jogo enxerga. Use a do seu jogo se ele reclamar de região ou abrir com idioma ou conteúdo errados.",
+         "The console region the game sees. Use your game's own if it complains about region or opens with the wrong language or content.",
+         {{"japan", "Japão", "Japan"}, {"usa", "EUA", "USA"}, {"europe", "Europa", "Europe"}, {"australia", "Austrália", "Australia"},
+          {"china", "China", "China"}, {"korea", "Coreia", "Korea"}, {"taiwan", "Taiwan", "Taiwan"}}, 1},
         // 0.9.1. Eden already has one input per player slot (port 0-3); this decides how many of them get a DualShock.
-        {"players", Group::System, "Controles (jogadores)", "Controllers (players)",
+        {"players", Group::Controls, "Controles (jogadores)", "Controllers (players)",
          "Quantos controles o jogo recebe, de 1 a 4. O controle do jogador 1 é o de sempre. Os jogadores 2 a 4 são os outros usuários logados no console: ligue o segundo DualShock, aperte o botão PS e entre como convidado; o app procura a cada 2 segundos e acende a luz do controle (vermelho, verde, rosa). Com 1 (padrão) nada muda. O menu do jogo (L3 + R3) continua só do controle 1. Vale na próxima partida. Ligação do lado do Eden ainda não testada no console.",
          "How many controllers the game is given, 1 to 4. Player 1's controller is the usual one. Players 2 to 4 are the other users logged in to the console: turn on the second DualShock, press the PS button and join as a guest; the app looks every 2 seconds and lights the controller (red, green, pink). With 1 (the default) nothing changes. The in-game menu (L3 + R3) stays with controller 1 only. Applies on the next game start. The Eden-side connection has not been tested on the console yet.",
          {{"1", "1 jogador (padrão)", "1 player (default)"}, {"2", "2 jogadores", "2 players"}, {"3", "3 jogadores", "3 players"},
           {"4", "4 jogadores", "4 players"}}, 0},
     };
+    // 0.9.5: the controller model each player is given (what the GAME sees: a Pro Controller, two Joy-Con, ...). "auto" leaves
+    // Eden's own default, so nothing changes until a model is picked in the CONTROLS tab.
+    static const char* const type_keys[4] = {"player1_type", "player2_type", "player3_type", "player4_type"};
+    static const char* const type_label_pt[4] = {"Modelo do controle do jogador 1", "Modelo do controle do jogador 2", "Modelo do controle do jogador 3", "Modelo do controle do jogador 4"};
+    static const char* const type_label_en[4] = {"Player 1 controller model", "Player 2 controller model", "Player 3 controller model", "Player 4 controller model"};
+    for (int n = 0; n < 4; ++n) {
+        list.push_back({type_keys[n], Group::Controls, type_label_pt[n], type_label_en[n],
+                        "O controle que o JOGO enxerga (o seu DualShock continua o mesmo). Automático deixa o padrão do Eden. Alguns jogos só aceitam um modelo: Pro Controller serve para quase todos; Portátil serve para jogos que pedem o console no modo portátil; os Joy-Con soltos servem para jogos de dois jogadores com um Joy-Con cada. Vale na próxima partida.",
+                        "The controller the GAME sees (your DualShock stays the same). Automatic leaves Eden's default. Some games only take one model: Pro Controller suits almost every game; Handheld is for games that want the console in handheld mode; single Joy-Con suit two-player games with a Joy-Con each. Applies on the next game start.",
+                        {{"auto", "Automático (padrão do Eden)", "Automatic (Eden's default)"}, {"pro", "Pro Controller", "Pro Controller"},
+                         {"dual", "Dois Joy-Con", "Dual Joy-Con"}, {"left", "Joy-Con esquerdo", "Left Joy-Con"},
+                         {"right", "Joy-Con direito", "Right Joy-Con"}, {"handheld", "Portátil", "Handheld"}},
+                        0});
+    }
+    return list;
+    }();
     return catalog;
+}
+
+Tier TierOf(std::string_view key) {
+    // Mandatory: the default is what this port needs; showing a switch only lets a game break.
+    static constexpr std::string_view mandatory[] = {
+        "jit_page_reuse", "jit_direct_table",                                // the JIT pack (on; safe mode switches it off after deaths)
+        "bgra", "a2b10", "rg", "swizzle", "colour_swap",                     // the colour fixes of the video output
+        "overlay_draw", "overlay_mode", "overlay_poll", "overlay_flip_stamp", "overlay_delay", // the HUD's own timing
+        "dyna_state", "vertex_input_dynamic", "dma_accuracy", "sync_memory", // driver and GPU switches that must follow the console
+        "driver_cache", "shader_preload",                                    // shader cache plumbing
+        "env:ORBIS_ARENA_MIB", "env:ORBIS_VRAM_GARLIC", "sysflex_mib", "memory_action", // memory plumbing: the memory profile decides
+    };
+    // Experimental: only in the test builds.
+    static constexpr std::string_view experimental[] = {
+        "cpu_clock", "cpu_ticks", "astc", "astc_recompress", "async_presentation", "skip_cpu_invalidation", "auto_stub", "profile",
+    };
+    for (const std::string_view k : mandatory) {
+        if (k == key) {
+            return Tier::Mandatory;
+        }
+    }
+    for (const std::string_view k : experimental) {
+        if (k == key) {
+            return Tier::Experimental;
+        }
+    }
+    return Tier::Normal;
 }
 
 const std::vector<Preset>& Presets() {
@@ -310,11 +352,11 @@ const std::vector<Preset>& Presets() {
         // 0.8.2. Neither of these has been run on a console: they are lists of options picked for what each one should
         // do (see the descriptions), to be compared with Default one game at a time.
         {"Mais FPS (teste)", "More FPS (test)",
-         "Para jogos presos na CPU (o caso do Super Mario Maker 2): resolução 0,75x, GPU de precisão baixa, sem flush reativo nem memória sincronizada, ignora invalidações internas da CPU, mostra os quadros por uma thread separada e liga o reaproveitamento de busca de página do JIT (0.9.2), a tabela de páginas direta (0.9.3) e um cache do JIT de 64 MiB por núcleo (0.9.4). Sem filtros extras. Não promete mais FPS: GPU leve ajuda pouco quando a CPU é o limite. Se o jogo travar ao abrir, o modo seguro desliga o que é experimental na partida seguinte.",
-         "For CPU-bound games (Super Mario Maker 2's case): 0.75x resolution, low GPU accuracy, no reactive flushing or synchronised memory, skips inner CPU invalidations, shows frames from a separate thread and turns on the JIT's page lookup reuse (0.9.2), the direct page table (0.9.3) and a 128 MiB JIT cache per core (0.9.4 fix 2; 4 cores take 512 MiB of direct memory when the game opens). No extra filters. It does not promise more FPS: a light GPU helps little when the CPU is the limit. If the game hangs while opening, safe mode turns the experimental parts off for the next start.",
+         "Para jogos presos na CPU (o caso do Super Mario Maker 2): resolução 0,75x, GPU de precisão baixa, sem flush reativo nem memória sincronizada, ignora invalidações internas da CPU, mostra os quadros por uma thread separada e usa um cache do JIT de 128 MiB por núcleo (4 núcleos levam 512 MiB de memória direta ao abrir o jogo; o reaproveitamento de busca de página e a tabela direta do JIT já vêm ligados desde a 0.9.5). Sem filtros extras. Não promete mais FPS: GPU leve ajuda pouco quando a CPU é o limite. Se o jogo travar ao abrir, o modo seguro desliga o que é experimental na partida seguinte.",
+         "For CPU-bound games (Super Mario Maker 2's case): 0.75x resolution, low GPU accuracy, no reactive flushing or synchronised memory, skips inner CPU invalidations, shows frames from a separate thread and uses a 128 MiB JIT cache per core (4 cores take 512 MiB of direct memory when the game opens; the JIT's page lookup reuse and direct table have been on by default since 0.9.5). No extra filters. It does not promise more FPS: a light GPU helps little when the CPU is the limit. If the game hangs while opening, safe mode turns the experimental parts off for the next start.",
          {{"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"sync_memory", "off"}, {"skip_cpu_invalidation", "on"},
           {"async_presentation", "on"}, {"anti_aliasing", "none"}, {"anisotropy", "default"}, {"scaling_filter", "bilinear"}, {"astc", "cpu"},
-          {"jit_page_reuse", "on"}, {"jit_direct_table", "on"}, {"jit_cache_mib", "128"}}},
+          {"jit_cache_mib", "128"}}},
         {"RAM mínima (teste)", "Minimum RAM (test)",
          "O mais econômico que não deixa o jogo feio demais: resolução 0,5x (as imagens da GPU, que ficam fora da arena, ocupam um quarto), texturas ASTC guardadas em BC3 (1/4 da memória), arena de vídeo de 1152 MiB, VRAM conservadora, cache de shaders carregado até ~8 MiB (o que passar é guardado, não apagado), sem cache do driver, perfil de memória apertado, pausa do jogo quando a memória ficar crítica e menu de jogos só com miniaturas, e a RAM do jogo usa até 2048 MiB da memória flexível do sistema (o que o pool tiver, menos 128 MiB; ideia do Eden4). A imagem fica bem mais mole.",
          "The most frugal setting that does not make the game too ugly: 0.5x resolution (GPU images, which live outside the arena, take a quarter), ASTC textures kept as BC3 (1/4 of the memory), 1152 MiB video arena, conservative VRAM, shader cache loaded up to ~8 MiB (what is over is kept, not deleted), no driver cache, the tight memory profile, a pause when memory turns critical and the game list with thumbnails only, and the game's RAM uses up to 2048 MiB of the system flexible memory (what the pool has, less 128 MiB; an idea from Eden4). The picture gets much softer.",

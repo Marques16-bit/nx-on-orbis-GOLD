@@ -601,12 +601,18 @@ Ps4Memory::Action g_memory_action = Ps4Memory::Action::Pause;
 std::uint64_t g_sysflex_cap_mib = Ps4Memory::SystemFlexibleAutoCapMiB;
 /// 0.9.1, settings.txt: players=1|2|3|4 - how many controllers the game is given (default 1, exactly as before).
 int g_players = 1;
+/// 0.9.5, settings.txt: player1_type..player4_type=pro|dual|left|right|handheld - the controller model the game sees for each
+/// player ("" = Eden's own default; applied before the core starts, see Ps4Eden::ApplyPlayerType).
+std::string g_player_type[4];
 /// 0.9.2, settings.txt: jit_page_reuse=on|off - Dynarmic shares one page table lookup between nearby memory accesses (the
-/// JIT pack, patches/eden-jit/; default off). Applied before the core starts, read by the JIT when it compiles a block.
-bool g_jit_page_reuse = false;
-/// 0.9.3, settings.txt: jit_direct_table=on|off - Dynarmic reads a decoded copy of the page table (the JIT pack's part 2; default off).
-/// Applied before the core starts: the copy is made when the first page table is sized.
-bool g_jit_direct_table = false;
+/// JIT pack, patches/eden-jit/). 0.9.5: ON by default and hidden in the menu (a mandatory option); a start after two deaths
+/// in a row in one game (safe mode) switches it off, and so does a line `jit_page_reuse=off` written by hand.
+/// Applied before the core starts, read by the JIT when it compiles a block.
+bool g_jit_page_reuse = true;
+/// 0.9.3, settings.txt: jit_direct_table=on|off - Dynarmic reads a decoded copy of the page table (the JIT pack's part 2).
+/// 0.9.5: ON by default, hidden, off in safe mode, like the one above. Applied before the core starts: the copy is made
+/// when the first page table is sized.
+bool g_jit_direct_table = true;
 /// 0.9.4, settings.txt: jit_cache_mib=auto|16..256 - the JIT code cache of each core (Eden patch 0031; auto = 64 MiB on a roomy console since 0.9.4 fix 2, else 32).
 unsigned g_jit_cache_mib = 0;
 unsigned g_jit_cache_used_mib = 0; // what ForStart made of it for this start (0 = Eden's 32)
@@ -828,6 +834,9 @@ void ApplySettingsFile() {
             // Likewise.
         } else if (key == "jit_cache_mib" && Ps4JitCache::Parse(value, &g_jit_cache_mib)) {
             // Applied before the core starts (ps4_jit_cache_mib is read when a core is made).
+        } else if (key.size() == 12 && key.compare(0, 6, "player") == 0 && key[6] >= '1' && key[6] <= '4' && key.compare(7, 5, "_type") == 0 &&
+                   (value == "auto" || value == "pro" || value == "dual" || value == "left" || value == "right" || value == "handheld")) {
+            g_player_type[key[6] - '1'] = value == "auto" ? std::string() : value; // applied before the core starts
         } else if (key == "players" && (value == "1" || value == "2" || value == "3" || value == "4")) {
             g_players = std::atoi(value.c_str()); // applied before the core starts (ConnectPlayers) and in the main loop
         } else if (key == "memory_action" && (value == "warn" || value == "pause")) {
@@ -1121,6 +1130,13 @@ int main() {
         g_sysflex_cap_mib = Ps4Memory::SystemFlexibleProvenMiB;
     }
     Ps4::ConfigureSystemFlexible(g_sysflex_cap_mib);
+    if (g_safe_mode && (g_jit_page_reuse || g_jit_direct_table)) {
+        // 0.9.5: the two JIT switches are on by default now, and safe mode ignores only lines that say "on": so it switches them off itself.
+        Ps4::Log("safe mode: the JIT pack's switches are off for this start (page reuse and direct table were %s and %s)",
+                 g_jit_page_reuse ? "on" : "off", g_jit_direct_table ? "on" : "off");
+        g_jit_page_reuse = false;
+        g_jit_direct_table = false;
+    }
     Ps4Jit::Apply(g_jit_page_reuse);
     Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(g_jit_page_reuse)).c_str());
     Ps4Jit::ApplyDirect(g_jit_direct_table);
@@ -1143,6 +1159,14 @@ int main() {
                  linked == Ps4Eden::Result::Applied ? "has the player settings (players 2-4 marked connected)" : "has no player settings (only controller 1 works)",
                  Ps4::PadsOpen());
         (void)opened;
+    }
+    for (int player = 0; player < 4; ++player) {
+        if (g_player_type[player].empty()) {
+            continue;
+        }
+        const Ps4Eden::Result typed = Ps4Eden::ApplyPlayerType(Settings::values, player, g_player_type[player]);
+        Ps4::Log("controllers: player %d is given the %s model (%s)", player + 1, g_player_type[player].c_str(),
+                 typed == Ps4Eden::Result::Applied ? "applied" : "this Eden has no such controller model: its default stays");
     }
     Core::System system;
     system.Initialize();

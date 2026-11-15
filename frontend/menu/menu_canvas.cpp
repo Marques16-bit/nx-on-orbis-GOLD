@@ -271,6 +271,23 @@ void Canvas::Line(float x0, float y0, float x1, float y1, float width, std::uint
     }
 }
 
+void Canvas::Glow(float cx, float cy, float radius, std::uint32_t color, float strength) {
+    if (radius <= 0.0f || strength <= 0.0f) {
+        return;
+    }
+    const float r2 = radius * radius;
+    for (int j = std::max(0, int(cy - radius)); j <= std::min(height - 1, int(cy + radius)); ++j) {
+        for (int i = std::max(0, int(cx - radius)); i <= std::min(width - 1, int(cx + radius)); ++i) {
+            const float dx = i + 0.5f - cx, dy = j + 0.5f - cy;
+            const float q = (dx * dx + dy * dy) / r2;
+            if (q < 1.0f) {
+                const float f = 1.0f - q;
+                Blend(i, j, WithAlpha(color, f * f * strength));
+            }
+        }
+    }
+}
+
 void Canvas::Disc(float cx, float cy, float radius, std::uint32_t color) {
     Ring(cx, cy, radius, 0.0f, color);
 }

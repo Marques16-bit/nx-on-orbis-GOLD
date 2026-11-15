@@ -344,6 +344,17 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - **Reading the 0.9.4 boot.log** (Mario vs. Donkey Kong, Nov 13): the `profile` lines count a sample as "jit" when the instruction pointer is outside the eboot image and the kernel library, so the rest of a busy thread is the
   emulator itself (compiling blocks, memory callbacks, the emulated kernel). On the three busy `CPUCore_` threads the JIT share was 28-50% of 56-79% busy; the GPU thread 4-11% busy. The stalls (1.0-7.3 s) came with one core at 91% busy.
 
+### 0.9.5: tiers for options, the CONTROLS tab, the cached background
+
+- **Tiers** (`frontend/menu/settings_model.h`, `Tier`, `TierOf(key)`): a table of keys, not a field of `Option`, so the catalog's initialisers did not change. Mandatory options are not in any tab unless
+  `show_advanced=on`; experimental ones are in the TESTS tab (`TabAdvanced`) of a test build; a build with `EDEN_PS4_PUBLIC=1` has neither that tab nor the LOG tab. `main.cpp` does not look at the tier: a
+  line written by hand always works. What changed in behaviour is only the defaults of the two JIT switches (on), and safe mode switching them off itself (it only ignored lines that said `on`).
+- **Tab numbers are the order shown** (`TabGames` 0, `TabControls` 1, `TabVideo`, `TabCpu`, `TabPerf` (HUD), `TabSystem`, `TabLog`, `TabAdvanced`); `MenuUi::Tabs()` is what L1/R1 walk.
+- **Controller models**: `player1_type`..`player4_type` (`auto` writes nothing). `Ps4Eden::ApplyPlayerType` names `Settings::ControllerType` members with `requires`, so an Eden without one logs and keeps its default.
+  The menu loop opens the extra pads and reads `ReadPad(i).connected` only while the CONTROLS tab is up.
+- **Background**: `MenuUi::DrawBackground` renders the gradient, two `Canvas::Glow` lights and three rings once per theme into `background_` (about 8 MiB) and `memcpy`s it each draw, so the new look costs a copy, not
+  a few million square roots, per redraw.
+
 ### 0.9.4 fix 2: what the test log showed, safe mode, the cache's pages
 
 - **Reading the 0.9.4 fix boot.log** (`boot.old.log`, Nov 13 evening). Part 2's report line was `TypeError: Path.read_text() got an unexpected keyword argument 'newline'` (3.13-only; the runner has 3.12).

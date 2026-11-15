@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <utility>
@@ -71,6 +72,9 @@ struct SystemInfo {
     std::uint64_t memory_budget_mib = 0;
     std::string memory_tier;
     std::string memory_plan;
+    /// 0.9.5: which controllers are connected right now (player 1 always is: it is the one holding the menu). The console
+    /// side refreshes this while the menu is up (MenuUi::SetPadsConnected); the CONTROLS tab shows it.
+    bool pad_connected[4] = {true, false, false, false};
 };
 
 struct MenuResult {
@@ -96,8 +100,21 @@ public:
     const MenuResult& Result() const { return result_; }
     int Tab() const { return tab_; }
     void SetTab(int tab);
+    /// 0.9.5: the tabs that are shown, in the order L1/R1 walk them (the LOG tab is not there in a public build and the
+    /// EXPERIMENTAL tab only when it has options).
+    const std::vector<int>& Tabs() const { return tabs_; }
+    /// 0.9.5: the options a tab lists (for the tests).
+    const std::vector<const Option*>& TabOptions(int tab) const { return options_[tab]; }
+    /// 0.9.5: the controllers that are connected now (see SystemInfo::pad_connected). True when something changed.
+    bool SetPadsConnected(const bool (&connected)[4]);
+    /// The number of players in settings.txt (1 to 4) and the model chosen for one of them ("auto", "pro", ...).
+    int Players() const;
+    std::string PlayerType(int player) const;
 
-    static constexpr int TabCount = 7;
+    // 0.9.5: the tab numbers are the order they are shown in.
+    static constexpr int TabGames = 0, TabControls = 1, TabVideo = 2, TabCpu = 3, TabPerf = 4, TabSystem = 5, TabLog = 6,
+                         TabAdvanced = 7;
+    static constexpr int TabCount = 8;
 
 private:
     Lang lang() const { return file_.Language(); }
@@ -110,16 +127,22 @@ private:
     void Save();
     void Press(std::uint32_t button);
 
+    void DrawBackground(Canvas& c) const;
     void DrawHeader(Canvas& c) const;
     void DrawTabs(Canvas& c) const;
     void DrawGames(Canvas& c) const;
     void DrawGameCard(Canvas& c, int index) const;
+    void DrawControls(Canvas& c) const;
+    void PressControls(std::uint32_t button);
+    void ToggleControlsPlayer();
+    void SetPlayers(int count);
+    void ChangePlayerType(int player, int delta);
     /// Index of the colour theme in settings.txt (menu_theme), 0 when absent.
     int ThemeIndex() const;
     void DrawOptions(Canvas& c) const;
     void DrawSystem(Canvas& c) const;
     void DrawLog(Canvas& c) const;
-    bool IsPresetRow(int tab, int row) const { return tab == 1 && row == 0; }
+    bool IsPresetRow(int tab, int row) const { return tab == TabVideo && row == 0; }
     void DrawHelp(Canvas& c, const std::vector<std::string>& lines) const;
     void DrawFooter(Canvas& c) const;
 
@@ -128,6 +151,10 @@ private:
     SettingsFile file_;
     SaveFn save_;
     std::vector<const Option*> options_[TabCount];
+    std::vector<int> tabs_;
+    /// 0.9.5: the background (gradient, soft lights, thin orbits) is drawn once per theme and copied each time.
+    mutable std::vector<std::uint32_t> background_;
+    mutable int background_theme_ = -1;
 
     int tab_ = 0;
     int selected_[TabCount] = {};

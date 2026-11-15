@@ -88,6 +88,31 @@ struct ValuesPlayers {
     InputSettingMock players;
 };
 
+// 0.9.5: Eden's Settings::ControllerType (settings_input.h) and a build whose enum lacks some members.
+enum class ControllerTypeMock { ProController, DualJoyconDetached, LeftJoycon, RightJoycon, Handheld, GameCube };
+struct PlayerTypedMock {
+    bool connected{};
+    ControllerTypeMock controller_type{ControllerTypeMock::ProController};
+};
+struct TypedSettingMock {
+    std::array<PlayerTypedMock, 10> value{};
+    std::array<PlayerTypedMock, 10>& GetValue(bool = false) { return value; }
+};
+struct ValuesTyped {
+    TypedSettingMock players;
+};
+enum class ControllerTypeSmall { ProController, GameCube };
+struct PlayerSmallMock {
+    ControllerTypeSmall controller_type{ControllerTypeSmall::GameCube};
+};
+struct SmallSettingMock {
+    std::array<PlayerSmallMock, 10> value{};
+    std::array<PlayerSmallMock, 10>& GetValue(bool = false) { return value; }
+};
+struct ValuesSmall {
+    SmallSettingMock players;
+};
+
 using Ps4Eden::Apply;
 using Ps4Eden::Result;
 
@@ -229,6 +254,30 @@ int main() {
         Check(Ps4Eden::ConnectPlayers(none, 4) == Result::Missing, "an Eden without the setting: Missing, nothing breaks");
         ValuesNew other;
         Check(Ps4Eden::ConnectPlayers(other, 4) == Result::Missing, "an Eden whose settings struct has no players: Missing");
+    }
+    {
+        // 0.9.5: the controller model of a player.
+        ValuesTyped v;
+        Check(Ps4Eden::ApplyPlayerType(v, 0, "dual") == Result::Applied && v.players.value[0].controller_type == ControllerTypeMock::DualJoyconDetached,
+              "player1_type=dual");
+        Check(Ps4Eden::ApplyPlayerType(v, 1, "left") == Result::Applied && v.players.value[1].controller_type == ControllerTypeMock::LeftJoycon &&
+                  v.players.value[0].controller_type == ControllerTypeMock::DualJoyconDetached,
+              "player2_type=left touches only player 2");
+        Check(Ps4Eden::ApplyPlayerType(v, 2, "right") == Result::Applied && v.players.value[2].controller_type == ControllerTypeMock::RightJoycon, "right");
+        Check(Ps4Eden::ApplyPlayerType(v, 3, "handheld") == Result::Applied && v.players.value[3].controller_type == ControllerTypeMock::Handheld, "handheld");
+        Check(Ps4Eden::ApplyPlayerType(v, 3, "pro") == Result::Applied && v.players.value[3].controller_type == ControllerTypeMock::ProController, "pro");
+        Check(Ps4Eden::ApplyPlayerType(v, 0, "auto") == Result::NotMine && v.players.value[0].controller_type == ControllerTypeMock::DualJoyconDetached,
+              "auto (or an unknown word) leaves Eden's value alone");
+        Check(Ps4Eden::ApplyPlayerType(v, 12, "pro") == Result::NotMine && Ps4Eden::ApplyPlayerType(v, -1, "pro") == Result::NotMine, "a slot that does not exist is refused");
+        ValuesSmall small;
+        Check(Ps4Eden::ApplyPlayerType(small, 0, "dual") == Result::Missing && small.players.value[0].controller_type == ControllerTypeSmall::GameCube,
+              "an enum without that member: Missing, nothing changes");
+        Check(Ps4Eden::ApplyPlayerType(small, 0, "pro") == Result::Applied && small.players.value[0].controller_type == ControllerTypeSmall::ProController,
+              "...but the members it has still work");
+        ValuesPlayers integer; // controller_type is a plain int here: not an enum, so no model can be named
+        Check(Ps4Eden::ApplyPlayerType(integer, 0, "pro") == Result::Missing, "a controller_type that is not an enum: Missing");
+        ValuesEmpty none;
+        Check(Ps4Eden::ApplyPlayerType(none, 0, "pro") == Result::Missing, "an Eden without the setting: Missing");
     }
     std::printf(g_failures == 0 ? "eden settings test: PASSED\n" : "eden settings test: FAILED\n");
     return g_failures == 0 ? 0 : 1;

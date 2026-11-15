@@ -175,6 +175,87 @@ void TestSettingsFile() {
     }
 }
 
+void TestVisibility() {
+    std::printf("visibility (0.9.5)\n");
+    Check(TierOf("colour_swap") == Tier::Mandatory && TierOf("jit_page_reuse") == Tier::Mandatory && TierOf("jit_direct_table") == Tier::Mandatory,
+          "the colour swap and the JIT pack switches are mandatory");
+    Check(TierOf("bgra") == Tier::Mandatory && TierOf("a2b10") == Tier::Mandatory && TierOf("rg") == Tier::Mandatory && TierOf("swizzle") == Tier::Mandatory,
+          "the colour fixes and the mapping self-test are mandatory");
+    Check(TierOf("overlay_mode") == Tier::Mandatory && TierOf("overlay_delay") == Tier::Mandatory, "the HUD's timing options are mandatory");
+    Check(TierOf("cpu_clock") == Tier::Experimental && TierOf("cpu_ticks") == Tier::Experimental && TierOf("astc_recompress") == Tier::Experimental,
+          "the clock, ticks and texture-compression options are experimental");
+    Check(TierOf("mode") == Tier::Normal && TierOf("resolution") == Tier::Normal && TierOf("jit_cache_mib") == Tier::Normal &&
+              TierOf("memory_profile") == Tier::Normal && TierOf("hud") == Tier::Normal && TierOf("players") == Tier::Normal,
+          "the everyday options are normal");
+    Check(TierOf("no_such_option") == Tier::Normal, "an unknown key is normal");
+    for (const Option& o : Catalog()) {
+        Check(TierOf(o.key) != Tier::Mandatory || o.group != Group::Controls, "no mandatory option sits in the controls group");
+    }
+    // The defaults of the mandatory options are the values the port needs.
+    const Option* reuse = FindOption("jit_page_reuse");
+    const Option* direct = FindOption("jit_direct_table");
+    const Option* swap = FindOption("colour_swap");
+    Check(reuse && std::string(reuse->choices[size_t(reuse->default_index)].value) == "on", "jit_page_reuse is on by default");
+    Check(direct && std::string(direct->choices[size_t(direct->default_index)].value) == "on", "jit_direct_table is on by default");
+    Check(swap && std::string(swap->choices[size_t(swap->default_index)].value) == "on", "colour_swap is on by default");
+    {
+        SettingsFile off("jit_page_reuse=off\n");
+        Check(off.ChoiceIndex(*reuse) == 1 && !off.IsDefault(*reuse), "an explicit off (written by hand) is still read as off");
+    }
+    // What each tab lists.
+    Rig r("");
+    const auto lists = [](const MenuUi& ui, int tab, const char* key) {
+        for (const Option* o : ui.TabOptions(tab)) {
+            if (std::string(o->key) == key) {
+                return true;
+            }
+        }
+        return false;
+    };
+    bool leak = false;
+    for (int tab = 0; tab < MenuUi::TabCount; ++tab) {
+        if (tab == MenuUi::TabAdvanced) {
+            continue;
+        }
+        for (const Option* o : r.ui.TabOptions(tab)) {
+            leak = leak || (TierOf(o->key) != Tier::Normal && o->group != Group::Controls);
+        }
+    }
+    Check(!leak, "no mandatory or experimental option shows in the everyday tabs");
+    Check(!lists(r.ui, MenuUi::TabCpu, "jit_page_reuse") && !lists(r.ui, MenuUi::TabCpu, "jit_direct_table") && lists(r.ui, MenuUi::TabCpu, "jit_cache_mib"),
+          "the CPU tab has the JIT cache size but not the two mandatory JIT switches");
+    Check(!lists(r.ui, MenuUi::TabVideo, "dma_accuracy") && !lists(r.ui, MenuUi::TabVideo, "dyna_state") && !lists(r.ui, MenuUi::TabVideo, "sync_memory") &&
+              lists(r.ui, MenuUi::TabVideo, "resolution"),
+          "the VIDEO tab has no driver switches");
+    Check(!lists(r.ui, MenuUi::TabPerf, "overlay_mode") && !lists(r.ui, MenuUi::TabPerf, "overlay_poll") && lists(r.ui, MenuUi::TabPerf, "hud"),
+          "the HUD tab has the HUD but not its timing");
+    Check(lists(r.ui, MenuUi::TabSystem, "region") && lists(r.ui, MenuUi::TabSystem, "language") && !lists(r.ui, MenuUi::TabSystem, "players"),
+          "the SYSTEM tab has the language, the colour and the region");
+    Check(lists(r.ui, MenuUi::TabControls, "players") && lists(r.ui, MenuUi::TabControls, "player4_type"), "the CONTROLS tab has the players and their models");
+#if EDEN_PS4_PUBLIC
+    Check(r.ui.TabOptions(MenuUi::TabAdvanced).empty(), "public build: the EXPERIMENTAL tab is empty (and not shown)");
+#else
+    Check(lists(r.ui, MenuUi::TabAdvanced, "cpu_clock") && lists(r.ui, MenuUi::TabAdvanced, "astc_recompress") && !lists(r.ui, MenuUi::TabAdvanced, "jit_page_reuse"),
+          "test build: the EXPERIMENTAL tab lists the experimental options, not the mandatory ones");
+#endif
+    // show_advanced=on in settings.txt shows everything, in the last tab, in either build.
+    Rig all("show_advanced=on\n");
+    Check(lists(all.ui, MenuUi::TabAdvanced, "jit_page_reuse") && lists(all.ui, MenuUi::TabAdvanced, "colour_swap") && lists(all.ui, MenuUi::TabAdvanced, "cpu_clock") &&
+              all.ui.Tabs().back() == MenuUi::TabAdvanced,
+          "show_advanced=on: the mandatory and the experimental options are all in the last tab");
+    Check(all.ui.Tabs().size() == 8, "show_advanced=on: every tab is shown");
+    // Every option of the catalog is somewhere (a tab), so none is lost.
+    int found = 0;
+    for (const Option& o : Catalog()) {
+        bool somewhere = false;
+        for (int tab = 0; tab < MenuUi::TabCount; ++tab) {
+            somewhere = somewhere || lists(all.ui, tab, o.key);
+        }
+        found += somewhere ? 1 : 0;
+    }
+    Check(found == int(Catalog().size()), "with show_advanced=on, every option of the catalog is in some tab");
+}
+
 void TestNavigation() {
     std::printf("navigation\n");
     {
@@ -201,17 +282,25 @@ void TestNavigation() {
     {
         Rig r("", 3, 1);
         r.Tap(Pad::R1);
-        Check(r.ui.Tab() == 1, "R1: next tab");
-        r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1); r.Tap(Pad::R1);
-        Check(r.ui.Tab() == 0, "R1 wraps around (7 tabs)");
+        Check(r.ui.Tab() == MenuUi::TabControls, "R1: next tab (CONTROLS, 0.9.5)");
+        const int shown = int(r.ui.Tabs().size());
+        for (int i = 1; i < shown; ++i) {
+            r.Tap(Pad::R1);
+        }
+        Check(r.ui.Tab() == 0, "R1 wraps around (every tab that is shown)");
         r.Tap(Pad::L1);
-        Check(r.ui.Tab() == 6, "L1 wraps backwards (to the PERFORMANCE tab)");
+        Check(r.ui.Tab() == r.ui.Tabs().back(), "L1 wraps backwards (to the last tab that is shown)");
         r.Tap(Pad::Circle);
         Check(r.ui.Tab() == 0, "Circle goes back to the games");
+#if EDEN_PS4_PUBLIC
+        Check(shown == 6 && r.ui.Tabs().back() == MenuUi::TabSystem, "public build: six tabs, no LOG and no EXPERIMENTAL");
+#else
+        Check(shown == 8 && r.ui.Tabs().back() == MenuUi::TabAdvanced, "test build: eight tabs, the last one is EXPERIMENTAL");
+#endif
     }
     {
         Rig r("");
-        r.Tap(Pad::R1); // VIDEO: row 0 is the quick profile, row 1 the console mode
+        r.ui.SetTab(MenuUi::TabVideo); // row 0 is the quick profile, row 1 the console mode
         r.Tap(Pad::Down);
         r.Tap(Pad::Right);
         Check(r.saves == 1 && r.saved.find("mode=docked") != std::string::npos, "Right changes the value and saves");
@@ -231,7 +320,7 @@ void TestNavigation() {
             info.data_writable = writable;
             info.log_bytes = log;
             MenuUi ui(Rig::MakeGames(1), 0, info, "", nullptr);
-            ui.SetTab(4);
+            ui.SetTab(MenuUi::TabSystem);
             std::vector<std::uint32_t> pixels(1920 * 1080);
             Canvas canvas{pixels.data(), 1920, 1080};
             ui.Draw(canvas);
@@ -245,7 +334,7 @@ void TestNavigation() {
     }
     {
         Rig r("");
-        r.ui.SetTab(4); // SYSTEM
+        r.ui.SetTab(MenuUi::TabSystem); // SYSTEM
         r.Tap(Pad::Cross); // language
         Check(r.saved.find("language=en") != std::string::npos, "Cross on the language switches to English");
         Check(r.ui.Result().kind == MenuResult::Kind::None, "...and does not start a game");
@@ -259,22 +348,62 @@ void TestNavigation() {
         Check(r.saves == 1 && r.saved.find("language=en") != std::string::npos, "second press resets the options, not the language");
     }
     {
-        // 0.9.1: the controllers option writes players=N, and its default (1) removes the line.
+        // 0.9.5: the CONTROLS tab. Left/Right pick a player, Up/Down the model the game sees, X switches a player on or off.
         Rig r("");
-        r.ui.SetTab(4);
+        r.ui.SetTab(MenuUi::TabControls);
+        Check(r.ui.Players() == 1 && r.ui.PlayerType(0) == "auto", "one player and the automatic model by default");
         r.Tap(Pad::Down);
-        r.Tap(Pad::Down); // the controllers row
+        Check(r.saved.find("player1_type=pro") != std::string::npos, "Down on player 1: the Pro Controller is written as player1_type=pro");
+        r.Tap(Pad::Down);
+        Check(r.saved.find("player1_type=dual") != std::string::npos, "...then dual Joy-Con");
+        r.Tap(Pad::Triangle);
+        Check(r.saved.find("player1_type") == std::string::npos && r.ui.PlayerType(0) == "auto", "Triangle: the model goes back to automatic (the line is removed)");
+        r.Tap(Pad::Up);
+        Check(r.ui.PlayerType(0) == "handheld", "Up from automatic wraps to the last model (handheld)");
+        r.Tap(Pad::Cross);
+        Check(r.ui.Players() == 1 && r.saved.find("players=") == std::string::npos, "X on player 1 changes nothing (it holds the menu)");
         r.Tap(Pad::Right);
-        Check(r.saved.find("players=2") != std::string::npos, "the controllers row: Right writes players=2");
-        r.Tap(Pad::Right);
-        r.Tap(Pad::Right);
-        Check(r.saved.find("players=4") != std::string::npos, "...and 4 is the last choice");
+        r.Tap(Pad::Right); // player 3
+        r.Tap(Pad::Cross);
+        Check(r.ui.Players() == 3 && r.saved.find("players=3") != std::string::npos, "X on player 3 switches players 1 to 3 on");
+        r.Tap(Pad::Cross);
+        Check(r.ui.Players() == 2, "X on player 3 again switches it (and the ones after it) off");
+        r.Tap(Pad::Right); // player 4
+        r.Tap(Pad::Down);
+        Check(r.ui.PlayerType(3) == "pro" && r.saved.find("player4_type=pro") != std::string::npos, "the model is per player");
         const Option* o = FindOption("players");
-        Check(o != nullptr && o->group == Group::System, "players is in the System tab");
+        Check(o != nullptr && o->group == Group::Controls, "players is in the CONTROLS tab now");
+        r.ui.SetTab(MenuUi::TabSystem);
+        Check(r.ui.Tab() == MenuUi::TabSystem, "(the SYSTEM tab no longer has the controllers row)");
+        // the screen tells the states apart
+        auto screen = [](const std::string& settings, bool second) {
+            SystemInfo info = Rig::MakeInfo(1);
+            info.pad_connected[1] = second;
+            MenuUi ui(Rig::MakeGames(1), 0, info, settings, nullptr);
+            ui.SetTab(MenuUi::TabControls);
+            std::vector<std::uint32_t> pixels(1920 * 1080);
+            Canvas canvas{pixels.data(), 1920, 1080};
+            ui.Draw(canvas);
+            std::uint64_t total = 0;
+            for (std::uint32_t p : pixels) {
+                total = total * 31 + p;
+            }
+            return total;
+        };
+        Check(screen("", false) != screen("players=2\n", false), "the screen shows a player switched on");
+        Check(screen("players=2\n", false) != screen("players=2\n", true), "...and a controller that is connected");
+        Check(screen("", false) != screen("player1_type=dual\n", false) && screen("player1_type=dual\n", false) != screen("player1_type=handheld\n", false),
+              "...and the model drawn");
+        bool pads[4] = {true, false, false, false};
+        Rig q("");
+        q.ui.SetTab(MenuUi::TabControls);
+        Check(!q.ui.SetPadsConnected(pads), "no change in the connected controllers: nothing to redraw");
+        pads[2] = true;
+        Check(q.ui.SetPadsConnected(pads), "a controller connected: the tab asks for a redraw");
     }
     {
         Rig r("mode=docked\nastc=gpu\n");
-        r.ui.SetTab(4);
+        r.ui.SetTab(MenuUi::TabSystem);
         r.Tap(Pad::Down);
         r.Tap(Pad::Down);
         r.Tap(Pad::Down); // language, colour, controllers: now on restore defaults
@@ -304,8 +433,8 @@ void TestNavigation() {
     {
         // The quick profiles, from the VIDEO tab's first row.
         Rig r("");
-        r.Tap(Pad::R1);
-        Check(r.ui.Tab() == 1, "VIDEO tab");
+        r.ui.SetTab(MenuUi::TabVideo);
+        Check(r.ui.Tab() == MenuUi::TabVideo, "VIDEO tab");
         r.Tap(Pad::Right);
         Check(r.saved.find("resolution=0.75") != std::string::npos && r.saved.find("gpu_accuracy") == std::string::npos,
               "profile Light: 0.75x written, the options at their default are not");
@@ -355,14 +484,14 @@ void TestNavigation() {
     {
         // Settings that match no profile are a custom mix; a profile does not touch the others.
         Rig r("resolution=2\nlanguage=en\nmode=docked\n");
-        r.Tap(Pad::R1);
+        r.ui.SetTab(MenuUi::TabVideo);
         Check(SettingsFile("resolution=2\n").MatchPreset() == -1, "resolution=2 is a custom mix");
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 0, "Right from a custom mix: the first profile");
         Check(r.saved.find("mode=docked") != std::string::npos && r.saved.find("language=en") != std::string::npos,
               "a profile leaves the console mode and the language alone");
         Rig q("resolution=2\n");
-        q.Tap(Pad::R1);
+        q.ui.SetTab(MenuUi::TabVideo);
         q.Tap(Pad::Left);
         Check(SettingsFile(q.saved).MatchPreset() == 7, "Left from a custom mix: the last profile");
     }
@@ -370,7 +499,7 @@ void TestNavigation() {
         // A save that fails is shown, and a save that works is too.
         Rig r("");
         r.save_works = false;
-        r.ui.SetTab(2);
+        r.ui.SetTab(MenuUi::TabCpu);
         r.Tap(Pad::Cross);
         Check(r.saves == 1, "the failing save was tried");
         auto draw = [&](Rig& rig) {
@@ -398,7 +527,7 @@ void TestNavigation() {
             return true;
         };
         MenuUi ui(Rig::MakeGames(1), 0, info, "", nullptr);
-        ui.SetTab(4);
+        ui.SetTab(MenuUi::TabSystem);
         std::uint64_t now = 1000000;
         auto tap = [&](std::uint32_t b) {
             ui.Update(b, now);
@@ -444,8 +573,8 @@ void TestNavigation() {
     {
         // The LOG tab: Left/Right switch the session, and it draws for both, empty or not.
         Rig r("");
-        r.ui.SetTab(5);
-        Check(r.ui.Tab() == 5, "LOG tab");
+        r.ui.SetTab(MenuUi::TabLog);
+        Check(r.ui.Tab() == MenuUi::TabLog, "LOG tab");
         r.Tap(Pad::Right);
         r.Tap(Pad::Left);
         r.Tap(Pad::Cross);
@@ -519,7 +648,7 @@ void TestDrawing(const char* render_dir) {
         const Option* theme = FindOption("menu_theme");
         Check(theme != nullptr && int(theme->choices.size()) == ThemeCount(), "the menu_theme choices match the themes in the canvas");
         Rig r("");
-        r.ui.SetTab(4);
+        r.ui.SetTab(MenuUi::TabSystem);
         r.Tap(Pad::Down); // the colour row
         r.Tap(Pad::Cross);
         Check(r.saved.find("menu_theme=green") != std::string::npos, "Cross on the colour row picks the next theme and saves it");
@@ -532,7 +661,7 @@ void TestDrawing(const char* render_dir) {
         Canvas c2 = purple.Canvas_();
         again.ui.Draw(c2);
         Check(purple.pixels != green.pixels, "a different theme draws a different screen");
-        again.ui.SetTab(4);
+        again.ui.SetTab(MenuUi::TabSystem);
         again.Tap(Pad::Down);
         again.Tap(Pad::Down); // restore defaults
         again.Tap(Pad::Cross);
@@ -651,6 +780,7 @@ int main(int argc, char** argv) {
         render_dir = argv[2];
     }
     TestSettingsFile();
+    TestVisibility();
     TestNavigation();
     TestDrawing(render_dir);
     std::printf("%d checks, %d failed\n", g_checks, g_failures);

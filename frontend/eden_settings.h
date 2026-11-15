@@ -351,4 +351,42 @@ Result ConnectPlayers(Values& v, int count) {
     }
 }
 
+/// 0.9.5: settings.txt `player1_type`..`player4_type` = pro | dual | left | right | handheld: the controller model the
+/// GAME sees for one player (Settings::ControllerType of that player's slot). "auto" (or anything else) leaves Eden's own
+/// default, so a settings.txt without these lines changes nothing. `player` is 0 for player 1. Result::Missing when this
+/// Eden has no such setting or no such model (then the model stays Eden's default).
+template <typename Values>
+Result ApplyPlayerType(Values& v, int player, const std::string& type) {
+    if (type != "pro" && type != "dual" && type != "left" && type != "right" && type != "handheld") {
+        return Result::NotMine;
+    }
+    if constexpr (requires { v.players.GetValue()[0].controller_type; }) {
+        auto& players = v.players.GetValue();
+        if (player < 0 || player >= static_cast<int>(players.size())) {
+            return Result::NotMine;
+        }
+        using E = std::remove_cvref_t<decltype(players[0].controller_type)>;
+        auto& target = players[static_cast<std::size_t>(player)].controller_type;
+        if constexpr (std::is_enum_v<E>) {
+#define PS4_EDEN_PLAYER_TYPE(text, Member)         \
+    if (type == text) {                            \
+        if constexpr (requires { E::Member; }) {   \
+            target = E::Member;                    \
+            return Result::Applied;                \
+        }                                          \
+        return Result::Missing;                    \
+    }
+            PS4_EDEN_PLAYER_TYPE("pro", ProController)
+            PS4_EDEN_PLAYER_TYPE("dual", DualJoyconDetached)
+            PS4_EDEN_PLAYER_TYPE("left", LeftJoycon)
+            PS4_EDEN_PLAYER_TYPE("right", RightJoycon)
+            PS4_EDEN_PLAYER_TYPE("handheld", Handheld)
+#undef PS4_EDEN_PLAYER_TYPE
+        }
+        return Result::Missing;
+    } else {
+        return Result::Missing;
+    }
+}
+
 } // namespace Ps4Eden

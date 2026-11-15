@@ -3,7 +3,7 @@
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
-> **Status: experimental, under development (v0.9.4).** It boots, has its own menu, and runs real games, but
+> **Status: experimental, under development (v0.9.5).** It boots, has its own menu, and runs real games, but
 > slowly: the emulated CPU is the limit, not the GPU. Some games run, some close when the console runs out of
 > memory. It is not a way to play Switch games on a PS4 yet. Everything below says what was **measured on a console**
 > and what was only written and tested on a PC.
@@ -16,7 +16,7 @@ maior** (até 1536 MiB), e traz a opção **Controles (jogadores) de 1 a 4** na 
 A 0.9.2 traz a opção **JIT: reaproveitar a busca de página** (aba CPU e Memória, desligada por padrão): o mesmo efeito do JIT do Eden4,
 escrito para a tabela de páginas deste port; **nunca rodou num console** e o código que gera as instruções nem foi compilado aqui.
 Se não compilar no CI, o build segue sem ela.
-A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não entrou: o Eden fixado era diferente do que o patch esperava) e o emissor foi rodado pela primeira vez, num PC. A 0.9.3 (a "0.9.2 fix") somou a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md). A **0.9.4 fix** faz o build contar no `boot.log` o que fez com o pacote do JIT (e por que uma parte ficou de fora), tira o pacote aos poucos se o build falhar, e acrescenta o cache de código do JIT (`jit_cache_mib`) com um contador de quantas vezes ele foi esvaziado (travadas de recompilação).
+A **0.9.5** (primeiro zip) é a versão para todo mundo: opções que ninguém deve mexer ficam **escondidas e fixas** (o JIT agora vem ligado, com o modo seguro como rede), as de teste vão para a aba **TESTES** (a versão pública não terá), aba nova **CONTROLES** (4 jogadores, modelo do controle, quais estão conectados) e o menu ficou mais bonito. Ainda não rodou no console. A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não entrou: o Eden fixado era diferente do que o patch esperava) e o emissor foi rodado pela primeira vez, num PC. A 0.9.3 (a "0.9.2 fix") somou a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md). A **0.9.4 fix** faz o build contar no `boot.log` o que fez com o pacote do JIT (e por que uma parte ficou de fora), tira o pacote aos poucos se o build falhar, e acrescenta o cache de código do JIT (`jit_cache_mib`) com um contador de quantas vezes ele foi esvaziado (travadas de recompilação).
 
 | | |
 |---|---|
@@ -73,6 +73,13 @@ The speeds above come from console logs of 0.7.9 to 0.9.0. The 0.8.5 and 0.9.0 l
 Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **not confirmed**: [CHANGELOG.md](CHANGELOG.md) says so
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
+
+## What is new in 0.9.5: a menu made for people (first zip)
+
+The goal of 0.9.5 is the version for everyone. This first zip changes the **menu**, not the speed: the options a person should not touch are **hidden and fixed** at the value this port needs (the two JIT
+switches are now **on by default**, with safe mode as the net), the ones that are only for testing moved to a **TESTS** tab that a public build will not have, there is a new **CONTROLS** tab (four
+players, the controller model the game sees, which controllers are connected), and the menu has a new look (soft lights, shadows, key caps with the real button shapes). **None of it has run on a
+console yet**; the menu is tested on a PC by drawing every screen. Details in the [CHANGELOG](CHANGELOG.md); the options and who sees them in [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ## What is new in 0.9.4: the direct table is in the build now, and the JIT's code ran for the first time (on a PC)
 
@@ -186,6 +193,7 @@ version, the number of patches, the options named here, the profiles, the links,
   Eden4 in turn builds on **DolphinPS4** by **ShiroKlein** and contributors (the PS4 runtime and the GNM winsys), and credits
   **ProsperoEden**, **SwitchLauncher** by kasobos67, shadPS4 and others in its own `CREDITS.md`.
 - **ProsperoEden** by BlackBearReloaded: the PS5 port this started from, and the Eden commit it pins.
+- **ProsperoEden-Encore** by niakw (GPL-3.0): the community PS5 continuation, read in full for 0.9.5 as the reference for the menu, the option policy and what comes next (sounds, formats, backports). Its ideas guide this work; no code of it is in this version.
 - **orbis-ports**: orbis-compat and the PS4 Mesa RADV driver. **OpenOrbis**: the toolchain. **switchbrew**: nx-hbmenu.
   DejaVu fonts.
 - **Alejo ([@alechurri](https://github.com/alechurri))**: the original port (v0.1.0): Eden booting on a PS4 Pro and Mario Kart 8

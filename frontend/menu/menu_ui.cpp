@@ -21,9 +21,6 @@ constexpr int RowHeight = 56;
 constexpr int VisibleRows = 11;
 constexpr int HelpTop = 868;
 constexpr int FooterTop = 992;
-constexpr int FooterCells = (1920 - 2 * Margin) / 20;
-
-constexpr int TabGames = 0, TabVideo = 1, TabCpu = 2, TabAdvanced = 3, TabSystem = 4, TabLog = 5, TabPerf = 6;
 
 using Covers::DisplayName;
 using Covers::TitleIdOf;
@@ -160,11 +157,68 @@ void DrawCover(Canvas& c, int x, int y, int size, const Image::Pixels& image, co
     }
 }
 
+/// 0.9.5: a brighter version of an opaque colour (`amount` 0..1 towards white).
+std::uint32_t Lighten(std::uint32_t color, float amount) {
+    const auto mix = [&](int shift) {
+        const float v = float((color >> shift) & 0xFF);
+        return std::uint32_t(v + (255.0f - v) * amount + 0.5f) & 0xFF;
+    };
+    return 0xFF000000u | (mix(16) << 16) | (mix(8) << 8) | mix(0);
+}
+
+/// 0.9.5: a soft shadow under a rounded card: a few widening, very faint layers.
+void DrawShadow(Canvas& c, int x, int y, int w, int h, int radius) {
+    for (int k = 5; k >= 1; --k) {
+        c.RoundRect(x - k * 3, y - k * 2 + 8, w + k * 6, h + k * 6, radius + k * 3, 0x0C000000);
+    }
+}
+
+/// A button of the DualShock drawn with lines, centred at (cx, cy), `r` pixels from the centre to the edge.
+enum class Glyph { Cross, Circle, Triangle, Square };
+void DrawGlyph(Canvas& c, Glyph glyph, float cx, float cy, float r) {
+    switch (glyph) {
+    case Glyph::Cross:
+        c.Line(cx - r, cy - r, cx + r, cy + r, 3.5f, 0xFF7CB3FF);
+        c.Line(cx - r, cy + r, cx + r, cy - r, 3.5f, 0xFF7CB3FF);
+        break;
+    case Glyph::Circle:
+        c.Ring(cx, cy, r + 1.5f, r - 2.0f, 0xFFFF7B7B);
+        break;
+    case Glyph::Triangle:
+        c.Line(cx, cy - r - 1.0f, cx + r + 1.0f, cy + r - 1.0f, 3.5f, 0xFF5CE08F);
+        c.Line(cx + r + 1.0f, cy + r - 1.0f, cx - r - 1.0f, cy + r - 1.0f, 3.5f, 0xFF5CE08F);
+        c.Line(cx - r - 1.0f, cy + r - 1.0f, cx, cy - r - 1.0f, 3.5f, 0xFF5CE08F);
+        break;
+    case Glyph::Square:
+        c.Line(cx - r, cy - r, cx + r, cy - r, 3.5f, 0xFFF59BCB);
+        c.Line(cx + r, cy - r, cx + r, cy + r, 3.5f, 0xFFF59BCB);
+        c.Line(cx + r, cy + r, cx - r, cy + r, 3.5f, 0xFFF59BCB);
+        c.Line(cx - r, cy + r, cx - r, cy - r, 3.5f, 0xFFF59BCB);
+        break;
+    }
+}
+
+/// One hint of the footer: a key cap (a drawn button, or a few characters) and what it does. Returns the width used.
+int DrawHint(Canvas& c, int x, int y, int key, const std::string& label) {
+    // key: 0 arrows up/down, 1 arrows left/right, 2 cross, 3 circle, 4 triangle, 5 square, 6 L1/R1, 7 OPTIONS
+    const char* caps[] = {"▲▼", "◀▶", "", "", "", "", "L1 R1", "OPTIONS"};
+    const bool drawn = key >= 2 && key <= 5;
+    const int cap_w = drawn ? 44 : TextWidth(caps[key]) + 24;
+    c.RoundRect(x, y - 2, cap_w, 44, 12, 0xFF28345C);
+    if (drawn) {
+        DrawGlyph(c, Glyph(key - 2), float(x + cap_w / 2), float(y + 20), 10.0f);
+    } else {
+        c.Print(x + 12, y, caps[key], 0xFFFFFFFF);
+    }
+    c.Print(x + cap_w + 10, y, label, Color::Dim);
+    return cap_w + 10 + TextWidth(label);
+}
+
 void DrawRow(Canvas& c, int y, bool selected, bool modified, const std::string& label,
              const std::string& value, std::uint32_t value_color, bool arrows) {
     constexpr int Width = 1920 - 2 * Margin;
     if (selected) {
-        c.RoundRect(Margin, y - 4, Width, RowHeight - 4, 10, Color::Selected);
+        c.RoundRectGradient(Margin, y - 4, Width, RowHeight - 4, 10, Lighten(Color::Selected, 0.14f), Color::Selected);
         c.Fill(Margin, y + 6, 6, RowHeight - 24, Color::Teal);
     }
     if (modified) {
@@ -178,33 +232,197 @@ void DrawRow(Canvas& c, int y, bool selected, bool modified, const std::string& 
     c.Print(1920 - Margin - 30 - TextWidth(shown), y, shown, value_color);
 }
 
+
+/// 0.9.5: the colour of the light bar of each player on the PS4 (what the controller shows), and of its card.
+constexpr std::uint32_t PlayerColor[4] = {0xFF3B82F6, 0xFFEF4444, 0xFF22C55E, 0xFFEC4899};
+
+/// A controller model drawn with shapes, centred at (cx, cy) in a box about 260 x 170 wide. `type` is the value of
+/// player<N>_type ("auto" is drawn as the Pro Controller, which is what Eden gives by default). `tint` colours the body.
+void DrawControllerModel(Canvas& c, const std::string& type, int cx, int cy, std::uint32_t tint, std::uint32_t dark, std::uint32_t light) {
+    const auto stick = [&](float x, float y) {
+        c.Disc(x, y, 17.0f, dark);
+        c.Disc(x, y, 11.0f, light);
+    };
+    const auto buttons = [&](float x, float y, float d, float r) {
+        c.Disc(x, y - d, r, light);
+        c.Disc(x, y + d, r, light);
+        c.Disc(x - d, y, r, light);
+        c.Disc(x + d, y, r, light);
+    };
+    const auto joycon = [&](int x, int y, std::uint32_t colour, bool left) {
+        c.RoundRect(x - 36, y - 84, 72, 168, 30, colour);
+        c.RoundRect(x - 36, y - 84, 72, 168, 30, 0x30000000);
+        c.RoundRect(x - 33, y - 81, 66, 162, 28, colour);
+        if (left) {
+            stick(float(x), float(y - 36));
+            buttons(float(x), float(y + 38), 13.0f, 6.5f);
+        } else {
+            buttons(float(x), float(y - 38), 13.0f, 6.5f);
+            stick(float(x), float(y + 36));
+        }
+    };
+    if (type == "dual") {
+        joycon(cx - 52, cy, 0xFF2DB4E8, true);
+        joycon(cx + 52, cy, 0xFFFF5A5A, false);
+    } else if (type == "left") {
+        joycon(cx, cy, 0xFF2DB4E8, true);
+    } else if (type == "right") {
+        joycon(cx, cy, 0xFFFF5A5A, false);
+    } else if (type == "handheld") {
+        c.RoundRect(cx - 124, cy - 56, 54, 112, 26, 0xFF2DB4E8);
+        c.RoundRect(cx + 70, cy - 56, 54, 112, 26, 0xFFFF5A5A);
+        c.RoundRect(cx - 96, cy - 60, 192, 120, 12, dark);
+        c.RoundRect(cx - 88, cy - 52, 176, 104, 6, 0xFF0A1226);
+        c.Line(float(cx - 60), float(cy + 24), float(cx - 20), float(cy - 20), 3.0f, 0x30FFFFFF);
+        stick(float(cx - 110), float(cy - 22));
+        buttons(float(cx + 110), float(cy - 22), 11.0f, 5.5f);
+    } else { // pro / auto
+        c.RoundRect(cx - 118, cy - 10, 84, 86, 38, tint);
+        c.RoundRect(cx + 34, cy - 10, 84, 86, 38, tint);
+        c.RoundRect(cx - 110, cy - 52, 220, 98, 44, tint);
+        stick(float(cx - 62), float(cy - 14));
+        stick(float(cx + 28), float(cy + 14));
+        // D-pad: a plus
+        c.RoundRect(cx - 54, cy + 26, 36, 12, 3, light);
+        c.RoundRect(cx - 42, cy + 14, 12, 36, 3, light);
+        buttons(float(cx + 62), float(cy - 14), 14.0f, 7.0f);
+    }
+}
+
+const char* ModelName(const std::string& type, Lang lang) {
+    const bool pt = lang == Lang::Pt;
+    if (type == "pro") return "Pro Controller";
+    if (type == "dual") return pt ? "Dois Joy-Con" : "Dual Joy-Con";
+    if (type == "left") return pt ? "Joy-Con esquerdo" : "Left Joy-Con";
+    if (type == "right") return pt ? "Joy-Con direito" : "Right Joy-Con";
+    if (type == "handheld") return pt ? "Portátil" : "Handheld";
+    return pt ? "Automático" : "Automatic";
+}
+
 } // Anonymous namespace
 
 MenuUi::MenuUi(std::vector<GameEntry> games, int initial_game, SystemInfo info,
                const std::string& settings_text, SaveFn save)
     : games_(std::move(games)), info_(std::move(info)), file_(settings_text), save_(std::move(save)) {
+    // 0.9.5: who sees what (settings_model.h, Tier). `show_advanced=on` in settings.txt shows everything, in the last tab.
+    const bool everything = file_.Get("show_advanced") == "on";
     for (const Option& option : Catalog()) {
-        switch (option.group) {
-        case Group::Video:
-            options_[TabVideo].push_back(&option);
-            break;
-        case Group::Cpu:
-            options_[TabCpu].push_back(&option);
-            break;
-        case Group::Advanced:
-            options_[TabAdvanced].push_back(&option);
-            break;
-        case Group::Perf:
-            options_[TabPerf].push_back(&option);
-            break;
-        case Group::System:
-            options_[TabSystem].push_back(&option); // the language; row 1 is "restore defaults"
-            break;
+        const Tier tier = TierOf(option.key);
+        if (option.group == Group::Controls) {
+            options_[TabControls].push_back(&option);
+        } else if (tier == Tier::Mandatory) {
+            if (everything) {
+                options_[TabAdvanced].push_back(&option);
+            }
+        } else if (tier == Tier::Experimental) {
+            if (everything || !PublicBuild) {
+                options_[TabAdvanced].push_back(&option);
+            }
+        } else {
+            switch (option.group) {
+            case Group::Video:
+                options_[TabVideo].push_back(&option);
+                break;
+            case Group::Cpu:
+                options_[TabCpu].push_back(&option);
+                break;
+            case Group::Perf:
+                options_[TabPerf].push_back(&option);
+                break;
+            case Group::System:
+                options_[TabSystem].push_back(&option); // the language, the colour...; then "restore defaults"
+                break;
+            case Group::Advanced:
+            case Group::Controls:
+                options_[TabAdvanced].push_back(&option);
+                break;
+            }
         }
+    }
+    for (int tab = 0; tab < TabCount; ++tab) {
+        if (tab == TabLog && PublicBuild && !everything) {
+            continue; // the public build has no log screen
+        }
+        if (tab == TabAdvanced && options_[TabAdvanced].empty()) {
+            continue;
+        }
+        tabs_.push_back(tab);
     }
     const int count = int(games_.size());
     last_game_ = count > 0 ? std::clamp(initial_game, 0, count - 1) : 0;
     selected_[TabGames] = count > 0 ? last_game_ : 0;
+}
+
+bool MenuUi::SetPadsConnected(const bool (&connected)[4]) {
+    bool changed = false;
+    for (int i = 0; i < 4; ++i) {
+        changed = changed || info_.pad_connected[i] != connected[i];
+        info_.pad_connected[i] = connected[i];
+    }
+    if (changed && tab_ == TabControls) {
+        dirty_ = true;
+    }
+    return changed;
+}
+
+int MenuUi::Players() const {
+    const Option* option = FindOption("players");
+    return option != nullptr ? file_.ChoiceIndex(*option) + 1 : 1;
+}
+
+std::string MenuUi::PlayerType(int player) const {
+    static const char* const keys[4] = {"player1_type", "player2_type", "player3_type", "player4_type"};
+    const Option* option = player >= 0 && player < 4 ? FindOption(keys[player]) : nullptr;
+    return option != nullptr ? option->choices[size_t(file_.ChoiceIndex(*option))].value : "auto";
+}
+
+void MenuUi::SetPlayers(int count) {
+    if (const Option* option = FindOption("players")) {
+        file_.SetChoice(*option, std::clamp(count, 1, 4) - 1);
+        Save();
+        dirty_ = true;
+    }
+}
+
+void MenuUi::ChangePlayerType(int player, int delta) {
+    static const char* const keys[4] = {"player1_type", "player2_type", "player3_type", "player4_type"};
+    if (const Option* option = player >= 0 && player < 4 ? FindOption(keys[player]) : nullptr) {
+        const int n = int(option->choices.size());
+        file_.SetChoice(*option, (file_.ChoiceIndex(*option) + delta + n) % n);
+        Save();
+        dirty_ = true;
+    }
+}
+
+/// X on a player's card: switches the player on (and the ones before it), or off (and the ones after it): the number of
+/// players is how many controllers the game is given, so they are always player 1 to N.
+void MenuUi::ToggleControlsPlayer() {
+    const int player = selected_[TabControls];
+    if (player <= 0) {
+        return; // player 1 holds the menu: always on
+    }
+    SetPlayers(player < Players() ? player : player + 1);
+}
+
+void MenuUi::PressControls(std::uint32_t button) {
+    int& player = selected_[TabControls];
+    switch (button) {
+    case Pad::Left:
+        player = (player + 3) % 4;
+        break;
+    case Pad::Right:
+        player = (player + 1) % 4;
+        break;
+    case Pad::Up:
+        ChangePlayerType(player, -1);
+        break;
+    case Pad::Down:
+        ChangePlayerType(player, +1);
+        break;
+    default:
+        return;
+    }
+    dirty_ = true;
 }
 
 void MenuUi::SetTab(int tab) {
@@ -218,6 +436,8 @@ int MenuUi::RowCount(int tab) const {
     switch (tab) {
     case TabGames:
         return int(games_.size()) + 1; // the games, then the Homebrew Menu
+    case TabControls:
+        return 4; // the four players
     case TabSystem:
         return int(options_[TabSystem].size()) + 2; // language, colour, then restore defaults and clear the shader cache
     case TabVideo:
@@ -231,7 +451,7 @@ const Option* MenuUi::OptionAt(int tab, int row) const {
     if (tab == TabVideo) {
         --row; // row 0 is the quick profile
     }
-    if (tab == TabGames || row < 0 || row >= int(options_[tab].size())) {
+    if (tab == TabGames || tab == TabControls || row < 0 || row >= int(options_[tab].size())) {
         return nullptr;
     }
     return options_[tab][size_t(row)];
@@ -299,6 +519,10 @@ void MenuUi::ChangeValue(int delta) {
 }
 
 void MenuUi::Activate() {
+    if (tab_ == TabControls) {
+        ToggleControlsPlayer();
+        return;
+    }
     if (tab_ == TabGames) {
         const int row = selected_[TabGames];
         result_.kind = row < int(games_.size()) ? MenuResult::Kind::Play : MenuResult::Kind::Homebrew;
@@ -335,6 +559,10 @@ void MenuUi::Activate() {
 }
 
 void MenuUi::Press(std::uint32_t button) {
+    if (tab_ == TabControls) {
+        PressControls(button);
+        return;
+    }
     switch (button) {
     case Pad::Up:
         MoveRow(-1);
@@ -357,11 +585,21 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
     const std::uint32_t pressed = held & ~previous_;
     previous_ = held;
 
+    const auto step_tab = [&](int delta) {
+        const int n = int(tabs_.size());
+        int at = 0;
+        for (int i = 0; i < n; ++i) {
+            if (tabs_[size_t(i)] == tab_) {
+                at = i;
+            }
+        }
+        SetTab(tabs_[size_t((at + delta + n) % n)]);
+    };
     if (pressed & Pad::L1) {
-        SetTab(tab_ - 1);
+        step_tab(-1);
     }
     if (pressed & Pad::R1) {
-        SetTab(tab_ + 1);
+        step_tab(+1);
     }
     if (pressed & Pad::Cross) {
         Activate();
@@ -372,7 +610,14 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
         }
     }
     if (pressed & Pad::Triangle) {
-        if (IsPresetRow(tab_, selected_[tab_])) {
+        if (tab_ == TabControls) {
+            static const char* const keys[4] = {"player1_type", "player2_type", "player3_type", "player4_type"};
+            if (const Option* option = FindOption(keys[selected_[TabControls]])) {
+                file_.SetChoice(*option, option->default_index);
+                Save();
+                dirty_ = true;
+            }
+        } else if (IsPresetRow(tab_, selected_[tab_])) {
             file_.ApplyPreset(0);
             Save();
             dirty_ = true;
@@ -410,10 +655,30 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
     return redraw;
 }
 
+void MenuUi::DrawBackground(Canvas& c) const {
+    const int theme = ThemeIndex();
+    const size_t count = size_t(c.width) * size_t(c.height);
+    if (background_.size() != count || background_theme_ != theme) {
+        background_.assign(count, 0xFF000000u);
+        Canvas b{background_.data(), c.width, c.height};
+        b.FillGradient(0, 0, c.width, c.height, Color::BackgroundTop, Color::BackgroundBottom);
+        const float w = float(c.width), h = float(c.height);
+        // soft lights in the colours of the theme, and a few thin orbits, like the mark
+        b.Glow(w * 0.10f, -60.0f, 820.0f, Color::Accent, 0.34f);
+        b.Glow(w * 0.96f, h * 1.04f, 900.0f, Color::Teal, 0.17f);
+        b.Ring(w * 0.86f, h * 0.10f, 560.0f, 557.5f, 0x16FFFFFF);
+        b.Ring(w * 0.86f, h * 0.10f, 700.0f, 698.0f, 0x0EFFFFFF);
+        b.Ring(w * 0.05f, h * 1.0f, 480.0f, 477.5f, 0x12FFFFFF);
+        background_theme_ = theme;
+    }
+    std::memcpy(c.pixels, background_.data(), count * sizeof(std::uint32_t));
+}
+
 void MenuUi::DrawHeader(Canvas& c) const {
-    c.FillGradient(0, 0, c.width, c.height, Color::BackgroundTop, Color::BackgroundBottom);
+    DrawBackground(c);
     // The mark: a planet with its orbit and one satellite.
     const float cx = Margin + 52.0f, cy = 70.0f;
+    c.Glow(cx, cy, 120.0f, Color::Teal, 0.22f);
     c.Ring(cx, cy, 44.0f, 37.0f, Color::Teal);
     c.Disc(cx, cy, 21.0f, Color::Accent);
     c.Disc(cx + 31.0f, cy - 31.0f, 8.5f, Color::Text);
@@ -435,25 +700,110 @@ int MenuUi::ThemeIndex() const {
 }
 
 void MenuUi::DrawTabs(Canvas& c) const {
-    const char* names_pt[TabCount] = {"JOGOS", "VÍDEO", "CPU E MEMÓRIA", "AVANÇADO", "SISTEMA", "LOG", "DESEMPENHO"};
-    const char* names_en[TabCount] = {"GAMES", "VIDEO", "CPU & MEMORY", "ADVANCED", "SYSTEM", "LOG", "PERFORMANCE"};
-    const Icon icons[TabCount] = {Icon::Gamepad, Icon::Monitor, Icon::Chip, Icon::Sliders, Icon::Gear, Icon::Document, Icon::Gauge};
-    int x = Margin;
-    for (int i = 0; i < TabCount; ++i) {
+    const char* names_pt[TabCount] = {"JOGOS", "CONTROLES", "VÍDEO", "CPU/RAM", "HUD", "SISTEMA", "LOG", "TESTES"};
+    const char* names_en[TabCount] = {"GAMES", "CONTROLS", "VIDEO", "CPU/RAM", "HUD", "SYSTEM", "LOG", "TESTS"};
+    const Icon icons[TabCount] = {Icon::Play, Icon::Gamepad, Icon::Monitor, Icon::Chip, Icon::Gauge, Icon::Gear, Icon::Document, Icon::Sliders};
+    constexpr int Chip = 58;
+    constexpr int Available = 1920 - 2 * Margin - 2 * (Chip + 12);
+    // The width of each pill: the icon, the name, some air. If they do not all fit, the ones not selected lose the icon.
+    int widths[TabCount] = {};
+    int total = 0;
+    for (const int i : tabs_) {
+        widths[i] = TextWidth(lang() == Lang::Pt ? names_pt[i] : names_en[i]) + 76;
+        total += widths[i] + 14;
+    }
+    const bool compact = total - 14 > Available;
+    // L1 and R1 at the two ends: they walk the tabs
+    for (const int side : {0, 1}) {
+        const int cx = side == 0 ? Margin : 1920 - Margin - Chip;
+        c.RoundRect(cx, 152, Chip, 48, 12, 0xFF28345C);
+        c.Print(cx + (Chip - TextWidth(side == 0 ? "L1" : "R1")) / 2, 156, side == 0 ? "L1" : "R1", Color::Dim);
+    }
+    int x = Margin + Chip + 12;
+    for (const int i : tabs_) {
         const std::string name = lang() == Lang::Pt ? names_pt[i] : names_en[i];
-        const int w = TextWidth(name) + 76;
         const bool current = i == tab_;
+        const bool icon = current || !compact;
+        const int w = icon ? widths[i] : widths[i] - 46;
         const std::uint32_t back = current ? Color::Accent : Color::Panel;
         c.RoundRect(x, 148, w, 56, 12, back);
-        DrawIcon(c, icons[i], float(x + 18 + 15), 176.0f, 30.0f, current ? 0xFFFFFFFF : Color::Dim, back);
-        c.Print(x + 18 + 30 + 10, 156, name, current ? 0xFFFFFFFF : Color::Dim);
+        int text_x = x + 18;
+        if (icon) {
+            DrawIcon(c, icons[i], float(x + 18 + 15), 176.0f, 30.0f, current ? 0xFFFFFFFF : Color::Dim, back);
+            text_x += 40;
+        }
+        c.Print(text_x, 156, name, current ? 0xFFFFFFFF : Color::Dim);
         x += w + 14;
+    }
+}
+
+void MenuUi::DrawControls(Canvas& c) const {
+    const Lang l = lang();
+    constexpr int Gap = 28;
+    constexpr int CardW = (1920 - 2 * Margin - 3 * Gap) / 4;
+    constexpr int CardY = ContentTop - 10;
+    constexpr int CardH = HelpTop - 14 - CardY;
+    const int players = Players();
+    for (int n = 0; n < 4; ++n) {
+        const int x = Margin + n * (CardW + Gap);
+        const bool focus = n == selected_[TabControls];
+        const bool on = n < players;
+        const bool plugged = info_.pad_connected[n];
+        const std::uint32_t led = PlayerColor[n];
+        if (focus) {
+            c.RoundRect(x - 5, CardY - 5, CardW + 10, CardH + 10, 22, Color::Accent);
+        }
+        DrawShadow(c, x, CardY, CardW, CardH, 18);
+        c.RoundRect(x, CardY, CardW, CardH, 18, focus ? Color::Selected : Color::Panel);
+        // the strip in the colour of the player's light bar
+        c.RoundRect(x + 18, CardY + 18, CardW - 36, 10, 5, on ? led : 0xFF3A4668);
+        const std::string title = std::string(T("Jogador ", "Player ")) + std::to_string(n + 1);
+        c.Print(x + (CardW - TextWidth(title)) / 2, CardY + 44, title, on ? 0xFFFFFFFF : Color::Dim);
+        // the controller of the chosen model, in the player's colour
+        const std::string type = PlayerType(n);
+        const std::uint32_t body = on ? 0xFF2A3558 : 0xFF222A44;
+        c.RoundRect(x + 24, CardY + 104, CardW - 48, 190, 14, 0xFF10182E);
+        DrawControllerModel(c, type, x + CardW / 2, CardY + 199, on ? 0xFF4A5A8C : body, on ? led : 0xFF3A4668, on ? 0xFFEAF0FF : 0xFF5A6890);
+        // on / off
+        const std::string state = n == 0 ? T("SEMPRE LIGADO", "ALWAYS ON") : (on ? T("LIGADO", "ON") : T("DESLIGADO", "OFF"));
+        const int pill_w = TextWidth(state) + 36;
+        c.RoundRect(x + (CardW - pill_w) / 2, CardY + 312, pill_w, 46, 23, on ? 0xFF1E6B45 : 0xFF2A3350);
+        c.Print(x + (CardW - TextWidth(state)) / 2, CardY + 314, state, on ? Color::Good : Color::Dim);
+        // is a controller there?
+        std::string link;
+        std::uint32_t link_color = Color::Dim;
+        if (plugged) {
+            link = std::string("✓ ") + T("conectado", "connected");
+            link_color = Color::Good;
+        } else if (on) {
+            link = std::string("… ") + T("ligue o controle", "turn the controller on");
+            link_color = Color::Warn;
+        } else {
+            link = T("sem controle", "no controller");
+        }
+        link = Clip(link, (CardW - 20) / GlyphWidth);
+        c.Print(x + (CardW - TextWidth(link)) / 2, CardY + 372, link, link_color);
+        // the model
+        c.Fill(x + 24, CardY + 432, CardW - 48, 2, 0x30FFFFFF);
+        const std::string label = T("Modelo para o jogo", "Model the game sees");
+        c.Print(x + (CardW - TextWidth(label)) / 2, CardY + 448, Clip(label, (CardW - 20) / GlyphWidth), Color::Dim);
+        std::string model = ModelName(type, l);
+        if (focus) {
+            model = "◀ " + model + " ▶";
+        }
+        model = Clip(model, (CardW - 16) / GlyphWidth);
+        c.Print(x + (CardW - TextWidth(model)) / 2, CardY + 496, model, type == "auto" ? Color::Text : Color::Teal);
+        if (type != "auto") {
+            const std::string mark = T("alterado", "changed");
+            c.Print(x + (CardW - TextWidth(mark)) / 2, CardY + 548, mark, Color::Teal);
+        }
     }
 }
 
 void MenuUi::DrawGameCard(Canvas& c, int index) const {
     // The right-hand card: the cover of the selected game, its title and what is known about it.
     constexpr int CardX = 1040, CardW = 1920 - Margin - CardX, CardY = ContentTop - 10, CardH = HelpTop - 12 - CardY;
+    DrawShadow(c, CardX, CardY, CardW, CardH, 16);
     c.RoundRect(CardX, CardY, CardW, CardH, 16, Color::Panel);
     const bool is_game = index >= 0 && index < int(games_.size());
     const GameEntry* game = is_game ? &games_[size_t(index)] : nullptr;
@@ -528,7 +878,7 @@ void MenuUi::DrawGames(Canvas& c) const {
         const bool selected = index == selected_[TabGames];
         const int y = top + r * RowHeight;
         if (selected) {
-            c.RoundRect(Margin, y - 4, list_w, RowHeight - 4, 10, Color::Selected);
+            c.RoundRectGradient(Margin, y - 4, list_w, RowHeight - 4, 10, Lighten(Color::Selected, 0.14f), Color::Selected);
             c.Fill(Margin, y + 6, 6, RowHeight - 24, Color::Teal);
         }
         const std::string id = is_game ? TitleIdOf(games_[size_t(index)].name) : std::string();
@@ -714,15 +1064,33 @@ void MenuUi::DrawHelp(Canvas& c, const std::vector<std::string>& lines) const {
 }
 
 void MenuUi::DrawFooter(Canvas& c) const {
-    const char* text = T("▲▼ escolher   ◀▶ alterar   X próximo valor   Triângulo: padrão   O: voltar   L1/R1: abas",
-                         "▲▼ choose   ◀▶ change   X next value   Triangle: default   O: back   L1/R1: tabs");
+    // key: 0 up/down, 1 left/right, 2 cross, 3 circle, 4 triangle, 5 square, 6 L1/R1, 7 OPTIONS (see DrawHint)
+    struct Hint {
+        int key;
+        const char* pt;
+        const char* en;
+    };
+    std::vector<Hint> hints;
     if (tab_ == TabGames) {
-        text = T("▲▼ escolher   ◀▶ pular página   X jogar   L1/R1: abas   OPTIONS: jogar o último",
-                 "▲▼ choose   ◀▶ page   X play   L1/R1: tabs   OPTIONS: play the last one");
+        hints = {{0, "escolher", "choose"}, {1, "página", "page"}, {2, "jogar", "play"}, {6, "abas", "tabs"}, {7, "último jogo", "last game"}};
     } else if (tab_ == TabLog) {
-        text = T("◀▶ trocar de sessão   L1/R1: abas   O: voltar", "◀▶ switch session   L1/R1: tabs   O: back");
+        hints = {{1, "trocar de sessão", "switch session"}, {3, "voltar", "back"}, {6, "abas", "tabs"}};
+    } else if (tab_ == TabControls) {
+        hints = {{1, "jogador", "player"}, {0, "modelo", "model"}, {2, "ligar/desligar", "on/off"}, {4, "padrão", "default"}, {6, "abas", "tabs"}};
+    } else {
+        hints = {{0, "escolher", "choose"}, {1, "alterar", "change"}, {2, "próximo", "next"}, {4, "padrão", "default"}, {3, "voltar", "back"}, {6, "abas", "tabs"}};
     }
-    c.Print(Margin, FooterTop, Clip(text, FooterCells), Color::Dim);
+    int x = Margin;
+    for (const Hint& hint : hints) {
+        const std::string label = lang() == Lang::Pt ? hint.pt : hint.en;
+        const char* caps[] = {"▲▼", "◀▶", "", "", "", "", "L1 R1", "OPTIONS"};
+        const bool drawn = hint.key >= 2 && hint.key <= 5;
+        const int need = (drawn ? 44 : TextWidth(caps[hint.key]) + 24) + 10 + TextWidth(label);
+        if (x + need > 1920 - Margin) {
+            break; // never past the safe area
+        }
+        x += DrawHint(c, x, FooterTop, hint.key, label) + 34;
+    }
 }
 
 void MenuUi::Draw(Canvas& c) const {
@@ -739,6 +1107,14 @@ void MenuUi::Draw(Canvas& c) const {
                             "Built-in test. The message \"launchInit() failed\" is EXPECTED (the Homebrew Menu needs nx-hbloader): if it shows, the emulator runs. OPTIONS quits.")
                         : T("Escolha um jogo e aperte X. As opções das outras abas valem ao iniciar. A capa vem do próprio jogo; para trocar, ponha uma imagem em covers/ (ID do título ou nome do jogo).",
                             "Pick a game and press X. The options in the other tabs apply at start. The cover comes from the game itself; to replace it, put a picture in covers/ (title id or game file name)."),
+                    HelpCells, 2);
+    } else if (tab_ == TabControls) {
+        DrawControls(c);
+        const int n = selected_[TabControls];
+        help = Wrap(n == 0 ? T("O jogador 1 é o controle que está com o menu: sempre ligado. ▲▼ muda o modelo que o JOGO enxerga (Pro Controller, Joy-Con, Portátil); o seu DualShock é o mesmo.",
+                                "Player 1 is the controller holding the menu: always on. ▲▼ changes the model the GAME sees (Pro Controller, Joy-Con, Handheld); your DualShock stays the same.")
+                          : T("X liga este jogador (e os anteriores). Ligue o outro DualShock, aperte o botão PS e entre como convidado: o app procura a cada 2 segundos e acende a luz na cor do jogador.",
+                              "X turns this player on (and the ones before it). Turn the other DualShock on, press the PS button and join as a guest: the app looks every 2 seconds and lights the controller in the player's colour."),
                     HelpCells, 2);
     } else if (tab_ == TabLog) {
         DrawLog(c);

@@ -25,9 +25,15 @@ execute_process(COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --short=12 HEAD
     COMMAND_ERROR_IS_FATAL ANY)
 # The project version (bump it with every release; see CHANGELOG.md) leads the build id, which is
 # printed at the top of boot.log and in the release's ELF name.
-set(EDEN_PS4_VERSION "0.9.4" CACHE STRING "nx-on-orbis version")
+set(EDEN_PS4_VERSION "0.9.5" CACHE STRING "nx-on-orbis version")
 set(_ps4_build_id "v${EDEN_PS4_VERSION}-${_ps4_build_stamp}-${_ps4_eden_revision}")
 target_compile_definitions(eden-ps4 PRIVATE EDEN_PS4_BUILD_ID="${_ps4_build_id}")
+# 0.9.5: -DEDEN_PS4_PUBLIC=ON builds the release for everyone: no LOG tab and no EXPERIMENTAL tab in the menu
+# (frontend/menu/settings_model.h, PublicBuild). The test builds (the default) keep both.
+option(EDEN_PS4_PUBLIC "Build the release for everyone (no log screen, no experimental options)" OFF)
+if(EDEN_PS4_PUBLIC)
+  target_compile_definitions(eden-ps4 PRIVATE EDEN_PS4_PUBLIC=1)
+endif()
 file(WRITE "${CMAKE_BINARY_DIR}/eden-ps4-build-id.txt" "${_ps4_build_id}\n")
 
 # RADV, statically linked through orbis-compat's Vulkan loader shim (its vkloader/CMakeLists.txt,

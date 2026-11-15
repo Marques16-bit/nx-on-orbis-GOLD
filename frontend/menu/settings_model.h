@@ -13,10 +13,28 @@
 #include <utility>
 #include <vector>
 
+// 0.9.5: what the build is for. 0 = the test builds (the experimental options have their own tab and the LOG tab is
+// there); 1 = the release for everyone (neither is shown). Set with -DEDEN_PS4_PUBLIC=1 (frontend.cmake: EDEN_PS4_PUBLIC).
+#ifndef EDEN_PS4_PUBLIC
+#define EDEN_PS4_PUBLIC 0
+#endif
+
 namespace Menu {
 
+inline constexpr bool PublicBuild = EDEN_PS4_PUBLIC != 0;
+
 enum class Lang { Pt, En };
-enum class Group { Video, Cpu, Advanced, System, Perf };
+enum class Group { Video, Cpu, Advanced, System, Perf, Controls };
+
+/// 0.9.5: who gets to see an option in the menu.
+///   Normal       - always shown, in the tab of its group.
+///   Experimental - only in the test builds, in the EXPERIMENTAL tab (a release build hides them; `show_advanced=on`
+///                  in settings.txt shows them anyway). Things that change what a game sees or that were never proven.
+///   Mandatory    - never shown (unless `show_advanced=on`): the value this port needs is the default, and switching
+///                  it makes the port worse (the JIT pack, the colour fixes, the HUD's anti-flicker timing...).
+/// A line written by hand in settings.txt for any of them still works, as before.
+enum class Tier { Normal, Experimental, Mandatory };
+Tier TierOf(std::string_view key);
 
 struct Choice {
     const char* value; // as written in settings.txt

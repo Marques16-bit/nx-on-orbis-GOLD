@@ -2,6 +2,46 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.5] - A menu made for people: controls, fewer switches, a new look (first zip of 0.9.5)
+
+First zip of 0.9.5. The goal of 0.9.5 is the version for everyone (the PS4 community's Christmas present): easier to use, nicer, and with only the options a person should touch. It is built in
+steps, each one tested on a PC and then on the console; this zip is the first step. **Nothing of this zip has run on a console yet** (the menu is tested on a PC by drawing every screen to a
+picture; the wiring to the game in `main.cpp` is compiled only by the CI and run only on the console).
+
+**What the 0.9.4 fix 2 test showed** (Nov 14, Mario, 3 minutes; `mesa_*.log`, `eden_*.log`): the same speed as the run before it: about 14 to 16 FPS on average with stretches of 30 and stretches of
+80 to 150 ms per frame, the GPU waiting 0% of the time. The game's own `boot.log` was not attached (the file given was the menu after the game), so whether part 2 of the JIT pack and the 2 MiB
+cache were in that build is still not confirmed: send `boot.old.log` of the next game run. The new `mesa_*.log` also warns that the video arena straddles a 4 GiB boundary
+(`0x3a7c04000..0x405c00000`, probably a consequence of the larger JIT caches): only the part below the boundary serves 32-bit allocations; it is noted, not fixed here.
+
+**Hidden and fixed options** (`frontend/menu/settings_model.h`: `Tier`). Every option of the catalog now has a tier:
+- **Mandatory** (not in the menu): `jit_page_reuse`, `jit_direct_table` (now **on by default**; safe mode switches them off by itself after two deaths in a row in one game, and a line `off` written
+  by hand still works), `colour_swap` (on), `bgra`, `a2b10`, `rg`, `swizzle`, the five `overlay_*` timing options, `dyna_state`, `vertex_input_dynamic`, `dma_accuracy`, `sync_memory`, `driver_cache`,
+  `shader_preload`, `env:ORBIS_ARENA_MIB`, `env:ORBIS_VRAM_GARLIC`, `sysflex_mib`, `memory_action`. The quick profiles still set the memory ones; the memory profile option stays visible.
+- **Experimental** (the TESTS tab, test builds only): `cpu_clock`, `cpu_ticks`, `astc`, `astc_recompress`, `async_presentation`, `skip_cpu_invalidation`, `auto_stub`, `profile`.
+- Everything else stays where it was. `show_advanced=on` in `settings.txt` shows every option in the TESTS tab; any line written by hand still works. `docs/SETTINGS.md` has a new column "In the menu".
+- **The public build**: `-DEDEN_PS4_PUBLIC=ON` (`EDEN_PS4_PUBLIC` in `frontend.cmake`) builds the release for everyone: no TESTS tab and no LOG tab. The test builds (the default) keep both. The screenshot
+  option is still to be taken out of that build (next zip).
+
+**The CONTROLS tab** (new, second tab). Four player cards with the colour of the PS4 light bar of each player (blue, red, green, pink), the controller drawn in the model chosen, ON/OFF, and whether a
+controller is connected right now (looked for every 2 seconds while the tab is open). ◀▶ picks a player, ▲▼ the model the **game** sees (automatic, Pro Controller, two Joy-Con, left Joy-Con,
+right Joy-Con, handheld), X switches a player on (and the ones before it) or off (and the ones after it), Triangle puts the model back to automatic. New keys `player1_type`..`player4_type`; `players`
+moved here from the SYSTEM tab. `Ps4Eden::ApplyPlayerType` sets `Settings::values.players[n].controller_type`, guarded like the other Eden settings (an Eden without the member logs "no such
+controller model" and keeps its default); "automatic" touches nothing, so a `settings.txt` without these lines behaves as before.
+
+**A new look.** Soft coloured lights and thin orbits in the background (drawn once per theme, then copied), a glow behind the mark, shadows under the cards, a gradient on the selected row, L1/R1
+chips at the ends of the tab bar, and a footer of key caps with the real button shapes (cross, circle, triangle in colour) instead of text. Tab names are shorter (CPU/RAM, HUD, TESTS) so eight fit.
+
+**Tests.** `tests/menu_test.cpp` 243 checks (162): the tiers, the defaults of the mandatory options, which tab lists what, the CONTROLS tab (navigation, files written, the screen changes with the
+player, the model and the connected controller), and the same file built with `-DEDEN_PS4_PUBLIC=1`. `tests/eden_settings_test.cpp`: `ApplyPlayerType` against mock enums (a full one, one without
+members, a plain int, no setting). All host tests of the CI were run here (14 steps, 0 failed).
+
+**Studied, not used yet.** The two `.7z` of the PS5 emulator (ProsperoEden-Encore by niakw, GPL-3.0, the same Eden commit as this port) were opened and read: 33 of its 56 Eden backports apply
+cleanly to this port's patched Eden (not applied: they need a build and a console to be judged), its launcher draws UI sounds from a small generator script, and its NSZ/XCZ reader, per-title
+profiles and menu policies are the references for the next zips. Credits in the README.
+
+**Next in 0.9.5** (in this order, one zip at a time): sounds and ambient music in the menu; a per-game configuration on R2; the cover and name of `.nro` files; a clearer HUD and L3/R3 menu;
+leaving the game's RAM free for the next game; `.xci` / `.nsz`; taking the log and screenshot options out of the public build.
+
 ## [0.9.4] - The direct table now fits the Eden the build uses (the 0.9.3 build did not have it)
 
 ### 0.9.4 fix 2 (third zip of 0.9.4; the version number stays 0.9.4, the build id's time tells the zips apart)

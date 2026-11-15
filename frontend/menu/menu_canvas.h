@@ -49,6 +49,8 @@ struct Canvas {
     /// Ring between the two radii, anti-aliased, source-over.
     void Ring(float cx, float cy, float outer, float inner, std::uint32_t color);
     void Disc(float cx, float cy, float radius, std::uint32_t color);
+    /// 0.9.5: a soft light: `color` fading out to nothing at `radius` (quadratic falloff), `strength` 0..1 at the centre.
+    void Glow(float cx, float cy, float radius, std::uint32_t color, float strength);
     /// 0.7.10: a line with round ends (anti-aliased, source-over), `width` pixels thick.
     void Line(float x0, float y0, float x1, float y1, float width, std::uint32_t color);
     /// 0.7.9: rounded rectangle filled with a vertical gradient (anti-aliased corners, source-over).

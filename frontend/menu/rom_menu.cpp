@@ -184,6 +184,16 @@ MenuOutcome RunMainMenu(std::vector<Menu::GameEntry> games, int initial,
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
         }
+        if (ui.Tab() == Menu::MenuUi::TabControls) {
+            // 0.9.5: the CONTROLS tab shows which controllers are connected. Opening them is cheap (a scan every 2 s at most),
+            // and a pad opened here is kept for the game.
+            Ps4::OpenExtraPads(4);
+            bool connected[4] = {true, false, false, false};
+            for (int i = 1; i < 4; ++i) {
+                connected[i] = Ps4::ReadPad(i).connected;
+            }
+            ui.SetPadsConnected(connected);
+        }
         if (ui.Update(now, Ps4::NowUs())) {
             present();
         }

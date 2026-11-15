@@ -20,11 +20,13 @@ const char* GroupTitle(Menu::Group group) {
     case Menu::Group::Cpu:
         return "CPU AND MEMORY tab";
     case Menu::Group::Advanced:
-        return "ADVANCED tab";
+        return "ADVANCED options";
     case Menu::Group::System:
         return "SYSTEM tab";
     case Menu::Group::Perf:
-        return "PERFORMANCE tab";
+        return "HUD tab (the HUD, notices and covers)";
+    case Menu::Group::Controls:
+        return "CONTROLS tab";
     }
     return "";
 }
@@ -54,13 +56,19 @@ int main() {
                 "so \"default\" always means whatever this version defaults to. A key written by hand that the menu does not\n"
                 "know is kept as it is. `env:NAME` is the line `env=NAME=value` (a driver environment variable).\n\n");
     std::printf("The value marked **(default)** is what you get with no line in the file. Texts are the menu's English ones;\n"
-                "the menu also has them in Portuguese.\n\n");
+                "the menu also has them in Portuguese.\n\n"
+                "Since 0.9.5 the last column says who sees an option: **yes** (always), **TESTS tab** (only the test builds, which\n"
+                "have the EXPERIMENTAL/TESTS tab and the LOG tab; a release for everyone, built with `EDEN_PS4_PUBLIC=1`, has\n"
+                "neither) or **hidden** (the default is what this port needs, so the menu does not offer a switch). A line for\n"
+                "any of them written by hand in `settings.txt` still works, and `show_advanced=on` shows all of them in the\n"
+                "TESTS tab.\n\n");
 
     const auto& catalog = Menu::Catalog();
     int count = 0;
-    for (int g = 0; g <= int(Menu::Group::Perf); ++g) {
+    for (int g = 0; g <= int(Menu::Group::Controls); ++g) {
         // The order of the groups in the menu's tabs.
-        static const Menu::Group order[] = {Menu::Group::Video, Menu::Group::Perf, Menu::Group::Cpu, Menu::Group::Advanced, Menu::Group::System};
+        static const Menu::Group order[] = {Menu::Group::Controls, Menu::Group::Video, Menu::Group::Cpu, Menu::Group::Perf,
+                                            Menu::Group::System, Menu::Group::Advanced};
         const Menu::Group group = order[g];
         bool header = false;
         for (const auto& option : catalog) {
@@ -68,7 +76,7 @@ int main() {
                 continue;
             }
             if (!header) {
-                std::printf("## %s\n\n| Key | Option | Values | What it does |\n|---|---|---|---|\n", GroupTitle(group));
+                std::printf("## %s\n\n| Key | Option | Values | What it does | In the menu |\n|---|---|---|---|---|\n", GroupTitle(group));
                 header = true;
             }
             std::string values;
@@ -81,8 +89,12 @@ int main() {
                     values += " **(default)**";
                 }
             }
-            std::printf("| `%s` | %s | %s | %s |\n", option.key, Cell(option.label_en).c_str(), Cell(values).c_str(),
-                        Cell(option.help_en).c_str());
+            const Menu::Tier tier = Menu::TierOf(option.key);
+            const char* shown = tier == Menu::Tier::Mandatory      ? "hidden (the default is what this port needs)"
+                                : tier == Menu::Tier::Experimental ? "TESTS tab, test builds only"
+                                                                   : "yes";
+            std::printf("| `%s` | %s | %s | %s | %s |\n", option.key, Cell(option.label_en).c_str(), Cell(values).c_str(),
+                        Cell(option.help_en).c_str(), shown);
             ++count;
         }
         if (header) {
