@@ -27,6 +27,8 @@ inline constexpr std::uint32_t Up = 0x0010;
 inline constexpr std::uint32_t Right = 0x0020;
 inline constexpr std::uint32_t Down = 0x0040;
 inline constexpr std::uint32_t Left = 0x0080;
+inline constexpr std::uint32_t L2 = 0x0100;
+inline constexpr std::uint32_t R2 = 0x0200;
 inline constexpr std::uint32_t L1 = 0x0400;
 inline constexpr std::uint32_t R1 = 0x0800;
 inline constexpr std::uint32_t Triangle = 0x1000;
@@ -41,6 +43,10 @@ struct GameEntry {
     // draws a generated tile). `cover` fits in CoverSize x CoverSize, `thumb` in ThumbSize x ThumbSize.
     Image::Pixels cover;
     Image::Pixels thumb;
+    // 0.9.5: the title the game calls itself (the NACP of a .nro); empty = the title is taken from the file name.
+    std::string title;
+    // 0.9.5: the game has its own settings file (per-game/<title id>.txt); the list marks it.
+    bool has_config = false;
 
     GameEntry() = default;
     GameEntry(std::string file, std::uint64_t size) : name(std::move(file)), bytes(size) {}
@@ -75,6 +81,10 @@ struct SystemInfo {
     /// 0.9.5: which controllers are connected right now (player 1 always is: it is the one holding the menu). The console
     /// side refreshes this while the menu is up (MenuUi::SetPadsConnected); the CONTROLS tab shows it.
     bool pad_connected[4] = {true, false, false, false};
+    /// 0.9.5: a game's own settings (R2 on the game list). `load` gives the text of the game's file ("" when it has none); `save` writes it
+    /// (an empty text, or one with no setting in it, removes the file) and returns true when it is there. Both take the game's file name.
+    std::function<std::string(const std::string&)> load_game_config;
+    std::function<bool(const std::string&, const std::string&)> save_game_config;
 };
 
 struct MenuResult {
@@ -110,6 +120,10 @@ public:
     /// The number of players in settings.txt (1 to 4) and the model chosen for one of them ("auto", "pro", ...).
     int Players() const;
     std::string PlayerType(int player) const;
+    /// 0.9.5: the game's own settings screen (R2 on a game). For the tests: whether it is open, which game, and the options it lists.
+    bool GameConfigOpen() const { return game_cfg_open_; }
+    int GameConfigGame() const { return game_cfg_game_; }
+    const std::vector<const Option*>& GameConfigOptions() const { return game_opts_; }
 
     // 0.9.5: the tab numbers are the order they are shown in.
     static constexpr int TabGames = 0, TabControls = 1, TabVideo = 2, TabCpu = 3, TabPerf = 4, TabSystem = 5, TabLog = 6,
@@ -126,6 +140,18 @@ private:
     void Activate();
     void Save();
     void Press(std::uint32_t button);
+
+    // 0.9.5: the settings of one game
+    void OpenGameConfig();
+    void CloseGameConfig();
+    void PressGameConfig(std::uint32_t button);
+    void ChangeGameOption(int delta);
+    void ActivateGameConfig();
+    void ClearGameOption();
+    void SaveGameConfig();
+    int GameConfigRows() const { return int(game_opts_.size()) + 1; } // the options, then "clear this game's settings"
+    void DrawGameConfig(Canvas& c) const;
+    std::string TitleOf(const GameEntry& game) const;
 
     void DrawBackground(Canvas& c) const;
     void DrawHeader(Canvas& c) const;
@@ -152,6 +178,14 @@ private:
     SaveFn save_;
     std::vector<const Option*> options_[TabCount];
     std::vector<int> tabs_;
+    // 0.9.5: the game's own settings screen
+    std::vector<const Option*> game_opts_; // what a game's file may set (the options the menu shows, minus the ones that are global)
+    bool game_cfg_open_ = false;
+    int game_cfg_game_ = -1;
+    SettingsFile game_file_;
+    int game_sel_ = 0;
+    int game_scroll_ = 0;
+    bool game_confirm_clear_ = false;
     /// 0.9.5: the background (gradient, soft lights, thin orbits) is drawn once per theme and copied each time.
     mutable std::vector<std::uint32_t> background_;
     mutable int background_theme_ = -1;

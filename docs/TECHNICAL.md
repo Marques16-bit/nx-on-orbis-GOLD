@@ -344,6 +344,19 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - **Reading the 0.9.4 boot.log** (Mario vs. Donkey Kong, Nov 13): the `profile` lines count a sample as "jit" when the instruction pointer is outside the eboot image and the kernel library, so the rest of a busy thread is the
   emulator itself (compiling blocks, memory callbacks, the emulated kernel). On the three busy `CPUCore_` threads the JIT share was 28-50% of 56-79% busy; the GPU thread 4-11% busy. The stalls (1.0-7.3 s) came with one core at 91% busy.
 
+### 0.9.5, second zip: a game's own settings, `.nro` assets
+
+- **Files** (`frontend/menu/game_config.h`, header only): `KeyFor(game file name)` is the title id (`Covers::TitleIdOf`) or the sanitised stem; `PathFor`, `Load`, `Save` (temporary file then rename, then a
+  read back; a text with no setting removes the file) and `Present(dir)` (the keys of the files, to mark games). `per-game/` is made with the other data folders at start.
+- **Applying**: `ApplySettingsFile(game)` in `main.cpp` runs `ApplySettingsLines` on `settings.txt` and then on the game's file, with `per_game = true` for the second (it skips `Menu::GlobalOnly` keys). The
+  memory plan is read before any game is known (`ApplyMemoryPlan`), which is why `memory_profile` is global only.
+- **Menu**: `MenuUi::game_cfg_open_` is a screen over the games tab, not a tab. `game_opts_` is the options of the tabs in order (controls, video, CPU, HUD, system, TESTS) filtered by `PerGameOffered`. A
+  `SettingsFile` of the game (`game_file_`) holds the text; `OverrideIndex` is -1 when a line is absent (shown as `global (value)`), `SetOverride` writes a value even if it equals the default. The text is
+  loaded and saved through `SystemInfo::load_game_config` / `save_game_config`, filled in by `CollectSystemInfo`; the tests plug in a map. `Pad::R2` / `Pad::L2` are the PS4's 0x200 / 0x100.
+- **`.nro`** (`frontend/menu/nro_assets.h`, header only): the u32 at 0x18 of an NRO is the size of the program; the `ASET` header follows (icon offset/size, NACP offset/size, RomFS offset/size, offsets from the
+  start of the header). `Read` checks every offset and size against the file size before reading, takes the first NACP title with a name (UTF-8 checked, control characters turned to spaces) and the JPEG
+  (at most 4 MiB, must start `FF D8`). `main.cpp` reads it for every `.nro` of `roms/` before the covers, so the title shows even when a picture in `covers/` wins.
+
 ### 0.9.5: tiers for options, the CONTROLS tab, the cached background
 
 - **Tiers** (`frontend/menu/settings_model.h`, `Tier`, `TierOf(key)`): a table of keys, not a field of `Option`, so the catalog's initialisers did not change. Mandatory options are not in any tab unless

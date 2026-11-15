@@ -314,6 +314,30 @@ Tier TierOf(std::string_view key) {
     return Tier::Normal;
 }
 
+bool GlobalOnly(std::string_view key) {
+    static constexpr std::string_view global[] = {"language", "menu_theme", "covers", "show_advanced", "memory_profile"};
+    for (const std::string_view k : global) {
+        if (k == key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PerGameOffered(const Option& option) {
+    const std::string_view key = option.key;
+    if (GlobalOnly(key) || TierOf(key) == Tier::Mandatory) {
+        return false;
+    }
+    static constexpr std::string_view app_wide[] = {"shader_cache", "shader_notice", "hud_size", "hud_position", "overlay"};
+    for (const std::string_view k : app_wide) {
+        if (k == key) {
+            return false;
+        }
+    }
+    return option.group != Group::System || key == "region";
+}
+
 const std::vector<Preset>& Presets() {
     // These name only what each option means (more speed, or more fidelity). They are ways to try a
     // game quickly, not a promise that it will open.
@@ -480,6 +504,46 @@ void SettingsFile::SetChoice(const Option& option, int index) {
 
 bool SettingsFile::IsDefault(const Option& option) const {
     return ChoiceIndex(option) == option.default_index;
+}
+
+int SettingsFile::OverrideIndex(const Option& option) const {
+    const std::string value = Get(option.key);
+    if (value.empty()) {
+        return -1;
+    }
+    for (size_t i = 0; i < option.choices.size(); ++i) {
+        if (value == option.choices[i].value) {
+            return int(i);
+        }
+    }
+    return -1; // a value this menu does not offer (written by hand): shown as left to the global settings, and kept until changed
+}
+
+void SettingsFile::SetOverride(const Option& option, int index) {
+    if (index < 0 || index >= int(option.choices.size())) {
+        Erase(option.key);
+    } else {
+        Set(option.key, option.choices[size_t(index)].value);
+    }
+}
+
+bool SettingsFile::HasSettings() const {
+    for (const Line& line : lines_) {
+        if (!line.key.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<std::pair<std::string, std::string>> SettingsFile::Entries() const {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const Line& line : lines_) {
+        if (!line.key.empty()) {
+            out.emplace_back(line.key, line.value);
+        }
+    }
+    return out;
 }
 
 void SettingsFile::ResetAll() {

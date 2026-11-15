@@ -8,10 +8,15 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
+#include "menu/game_config.h"
 #include "menu/menu_ui.h"
+#include "menu/nro_assets.h"
 
 namespace {
 
@@ -35,10 +40,33 @@ struct Rig {
     bool save_works = true;
     std::uint64_t now = 1000000;
     std::uint32_t held = 0;
+    std::map<std::string, std::string> game_files; // per-game/<key>.txt, by game file name (0.9.5)
+    int game_saves = 0;
+    bool game_save_works = true;
     MenuUi ui;
 
+    SystemInfo WithGameFiles(SystemInfo info) {
+        info.load_game_config = [this](const std::string& game) {
+            const auto it = game_files.find(game);
+            return it == game_files.end() ? std::string() : it->second;
+        };
+        info.save_game_config = [this](const std::string& game, const std::string& text) {
+            ++game_saves;
+            if (!game_save_works) {
+                return false;
+            }
+            if (SettingsFile(text).HasSettings()) {
+                game_files[game] = text;
+            } else {
+                game_files.erase(game);
+            }
+            return true;
+        };
+        return info;
+    }
+
     explicit Rig(const std::string& settings, int games = 3, int initial = 0)
-        : ui(MakeGames(games), initial, MakeInfo(games), settings,
+        : ui(MakeGames(games), initial, WithGameFiles(MakeInfo(games)), settings,
              [this](const std::string& text) {
                  saved = text;
                  ++saves;
@@ -78,6 +106,11 @@ struct Rig {
         ui.Update(held, now);
         now += 50000;
     }
+};
+
+struct Frame {
+    std::vector<std::uint32_t> pixels = std::vector<std::uint32_t>(1920 * 1080);
+    Canvas Canvas_() { return Canvas{pixels.data(), 1920, 1080}; }
 };
 
 void TestSettingsFile() {
@@ -254,6 +287,284 @@ void TestVisibility() {
         found += somewhere ? 1 : 0;
     }
     Check(found == int(Catalog().size()), "with show_advanced=on, every option of the catalog is in some tab");
+}
+
+const std::filesystem::path TempDir(const char* name) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / (std::string("menu_test_") + name + "_" + std::to_string(std::uint64_t(&g_checks) & 0xFFFFFF));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+void TestGameConfig() {
+    std::printf("a game's own settings (0.9.5)\n");
+    namespace GC = GameConfig;
+    // which options are global, which the game screen offers
+    Check(GlobalOnly("language") && GlobalOnly("menu_theme") && GlobalOnly("covers") && GlobalOnly("memory_profile") && GlobalOnly("show_advanced"),
+          "language, colour, covers, memory profile and show_advanced are global only");
+    Check(!GlobalOnly("resolution") && !GlobalOnly("players") && !GlobalOnly("jit_cache_mib") && !GlobalOnly("region"), "everyday options may be set per game");
+    Check(PerGameOffered(*FindOption("resolution")) && PerGameOffered(*FindOption("players")) && PerGameOffered(*FindOption("player2_type")) &&
+              PerGameOffered(*FindOption("region")) && PerGameOffered(*FindOption("jit_cache_mib")),
+          "resolution, players, controller models, region and the JIT cache are offered per game");
+    Check(!PerGameOffered(*FindOption("language")) && !PerGameOffered(*FindOption("menu_theme")) && !PerGameOffered(*FindOption("jit_page_reuse")) &&
+              !PerGameOffered(*FindOption("hud_size")) && !PerGameOffered(*FindOption("shader_cache")),
+          "language, colour, the mandatory JIT switch, the HUD's size and the shader cache switch are not");
+    // reading and writing overrides
+    {
+        SettingsFile f("");
+        const Option* res = FindOption("resolution");
+        Check(f.OverrideIndex(*res) == -1 && !f.HasSettings(), "an empty game file leaves every option to the global settings");
+        f.SetOverride(*res, res->default_index);
+        Check(f.OverrideIndex(*res) == res->default_index && f.Get("resolution") == res->choices[size_t(res->default_index)].value,
+              "the default value, chosen for a game, is written (the global setting may differ)");
+        Check(f.HasSettings(), "...and the file now has a setting");
+        f.SetOverride(*res, -1);
+        Check(f.OverrideIndex(*res) == -1 && !f.HasSettings(), "back to global: the line goes, and a file of only the header counts as empty");
+        SettingsFile odd("resolution=7.5\n");
+        Check(odd.OverrideIndex(*res) == -1 && odd.HasSettings(), "a value the menu does not offer is shown as global but kept until changed");
+        SettingsFile e("# c\nmode=docked\nenv=RADV_DEBUG=info\n");
+        const auto entries = e.Entries();
+        Check(entries.size() == 2 && entries[0].first == "mode" && entries[1].first == "env:RADV_DEBUG" && entries[1].second == "info", "Entries lists the settings, env as env:NAME");
+    }
+    // the key of a game's file
+    Check(GC::KeyFor("Super Mario Odyssey [0100000000010000].nsp") == "0100000000010000", "the title id names the file when the dump has one");
+    Check(GC::KeyFor("Celeste.nsp") == "Celeste", "else the name without the extension");
+    Check(GC::KeyFor("The Legend of Zelda - Tears of the Kingdom (v1.2).xci") == "The_Legend_of_Zelda_-_Tears_of_the_Kingdom_v1_2", "spaces and symbols become one underscore");
+    Check(GC::KeyFor("../../etc/passwd.nsp") == "passwd" && GC::KeyFor("a/b\\c:d*e.nsp").find_first_of("/\\:*.") == std::string::npos,
+          "no path characters get into a key");
+    Check(GC::KeyFor("???.nsp") == "game" && GC::KeyFor(std::string(300, 'a') + ".nsp").size() == 80, "an empty key is 'game', a long one is cut to 80");
+    Check(GC::KeyFor("Pokémon.nsp") == "Pok_mon", "non-ASCII letters are turned into underscore");
+    // files on disk
+    {
+        const auto dir = TempDir("files") / "per-game";
+        const std::string game = "Celeste.nsp";
+        Check(GC::Load(dir, game).empty() && GC::Present(dir).empty(), "no folder: nothing to load, nothing present");
+        Check(GC::Save(dir, game, "resolution=1.5\n") && std::filesystem::exists(dir / "Celeste.txt"), "saving makes the folder and the file");
+        Check(GC::Load(dir, game) == "resolution=1.5\n", "loading gives back what was saved");
+        Check(GC::Present(dir).count("Celeste") == 1, "the file is listed as present");
+        Check(!std::filesystem::exists(dir / "Celeste.txt.tmp"), "no temporary file is left");
+        Check(GC::Save(dir, game, "# only a comment\n") && !std::filesystem::exists(dir / "Celeste.txt"), "a text with no setting removes the file");
+        Check(GC::Save(dir, game, "") && GC::Present(dir).empty(), "removing a file that is not there is fine");
+        std::filesystem::remove_all(dir.parent_path());
+    }
+    // the screen
+    {
+        Rig r("resolution=1.5\n", 3, 1);
+        r.Tap(Pad::R2);
+        Check(r.ui.GameConfigOpen() && r.ui.GameConfigGame() == 1, "R2 on a game opens its settings screen");
+        const auto& opts = r.ui.GameConfigOptions();
+        Check(!opts.empty(), "the screen lists options");
+        bool bad = false, has_players = false, has_resolution = false;
+        for (const Option* o : opts) {
+            bad = bad || GlobalOnly(o->key) || TierOf(o->key) == Tier::Mandatory || !PerGameOffered(*o);
+            has_players = has_players || std::string(o->key) == "players";
+            has_resolution = has_resolution || std::string(o->key) == "resolution";
+        }
+        Check(!bad && has_players && has_resolution, "...none of them global or mandatory");
+        if (PublicBuild) {
+            bool experimental = false;
+            for (const Option* o : opts) {
+                experimental = experimental || TierOf(o->key) == Tier::Experimental;
+            }
+            Check(!experimental, "the public build offers no experimental option per game");
+        }
+        // find the row of "resolution"
+        int row = -1;
+        for (size_t i = 0; i < opts.size(); ++i) {
+            if (std::string(opts[i]->key) == "resolution") {
+                row = int(i);
+            }
+        }
+        for (int i = 0; i < row; ++i) {
+            r.Tap(Pad::Down);
+        }
+        const Option& res = *FindOption("resolution");
+        r.Tap(Pad::Right);
+        Check(r.game_files.count("The Legend of Zelda - Tears of the Kingdom.xci") == 1, "the first change writes the game's file under its game name");
+        const std::string text = r.game_files["The Legend of Zelda - Tears of the Kingdom.xci"];
+        Check(text.find("resolution=" + std::string(res.choices[0].value)) != std::string::npos, "Right from 'global' picks the first choice");
+        Check(r.saves == 0, "...and settings.txt is not written");
+        r.Tap(Pad::Left);
+        Check(r.game_files.empty(), "Left goes back to global: the file is gone");
+        r.Tap(Pad::Left);
+        Check(r.game_files["The Legend of Zelda - Tears of the Kingdom.xci"].find("resolution=" + std::string(res.choices.back().value)) != std::string::npos,
+              "Left from 'global' wraps to the last choice");
+        r.Tap(Pad::Triangle);
+        Check(r.game_files.empty(), "Triangle puts the option back to the global setting");
+        r.Tap(Pad::Cross);
+        Check(r.game_files.size() == 1, "X steps to the next value");
+        Check(r.ui.TabOptions(MenuUi::TabVideo).size() > 0, "the tabs are untouched while the screen is open");
+        r.Tap(Pad::R1);
+        Check(r.ui.Tab() == MenuUi::TabGames, "L1 and R1 do not leave the screen");
+        r.Tap(Pad::Circle);
+        Check(!r.ui.GameConfigOpen() && r.ui.Tab() == MenuUi::TabGames, "Circle closes the screen and stays on the game list");
+        // the list marks the game, and reopening finds the value
+        r.Tap(Pad::R2);
+        Check(r.ui.GameConfigOpen(), "R2 opens it again");
+        r.Tap(Pad::R2);
+        Check(!r.ui.GameConfigOpen(), "R2 closes it");
+        // another game: its own screen
+        r.Tap(Pad::Down);
+        r.Tap(Pad::R2);
+        Check(r.ui.GameConfigGame() == 2, "the screen belongs to the game that was selected");
+        r.Tap(Pad::Circle);
+    }
+    {
+        // clear row
+        Rig r("", 2, 0);
+        r.Tap(Pad::R2);
+        const int rows = int(r.ui.GameConfigOptions().size());
+        r.Tap(Pad::Right); // the first option: written
+        Check(r.game_files.size() == 1, "an option set");
+        for (int i = 0; i < rows; ++i) {
+            r.Tap(Pad::Down); // wraps to the last row ("forget") after `rows` steps from row 0
+        }
+        r.Tap(Pad::Cross);
+        Check(r.game_files.size() == 1, "X on 'forget' asks first");
+        r.Tap(Pad::Cross);
+        Check(r.game_files.empty(), "X again forgets this game's options");
+        r.Tap(Pad::Circle);
+    }
+    {
+        // the Homebrew Menu row and other tabs
+        Rig r("", 2, 0);
+        r.Tap(Pad::Down);
+        r.Tap(Pad::Down); // the Homebrew Menu row
+        r.Tap(Pad::R2);
+        Check(!r.ui.GameConfigOpen(), "R2 on the Homebrew Menu test does nothing");
+        r.ui.SetTab(MenuUi::TabVideo);
+        r.Tap(Pad::R2);
+        Check(!r.ui.GameConfigOpen(), "R2 outside the game list does nothing");
+    }
+    {
+        // OPTIONS starts the game from the screen; a failed save is shown, not hidden
+        Rig r("", 2, 1);
+        r.Tap(Pad::R2);
+        r.game_save_works = false;
+        r.Tap(Pad::Right);
+        Check(r.game_saves == 1 && r.game_files.empty(), "a failed save writes nothing");
+        r.Tap(Pad::Options);
+        Check(r.ui.Result().kind == MenuResult::Kind::Play && r.ui.Result().game == 1, "OPTIONS starts the game from its settings screen");
+    }
+    {
+        // a game with a file is marked when the menu opens, and the screen shows the file's values
+        Rig r("", 2, 0);
+        r.game_files["Super Mario Odyssey [0100000000010000].nsp"] = "mode=docked\n";
+        r.ui.SetTab(MenuUi::TabGames);
+        r.Tap(Pad::R2);
+        const auto& opts = r.ui.GameConfigOptions();
+        int mode_row = -1;
+        for (size_t i = 0; i < opts.size(); ++i) {
+            if (std::string(opts[i]->key) == "mode") {
+                mode_row = int(i);
+            }
+        }
+        for (int i = 0; i < mode_row; ++i) {
+            r.Tap(Pad::Down);
+        }
+        r.Tap(Pad::Right); // the file says docked, the last choice: Right wraps to "global" and the line goes
+        Check(r.game_files.count("Super Mario Odyssey [0100000000010000].nsp") == 0, "the screen starts from the file's text (docked, then Right wraps to global)");
+        r.Tap(Pad::Circle);
+    }
+}
+
+void TestNro() {
+    std::printf(".nro assets (0.9.5)\n");
+    const auto dir = TempDir("nro");
+    const auto put32 = [](std::vector<std::uint8_t>& v, size_t at, std::uint32_t x) {
+        for (int i = 0; i < 4; ++i) {
+            v[at + size_t(i)] = std::uint8_t(x >> (8 * i));
+        }
+    };
+    const auto put64 = [&](std::vector<std::uint8_t>& v, size_t at, std::uint64_t x) {
+        put32(v, at, std::uint32_t(x));
+        put32(v, at + 4, std::uint32_t(x >> 32));
+    };
+    const auto build = [&](const std::string& name, const std::string& author, bool icon, bool aset = true) {
+        std::vector<std::uint8_t> v(0x1000, 0xAA); // the "program"
+        v[0x10] = 'N'; v[0x11] = 'R'; v[0x12] = 'O'; v[0x13] = '0';
+        put32(v, 0x18, 0x1000);
+        if (aset) {
+            const size_t base = v.size();
+            std::vector<std::uint8_t> a(0x38, 0);
+            a[0] = 'A'; a[1] = 'S'; a[2] = 'E'; a[3] = 'T';
+            std::vector<std::uint8_t> jpeg(64, 0x11);
+            jpeg[0] = 0xFF; jpeg[1] = 0xD8;
+            std::vector<std::uint8_t> nacp(0x4000, 0);
+            // titles 0..2 empty on purpose: the first one that has a name wins
+            const size_t at = 3 * Nro::NacpTitleBytes;
+            std::memcpy(&nacp[at], name.data(), name.size());
+            std::memcpy(&nacp[at + 0x200], author.data(), author.size());
+            put64(a, 0x08, 0x38);
+            put64(a, 0x10, icon ? jpeg.size() : 0);
+            put64(a, 0x18, 0x38 + jpeg.size());
+            put64(a, 0x20, nacp.size());
+            v.insert(v.end(), a.begin(), a.end());
+            v.insert(v.end(), jpeg.begin(), jpeg.end());
+            v.insert(v.end(), nacp.begin(), nacp.end());
+            (void)base;
+        }
+        return v;
+    };
+    const auto write = [&](const char* file, const std::vector<std::uint8_t>& bytes) {
+        std::ofstream out(dir / file, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+        return dir / file;
+    };
+    {
+        Nro::Info info;
+        std::string why;
+        Check(Nro::Read(write("a.nro", build("RetroArch", "libretro", true)), &info, &why), "an NRO with assets is read");
+        Check(info.name == "RetroArch" && info.author == "libretro", "the title and the author come from the first title with a name");
+        Check(info.icon.size() == 64 && info.icon[0] == 0xFF && info.icon[1] == 0xD8, "the JPEG icon is returned");
+    }
+    {
+        Nro::Info info;
+        std::string why;
+        Check(Nro::Read(write("b.nro", build("Só título", "", false)), &info, &why) && info.name == "Só título" && info.icon.empty(), "a title without an icon is fine (UTF-8 kept)");
+    }
+    {
+        Nro::Info info;
+        std::string why;
+        Check(!Nro::Read(write("c.nro", build("", "", false, false)), &info, &why) && !why.empty(), "an NRO without an asset section: false, with a reason");
+        Check(!Nro::Read(dir / "missing.nro", &info, &why), "a missing file: false");
+        std::vector<std::uint8_t> junk(200, 7);
+        Check(!Nro::Read(write("d.nro", junk), &info, &why) && why.find("NRO0") != std::string::npos, "not an NRO: false");
+        std::vector<std::uint8_t> cut = build("Cut", "x", true);
+        cut.resize(cut.size() - 0x3000); // the NACP is cut short
+        Nro::Info cutinfo;
+        Check(Nro::Read(write("e.nro", cut), &cutinfo, &why) == !cutinfo.icon.empty(), "a truncated NRO never reads past its end");
+        std::vector<std::uint8_t> huge = build("Huge", "x", true);
+        put64(huge, 0x1000 + 0x10, 1ull << 40); // an icon size far beyond the file
+        Nro::Info hi;
+        Nro::Read(write("f.nro", huge), &hi, &why);
+        Check(hi.icon.empty(), "an icon size larger than the file is ignored");
+        std::vector<std::uint8_t> wrap = build("Wrap", "x", true);
+        put64(wrap, 0x1000 + 0x08, ~0ull - 4); // an offset that would overflow
+        Nro::Info wi;
+        Nro::Read(write("g.nro", wrap), &wi, &why);
+        Check(wi.icon.empty(), "an offset that would wrap around is ignored");
+        const std::uint8_t bad[0x300] = {'A', 0xFF, 'B', 0};
+        std::string n, a;
+        Check(!Nro::ParseNacp(bad, sizeof(bad), &n, &a), "a title that is not UTF-8 is refused");
+        std::uint8_t tabby[0x300] = {'A', '\t', 'B', ' ', ' ', 0};
+        Check(Nro::ParseNacp(tabby, sizeof(tabby), &n, &a) && n == "A B", "control characters become spaces and the ends are trimmed");
+    }
+    // the game list shows the title of a .nro
+    {
+        std::vector<GameEntry> games = {{"homebrew_v2.nro", 3ull << 20}, {"Celeste.nsp", 1ull << 30}};
+        games[0].title = "RetroArch";
+        MenuUi ui(games, 0, Rig::MakeInfo(2), "", nullptr);
+        Frame frame;
+        Canvas canvas = frame.Canvas_();
+        ui.Draw(canvas);
+        MenuUi plain({{"homebrew_v2.nro", 3ull << 20}, {"Celeste.nsp", 1ull << 30}}, 0, Rig::MakeInfo(2), "", nullptr);
+        Frame frame2;
+        Canvas canvas2 = frame2.Canvas_();
+        plain.Draw(canvas2);
+        Check(frame.pixels != frame2.pixels, "a .nro's own title changes what the list shows");
+    }
+    std::filesystem::remove_all(dir);
 }
 
 void TestNavigation() {
@@ -594,11 +905,6 @@ void TestNavigation() {
     }
 }
 
-struct Frame {
-    std::vector<std::uint32_t> pixels = std::vector<std::uint32_t>(1920 * 1080);
-    Canvas Canvas_() { return Canvas{pixels.data(), 1920, 1080}; }
-};
-
 void WritePpm(const std::string& path, const Frame& frame) {
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) {
@@ -697,6 +1003,50 @@ void TestDrawing(const char* render_dir) {
             WritePpm(name, f);
         }
     }
+    // 0.9.5: the game's own settings screen, and the mark in the list
+    for (int english = 0; english < 2; ++english) {
+        Rig r(english ? "language=en\nresolution=1.5\n" : "resolution=1.5\n", 4, 0);
+        r.game_files["Super Mario Odyssey [0100000000010000].nsp"] = "mode=docked\ngpu_accuracy=high\n";
+        std::vector<GameEntry> own_games = Rig::MakeGames(4);
+        own_games[0].has_config = true;
+        MenuUi ui(std::move(own_games), 0, r.WithGameFiles(Rig::MakeInfo(4)), english ? "language=en\nresolution=1.5\n" : "resolution=1.5\n", nullptr);
+        Frame list;
+        Canvas lc = list.Canvas_();
+        ui.Draw(lc);
+        std::uint64_t now = 1000000;
+        const auto tap = [&](std::uint32_t button) {
+            ui.Update(button, now);
+            now += 50000;
+            ui.Update(0, now);
+            now += 50000;
+        };
+        tap(Pad::R2);
+        for (int i = 0; i < 3; ++i) {
+            tap(Pad::Down);
+        }
+        tap(Pad::Right);
+        tap(Pad::Right);
+        Frame screen;
+        Canvas sc = screen.Canvas_();
+        ui.Draw(sc);
+        Check(screen.pixels != list.pixels, "the game's settings screen draws over the list");
+        {
+            // a game with its own settings is marked in the list
+            std::vector<GameEntry> plain_games = Rig::MakeGames(4);
+            MenuUi plain(std::move(plain_games), 0, Rig::MakeInfo(4), english ? "language=en\nresolution=1.5\n" : "resolution=1.5\n", nullptr);
+            Frame unmarked;
+            Canvas uc = unmarked.Canvas_();
+            plain.Draw(uc);
+            Check(unmarked.pixels != list.pixels, "a game that has its own settings is marked in the list");
+        }
+        if (render_dir != nullptr) {
+            char name[256];
+            std::snprintf(name, sizeof(name), "%s/menu-%s-pergame-list.ppm", render_dir, english ? "en" : "pt");
+            WritePpm(name, list);
+            std::snprintf(name, sizeof(name), "%s/menu-%s-pergame-screen.ppm", render_dir, english ? "en" : "pt");
+            WritePpm(name, screen);
+        }
+    }
     // 0.7.9 covers: a game with a picture draws it (big in the card, small in the list); one without gets a tile.
     {
         auto make_cover = [](int w, int h, std::uint32_t a, std::uint32_t b) {
@@ -781,6 +1131,8 @@ int main(int argc, char** argv) {
     }
     TestSettingsFile();
     TestVisibility();
+    TestGameConfig();
+    TestNro();
     TestNavigation();
     TestDrawing(render_dir);
     std::printf("%d checks, %d failed\n", g_checks, g_failures);

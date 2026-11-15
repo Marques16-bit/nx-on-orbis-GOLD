@@ -16,7 +16,7 @@ maior** (até 1536 MiB), e traz a opção **Controles (jogadores) de 1 a 4** na 
 A 0.9.2 traz a opção **JIT: reaproveitar a busca de página** (aba CPU e Memória, desligada por padrão): o mesmo efeito do JIT do Eden4,
 escrito para a tabela de páginas deste port; **nunca rodou num console** e o código que gera as instruções nem foi compilado aqui.
 Se não compilar no CI, o build segue sem ela.
-A **0.9.5** (primeiro zip) é a versão para todo mundo: opções que ninguém deve mexer ficam **escondidas e fixas** (o JIT agora vem ligado, com o modo seguro como rede), as de teste vão para a aba **TESTES** (a versão pública não terá), aba nova **CONTROLES** (4 jogadores, modelo do controle, quais estão conectados) e o menu ficou mais bonito. Ainda não rodou no console. A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não entrou: o Eden fixado era diferente do que o patch esperava) e o emissor foi rodado pela primeira vez, num PC. A 0.9.3 (a "0.9.2 fix") somou a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md). A **0.9.4 fix** faz o build contar no `boot.log` o que fez com o pacote do JIT (e por que uma parte ficou de fora), tira o pacote aos poucos se o build falhar, e acrescenta o cache de código do JIT (`jit_cache_mib`) com um contador de quantas vezes ele foi esvaziado (travadas de recompilação).
+A **0.9.5** (segundo zip: **R2 num jogo abre as opções só daquele jogo**, salvas em `per-game/`, e `.nro` aparece com o nome e o ícone dele) é a versão para todo mundo: opções que ninguém deve mexer ficam **escondidas e fixas** (o JIT agora vem ligado, com o modo seguro como rede), as de teste vão para a aba **TESTES** (a versão pública não terá), aba nova **CONTROLES** (4 jogadores, modelo do controle, quais estão conectados) e o menu ficou mais bonito. Ainda não rodou no console. A 0.9.4 faz a **tabela direta** entrar de verdade no build (no 0.9.3 ela não entrou: o Eden fixado era diferente do que o patch esperava) e o emissor foi rodado pela primeira vez, num PC. A 0.9.3 (a "0.9.2 fix") somou a opção **JIT: tabela de páginas direta** (mesma aba, desligada por padrão): o JIT passa a ler uma cópia já decodificada da tabela de páginas, 4 instruções a menos por acesso à memória; também **nunca rodou num console**. Veja [Créditos](#credits) (inclui o Eden4) e [docs/EDEN4.md](docs/EDEN4.md). A **0.9.4 fix** faz o build contar no `boot.log` o que fez com o pacote do JIT (e por que uma parte ficou de fora), tira o pacote aos poucos se o build falhar, e acrescenta o cache de código do JIT (`jit_cache_mib`) com um contador de quantas vezes ele foi esvaziado (travadas de recompilação).
 
 | | |
 |---|---|
@@ -74,7 +74,11 @@ Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **n
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
-## What is new in 0.9.5: a menu made for people (first zip)
+## What is new in 0.9.5: a menu made for people (first and second zip)
+
+**Second zip:** press **R2** on a game in the list to open that game's own options (resolution, console mode, GPU and CPU accuracy, controllers and their models, region...). They are saved in
+`per-game/<title id>.txt` and applied on top of `settings.txt` only when that game starts; a game that has some is marked in the list. The list also shows the **name and icon of each `.nro`**
+homebrew from the file itself. Not run on a console yet.
 
 The goal of 0.9.5 is the version for everyone. This first zip changes the **menu**, not the speed: the options a person should not touch are **hidden and fixed** at the value this port needs (the two JIT
 switches are now **on by default**, with safe mode as the net), the ones that are only for testing moved to a **TESTS** tab that a public build will not have, there is a new **CONTROLS** tab (four

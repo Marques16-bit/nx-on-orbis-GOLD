@@ -36,6 +36,11 @@ enum class Group { Video, Cpu, Advanced, System, Perf, Controls };
 enum class Tier { Normal, Experimental, Mandatory };
 Tier TierOf(std::string_view key);
 
+/// 0.9.5: options that only make sense for the whole app, never for one game (the menu's own language, colour and covers, the memory
+/// profile that is read before any game is known, `show_advanced`). A per-game file (`per-game/<title id>.txt`) cannot set them: main.cpp
+/// logs the line and skips it.
+bool GlobalOnly(std::string_view key);
+
 struct Choice {
     const char* value; // as written in settings.txt
     const char* pt;
@@ -59,6 +64,10 @@ struct Option {
         return lang == Lang::Pt ? choices[size_t(index)].pt : choices[size_t(index)].en;
     }
 };
+
+/// 0.9.5: can the game's own settings screen offer this option? Not the global-only ones, not the mandatory ones, and not the app's own
+/// look (the SYSTEM tab, except the region) nor the HUD's size, position and notices, nor the shader cache switch: those are not per game.
+bool PerGameOffered(const Option& option);
 
 /// Every option, in the order the menu shows them.
 const std::vector<Option>& Catalog();
@@ -98,6 +107,16 @@ public:
     /// Removes the lines of every option of the catalog (not the language).
     void ResetAll();
     Lang Language() const;
+
+    /// 0.9.5, for a game's own file (per-game/<title id>.txt): an option is either left to the global settings (no line) or written
+    /// down, even when it equals the default (the game may want the default while settings.txt says something else).
+    /// -1 = left to the global settings, else the index of the choice written.
+    int OverrideIndex(const Option& option) const;
+    void SetOverride(const Option& option, int index); // -1 removes the line
+    /// True when some line of the file is a setting (not only comments and blanks).
+    bool HasSettings() const;
+    /// The settings of the file, as "key=value" in file order (an env line as "env:NAME=value").
+    std::vector<std::pair<std::string, std::string>> Entries() const;
 
     /// Index of the profile the options match exactly, or -1 when they are a custom mix.
     int MatchPreset() const;

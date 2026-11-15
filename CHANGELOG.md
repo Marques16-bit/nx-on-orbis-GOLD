@@ -2,7 +2,35 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.9.5] - A menu made for people: controls, fewer switches, a new look (first zip of 0.9.5)
+## [0.9.5] - A menu made for people: controls, fewer switches, a new look (zips 1 and 2 of 0.9.5)
+
+### Second zip of 0.9.5: a game's own settings (R2) and the name and picture of a `.nro`
+
+**Nothing of this zip has run on a console.** What ran, on a PC: the menu (every screen drawn to a picture and the buttons walked through, 307 checks in the normal build, 308 in the public build), the
+files of the per-game settings (written, read, removed, in a temporary folder), and the `.nro` reader on files built by the test (with and without assets, cut short, with sizes that point past the end
+of the file). `main.cpp` (where the game's file is applied and the lists are filled) is compiled only by the CI.
+
+- **R2 on a game opens that game's own options.** A screen over the game list with the options a game may set (the controllers and their models, the video and GPU options, the CPU options, the region;
+  in a test build also the ones of the TESTS tab). Each reads `global (value)` until you pick one: ◀▶ steps through *global* and then the values, Triangle goes back to global, the last row forgets
+  everything the game has set (X twice), Circle or R2 closes, OPTIONS starts the game. Every change is saved at once, like the other tabs. A game that has options of its own shows a small mark in the list
+  and a line in its card.
+- **Where it is kept.** `/data/edenps4/per-game/<title id>.txt` (the title id in the file name of the dump, like `[0100000000010000]`; a dump without one: its name without the extension, letters,
+  digits and `-` kept, anything else turned into `_`, at most 80 characters). Same `key=value` lines as `settings.txt`; a file written by hand works too. A file with no setting in it is removed, so "no
+  file" and "nothing set" are the same.
+- **How it is applied.** `main.cpp` reads `settings.txt` and then the game's file with the same code (`ApplySettingsLines`), so a game's file can set anything `settings.txt` can, and safe mode still ignores
+  its experimental lines. The five options that only make sense for the whole app (`language`, `menu_theme`, `covers`, `memory_profile`, `show_advanced`) are skipped with a log line, and the options that are
+  hidden in the menu can still be written by hand. `boot.log` says `per-game config: <file> is applied on top of settings.txt` when there is one, and `per-game: N settings file(s)` at the menu. "Restart game"
+  from the in-game menu starts the same game again, so its file is applied again.
+- **`.nro` names and pictures.** A homebrew carries an icon (a JPEG) and a title in the asset section after its program. The game list now shows the title and the icon of each `.nro` in `roms/` instead of
+  the file name and a coloured tile (a picture in `covers/` still comes first). A `.nro` without the section is listed as before; `boot.log` says why for the first few.
+- **docs/SETTINGS.md** has a new column, *Per game*, and a paragraph on the files. The options of the SYSTEM tab (except the region), the HUD's size, position and notices, and the shader cache switch are not
+  offered per game.
+- **Found while reading the code:** "RAM freed after a game" already works: leaving a game restarts the whole app (`Ps4::RestartApp`), so the next game starts in a new process with all memory back. What can
+  still be wrong is how much the new process is given, which only a `boot.log` of a second game in a row can show.
+- **The workflow file.** The GitHub workflow cannot be changed by an update zip, so `.github/workflows/check-patches.yml` in the zips of 0.9.5 only takes effect if you paste it in by hand (it has the extra
+  step for the public-build menu test). Nothing breaks if you do not: the tests of this zip are inside `tests/menu_test.cpp`, which the workflow already runs.
+
+### First zip of 0.9.5
 
 First zip of 0.9.5. The goal of 0.9.5 is the version for everyone (the PS4 community's Christmas present): easier to use, nicer, and with only the options a person should touch. It is built in
 steps, each one tested on a PC and then on the console; this zip is the first step. **Nothing of this zip has run on a console yet** (the menu is tested on a PC by drawing every screen to a
@@ -39,8 +67,8 @@ members, a plain int, no setting). All host tests of the CI were run here (14 st
 cleanly to this port's patched Eden (not applied: they need a build and a console to be judged), its launcher draws UI sounds from a small generator script, and its NSZ/XCZ reader, per-title
 profiles and menu policies are the references for the next zips. Credits in the README.
 
-**Next in 0.9.5** (in this order, one zip at a time): sounds and ambient music in the menu; a per-game configuration on R2; the cover and name of `.nro` files; a clearer HUD and L3/R3 menu;
-leaving the game's RAM free for the next game; `.xci` / `.nsz`; taking the log and screenshot options out of the public build.
+**Next in 0.9.5** (in this order, one zip at a time): sounds and ambient music in the menu; a per-game configuration on R2 (done in the second zip); the cover and name of `.nro` files (done in the second zip);
+a clearer HUD and L3/R3 menu; leaving the game's RAM free for the next game (already the case, see the second zip); `.xci` / `.nsz`; taking the log and screenshot options out of the public build.
 
 ## [0.9.4] - The direct table now fits the Eden the build uses (the 0.9.3 build did not have it)
 

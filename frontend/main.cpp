@@ -36,6 +36,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -80,7 +81,9 @@
 #include "jit_pack.h"
 #include "safe_mode.h"
 #include "menu/cover_loader.h"
+#include "menu/game_config.h"
 #include "menu/menu_ui.h"
+#include "menu/nro_assets.h"
 #include "screenshot.h"
 #include "video_hook.h"
 #include "menu/rom_menu.h"
@@ -203,6 +206,13 @@ Menu::SystemInfo CollectSystemInfo() {
             info.shader_cache_mib += bytes >> 20;
         }
     }
+    // 0.9.5: a game's own settings (R2 in the game list), in per-game/<title id>.txt
+    info.load_game_config = [data](const std::string& game) { return Menu::GameConfig::Load(data / "per-game", game); };
+    info.save_game_config = [data](const std::string& game, const std::string& text) {
+        const bool ok = Menu::GameConfig::Save(data / "per-game", game, text);
+        Ps4::Log("menu: per-game/%s.txt %s (%zu bytes)", Menu::GameConfig::KeyFor(game).c_str(), ok ? "saved" : "NOT SAVED", text.size());
+        return ok;
+    };
     info.clear_shader_cache = [data] {
         std::error_code clear_ec;
         fs::remove_all(data / "cache/shader", clear_ec);
@@ -404,6 +414,28 @@ std::string FindGame() {
             std::error_code size_ec;
             entries.push_back({game.filename().string(), std::uint64_t(fs::file_size(game, size_ec))});
         }
+        // 0.9.5: the games that have a settings file of their own (R2 in the list), and the name and picture a .nro carries.
+        const std::set<std::string> own_configs = Menu::GameConfig::Present(data / "per-game");
+        std::vector<std::vector<std::uint8_t>> nro_icons(games.size());
+        int nro_named = 0, nro_total = 0;
+        for (size_t i = 0; i < entries.size() && i < games.size(); ++i) {
+            entries[i].has_config = own_configs.count(Menu::GameConfig::KeyFor(entries[i].name)) > 0;
+            if (HasExtension(games[i], {".nro"})) {
+                ++nro_total;
+                Menu::Nro::Info nro;
+                std::string why;
+                if (Menu::Nro::Read(games[i], &nro, &why)) {
+                    entries[i].title = nro.name;
+                    nro_icons[i] = std::move(nro.icon);
+                    nro_named += nro.name.empty() ? 0 : 1;
+                } else if (nro_total - nro_named <= 5) {
+                    Ps4::Log("nro %s: %s", entries[i].name.c_str(), why.c_str());
+                }
+            }
+        }
+        if (nro_total > 0 || !own_configs.empty()) {
+            Ps4::Log("per-game: %zu settings file(s) in per-game/; .nro: %d of %d have a name of their own", own_configs.size(), nro_named, nro_total);
+        }
         // 0.8.2: covers=full|thumbs|off. The decoded pictures sit in the C heap while the menu is open; thumbs keeps only
         // the small tiles (no 400x400 pictures, up to 64 MiB less), off decodes nothing. Read when the app starts.
         const std::string covers_mode = LoadSettingsFile().Get("covers");
@@ -447,7 +479,7 @@ std::string FindGame() {
                 }
                 std::string why = "no picture";
                 bool from_cache = false;
-                const std::vector<std::uint8_t> bytes = CachedGameIcon(games[i], &why, &from_cache);
+                const std::vector<std::uint8_t> bytes = nro_icons[i].empty() ? CachedGameIcon(games[i], &why, &from_cache) : nro_icons[i];
                 Menu::Image::Pixels full;
                 if (bytes.empty() || !Menu::Image::Decode(bytes.data(), bytes.size(), &full, &why)) {
                     if (++failed <= 5) {
@@ -728,11 +760,9 @@ void ApplyMemoryPlan() {
 ///   cpu_ticks=off|1000|4000|16000|21000, async_presentation=on|off
 ///   language=pt|en              the menu's language (read by the menu only)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
-void ApplySettingsFile() {
-    std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt"};
-    if (!in) {
-        return;
-    }
+/// Reads `key=value` lines from `in` and applies them. `origin` is the name the log gives them ("settings.txt", or the game's own file under
+/// per-game/); `per_game` skips the options that only the global settings.txt may set (Menu::GlobalOnly).
+void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
     auto& v = Settings::values;
     for (std::string line; std::getline(in, line);) {
         line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
@@ -746,8 +776,12 @@ void ApplySettingsFile() {
         }
         const std::string key = line.substr(0, eq);
         const std::string value = line.substr(eq + 1);
+        if (per_game && Menu::GlobalOnly(key)) {
+            Ps4::Log("%s: %s=%s (only settings.txt can set this: skipped)", origin, key.c_str(), value.c_str());
+            continue;
+        }
         if (g_safe_mode && Ps4Safe::IsExperimental(key, value)) {
-            Ps4::Log("settings.txt: %s=%s (ignored for this start: safe mode)", key.c_str(), value.c_str());
+            Ps4::Log("%s: %s=%s (ignored for this start: safe mode)", origin, key.c_str(), value.c_str());
             continue;
         }
         bool known = true;
@@ -824,8 +858,8 @@ void ApplySettingsFile() {
             // Applied by ConfigureSystemFlexible() after this file is read, before the core starts.
             if (value == "128" || value == "384") {
                 // 0.9.0 values that the menu does not offer any more (the old "Minimum RAM" profile wrote 384): read as auto.
-                Ps4::Log("settings.txt: sysflex_mib=%s is a 0.9.0 value; 0.9.1 uses auto instead (choose 256 to 2048 in the menu for a fixed amount)",
-                         value.c_str());
+                Ps4::Log("%s: sysflex_mib=%s is a 0.9.0 value; 0.9.1 uses auto instead (choose 256 to 2048 in the menu for a fixed amount)",
+                         origin, value.c_str());
                 g_sysflex_cap_mib = Ps4Memory::SystemFlexibleAutoCapMiB;
             }
         } else if (key == "jit_page_reuse" && Ps4Jit::ParseSwitch(value, &g_jit_page_reuse)) {
@@ -887,8 +921,25 @@ void ApplySettingsFile() {
         } else {
             known = false;
         }
-        Ps4::Log("settings.txt: %s=%s%s", key.c_str(), value.c_str(),
+        Ps4::Log("%s: %s=%s%s", origin, key.c_str(), value.c_str(),
                  known ? "" : missing ? " (this Eden has no such setting, ignored)" : " (unknown, ignored)");
+    }
+}
+
+/// settings.txt, then (0.9.5) the game's own file per-game/<title id>.txt on top of it: the same lines, for this game only.
+void ApplySettingsFile(const std::string& game) {
+    if (std::ifstream in{fs::path{Ps4::DataDir} / "settings.txt"}; in) {
+        ApplySettingsLines(in, "settings.txt", false);
+    }
+    const fs::path own = Menu::GameConfig::PathFor(fs::path{Ps4::DataDir} / "per-game", fs::path{game}.filename().string());
+    std::error_code ec;
+    if (fs::is_regular_file(own, ec)) {
+        if (std::ifstream in{own}; in) {
+            Ps4::Log("per-game config: %s is applied on top of settings.txt (this game only)", own.filename().string().c_str());
+            ApplySettingsLines(in, "per-game", true);
+        } else {
+            Ps4::Log("per-game config: %s exists but cannot be read", own.filename().string().c_str());
+        }
     }
 }
 
@@ -1051,7 +1102,7 @@ int main() {
     // made now, so they are there to see over FTP from the first run. (The process has no umask,
     // see Ps4::PrepareDataDir: they open to everyone.)
     for (const char* sub : {"keys", "firmware", "roms", "updates", "log", "nand", "sdmc", "play_time",
-                            "shader", "cache", "screenshots", "dump", "load"}) {
+                            "shader", "cache", "screenshots", "dump", "load", "per-game"}) {
         fs::create_directories(fs::path{Ps4::DataDir} / sub, ec);
         if (ec) {
             Ps4::Log("could not create %s/%s: %s", Ps4::DataDir, sub, ec.message().c_str());
@@ -1121,7 +1172,7 @@ int main() {
     Ps4Safe::MarkStart(SafeStartFile(), game);
     ApplyPs4Settings();
     ApplyMemoryPlan();
-    ApplySettingsFile();
+    ApplySettingsFile(game);
     if (g_safe_mode && g_sysflex_cap_mib > Ps4Memory::SystemFlexibleProvenMiB) {
         // The last start died before drawing: the pool is not switched off (that costs direct memory), but it goes back
         // to the amount a console has been seen to give (0.9.0 test) instead of the larger automatic one.

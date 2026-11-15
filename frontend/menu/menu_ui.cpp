@@ -64,6 +64,18 @@ std::string Clip(const std::string& text, int cells) {
     return out + "…";
 }
 
+/// "1 jogador (padrão)" -> "1 jogador": the global value shown inside parentheses does not need the default mark of its own.
+std::string WithoutDefaultMark(const std::string& label) {
+    const auto at = label.rfind(" (");
+    if (at != std::string::npos && !label.empty() && label.back() == ')') {
+        const std::string tail = label.substr(at);
+        if (tail.find("padr") != std::string::npos || tail.find("default") != std::string::npos) {
+            return label.substr(0, at);
+        }
+    }
+    return label;
+}
+
 /// Word-wraps to `cells` characters per line, at most `max_lines` lines (the last one clipped).
 std::vector<std::string> Wrap(const std::string& text, int cells, size_t max_lines) {
     std::vector<std::string> lines;
@@ -200,8 +212,8 @@ void DrawGlyph(Canvas& c, Glyph glyph, float cx, float cy, float r) {
 
 /// One hint of the footer: a key cap (a drawn button, or a few characters) and what it does. Returns the width used.
 int DrawHint(Canvas& c, int x, int y, int key, const std::string& label) {
-    // key: 0 arrows up/down, 1 arrows left/right, 2 cross, 3 circle, 4 triangle, 5 square, 6 L1/R1, 7 OPTIONS
-    const char* caps[] = {"▲▼", "◀▶", "", "", "", "", "L1 R1", "OPTIONS"};
+    // key: 0 arrows up/down, 1 arrows left/right, 2 cross, 3 circle, 4 triangle, 5 square, 6 L1/R1, 7 OPTIONS, 8 R2
+    const char* caps[] = {"▲▼", "◀▶", "", "", "", "", "L1 R1", "OPTIONS", "R2"};
     const bool drawn = key >= 2 && key <= 5;
     const int cap_w = drawn ? 44 : TextWidth(caps[key]) + 24;
     c.RoundRect(x, y - 2, cap_w, 44, 12, 0xFF28345C);
@@ -336,6 +348,14 @@ MenuUi::MenuUi(std::vector<GameEntry> games, int initial_game, SystemInfo info,
             case Group::Controls:
                 options_[TabAdvanced].push_back(&option);
                 break;
+            }
+        }
+    }
+    // 0.9.5: what a game's own settings (R2) may set: the options this menu shows, in the order of the tabs, minus the ones that are global
+    for (const int tab : {TabControls, TabVideo, TabCpu, TabPerf, TabSystem, TabAdvanced}) {
+        for (const Option* option : options_[tab]) {
+            if (PerGameOffered(*option)) {
+                game_opts_.push_back(option);
             }
         }
     }
@@ -559,6 +579,10 @@ void MenuUi::Activate() {
 }
 
 void MenuUi::Press(std::uint32_t button) {
+    if (game_cfg_open_) {
+        PressGameConfig(button);
+        return;
+    }
     if (tab_ == TabControls) {
         PressControls(button);
         return;
@@ -581,6 +605,94 @@ void MenuUi::Press(std::uint32_t button) {
     }
 }
 
+std::string MenuUi::TitleOf(const GameEntry& game) const {
+    return game.title.empty() ? DisplayName(game.name) : game.title;
+}
+
+void MenuUi::OpenGameConfig() {
+    const int index = selected_[TabGames];
+    if (index < 0 || index >= int(games_.size())) {
+        return; // the Homebrew Menu test has no settings of its own
+    }
+    game_cfg_game_ = index;
+    game_file_ = SettingsFile(info_.load_game_config ? info_.load_game_config(games_[size_t(index)].name) : std::string());
+    game_sel_ = 0;
+    game_scroll_ = 0;
+    game_confirm_clear_ = false;
+    game_cfg_open_ = true;
+    dirty_ = true;
+}
+
+void MenuUi::CloseGameConfig() {
+    game_cfg_open_ = false;
+    game_confirm_clear_ = false;
+    dirty_ = true;
+}
+
+void MenuUi::SaveGameConfig() {
+    GameEntry& game = games_[size_t(game_cfg_game_)];
+    if (info_.save_game_config) {
+        save_state_ = info_.save_game_config(game.name, game_file_.Text()) ? 1 : 2;
+    }
+    game.has_config = game_file_.HasSettings();
+    game_confirm_clear_ = false;
+    dirty_ = true;
+}
+
+void MenuUi::ChangeGameOption(int delta) {
+    if (game_sel_ < 0 || game_sel_ >= int(game_opts_.size())) {
+        return;
+    }
+    const Option& option = *game_opts_[size_t(game_sel_)];
+    const int positions = int(option.choices.size()) + 1; // 0 is "the global setting", then the choices
+    const int at = game_file_.OverrideIndex(option) + 1;
+    game_file_.SetOverride(option, (at + delta + positions) % positions - 1);
+    SaveGameConfig();
+}
+
+void MenuUi::ClearGameOption() {
+    if (game_sel_ >= 0 && game_sel_ < int(game_opts_.size())) {
+        game_file_.SetOverride(*game_opts_[size_t(game_sel_)], -1);
+        SaveGameConfig();
+    }
+}
+
+void MenuUi::ActivateGameConfig() {
+    if (game_sel_ < int(game_opts_.size())) {
+        ChangeGameOption(+1);
+        return;
+    }
+    // the last row: forget everything this game has set
+    if (!game_confirm_clear_) {
+        game_confirm_clear_ = true;
+        dirty_ = true;
+    } else {
+        game_file_ = SettingsFile();
+        SaveGameConfig();
+    }
+}
+
+void MenuUi::PressGameConfig(std::uint32_t button) {
+    const int count = GameConfigRows();
+    switch (button) {
+    case Pad::Up:
+    case Pad::Down:
+        game_sel_ = (game_sel_ + (button == Pad::Up ? -1 : +1) + count) % count;
+        game_scroll_ = std::clamp(game_scroll_, std::max(game_sel_ - (VisibleRows - 1) + 1, 0), game_sel_);
+        game_confirm_clear_ = false;
+        dirty_ = true;
+        break;
+    case Pad::Left:
+        ChangeGameOption(-1);
+        break;
+    case Pad::Right:
+        ChangeGameOption(+1);
+        break;
+    default:
+        break;
+    }
+}
+
 bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
     const std::uint32_t pressed = held & ~previous_;
     previous_ = held;
@@ -595,21 +707,33 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
         }
         SetTab(tabs_[size_t((at + delta + n) % n)]);
     };
-    if (pressed & Pad::L1) {
+    if (game_cfg_open_) {
+        // 0.9.5: a game's own settings: its own buttons; the tabs wait until it is closed.
+        if (pressed & (Pad::Circle | Pad::R2)) {
+            CloseGameConfig();
+        } else if (pressed & Pad::Cross) {
+            ActivateGameConfig();
+        } else if (pressed & Pad::Triangle) {
+            ClearGameOption();
+        }
+    } else if (pressed & Pad::R2) {
+        if (tab_ == TabGames) {
+            OpenGameConfig();
+        }
+    } else if (pressed & Pad::L1) {
         step_tab(-1);
-    }
-    if (pressed & Pad::R1) {
+    } else if (pressed & Pad::R1) {
         step_tab(+1);
     }
-    if (pressed & Pad::Cross) {
+    if (!game_cfg_open_ && (pressed & Pad::Cross)) {
         Activate();
     }
-    if (pressed & Pad::Circle) {
+    if (!game_cfg_open_ && (pressed & Pad::Circle)) {
         if (tab_ != TabGames) {
             SetTab(TabGames);
         }
     }
-    if (pressed & Pad::Triangle) {
+    if (!game_cfg_open_ && (pressed & Pad::Triangle)) {
         if (tab_ == TabControls) {
             static const char* const keys[4] = {"player1_type", "player2_type", "player3_type", "player4_type"};
             if (const Option* option = FindOption(keys[selected_[TabControls]])) {
@@ -807,7 +931,7 @@ void MenuUi::DrawGameCard(Canvas& c, int index) const {
     c.RoundRect(CardX, CardY, CardW, CardH, 16, Color::Panel);
     const bool is_game = index >= 0 && index < int(games_.size());
     const GameEntry* game = is_game ? &games_[size_t(index)] : nullptr;
-    const std::string title = is_game ? DisplayName(game->name) : std::string(T("Teste do emulador", "Emulator test"));
+    const std::string title = is_game ? TitleOf(*game) : std::string(T("Teste do emulador", "Emulator test"));
     const std::string id = is_game ? TitleIdOf(game->name) : std::string();
     const int cover_x = CardX + (CardW - CoverSize) / 2, cover_y = CardY + 22;
     if (is_game && game->cover.Ok()) {
@@ -839,13 +963,64 @@ void MenuUi::DrawGameCard(Canvas& c, int index) const {
     }
     info = Clip(info, CardCells);
     c.Print(CardX + (CardW - TextWidth(info)) / 2, y + 6, info, Color::Dim);
+    if (is_game) {
+        const std::string own = Clip(game->has_config ? T("Opções próprias deste jogo (R2)", "This game's own options (R2)")
+                                                       : T("R2: opções só deste jogo", "R2: options for this game only"), CardCells);
+        c.Print(CardX + (CardW - TextWidth(own)) / 2, y + 54, own, game->has_config ? Color::Teal : Color::Dim);
+    }
     if (is_game && !game->cover.Ok()) {
         const std::string hint = Clip(T("Sem capa no jogo: use covers/", "No cover in the game: use covers/"), CardCells);
         c.Print(CardX + (CardW - TextWidth(hint)) / 2, CardY + CardH - 46, hint, Color::Dim);
     }
 }
 
+void MenuUi::DrawGameConfig(Canvas& c) const {
+    const Lang l = lang();
+    const GameEntry& game = games_[size_t(game_cfg_game_)];
+    constexpr int Cells = (1920 - 2 * Margin - 60) / GlyphWidth;
+    const std::string id = TitleIdOf(game.name);
+    const std::string title = std::string(T("Só deste jogo: ", "Only this game: ")) + TitleOf(game) + (id.empty() ? std::string() : "  ·  " + id);
+    c.Print(Margin + 46, ContentTop - 14, Clip(title, Cells), Color::Teal);
+    constexpr int Rows = VisibleRows - 1;
+    const int top = ContentTop + 46;
+    const int count = GameConfigRows();
+    const int first = std::clamp(game_scroll_, 0, std::max(count - Rows, 0));
+    for (int r = 0; r < Rows && first + r < count; ++r) {
+        const int row = first + r;
+        const bool selected = row == game_sel_;
+        const int y = top + r * RowHeight;
+        if (row < int(game_opts_.size())) {
+            const Option& option = *game_opts_[size_t(row)];
+            const int own = game_file_.OverrideIndex(option);
+            if (own < 0) {
+                const std::string value = std::string(T("global", "global")) + " (" + WithoutDefaultMark(option.ChoiceLabel(file_.ChoiceIndex(option), l)) + ")";
+                DrawRow(c, y, selected, false, option.Label(l), value, Color::Dim, selected);
+            } else {
+                DrawRow(c, y, selected, true, option.Label(l), option.ChoiceLabel(own, l), Color::Teal, selected);
+            }
+        } else {
+            if (selected) {
+                c.RoundRectGradient(Margin, y - 4, 1920 - 2 * Margin, RowHeight - 4, 10, Lighten(Color::Selected, 0.14f), Color::Selected);
+                c.Fill(Margin, y + 6, 6, RowHeight - 24, Color::Teal);
+            }
+            const std::string text = game_confirm_clear_ ? T("Aperte X de novo: este jogo volta a usar só as opções globais", "Press X again: this game goes back to the global options only")
+                                                         : T("Apagar as opções deste jogo", "Forget this game's own options");
+            c.Print(Margin + 46, y, text, game_confirm_clear_ ? Color::Warn : (selected ? 0xFFFFFFFF : Color::Text));
+        }
+    }
+    if (first > 0) {
+        c.Print(1920 - Margin - GlyphWidth, top - 36, "▲", Color::Dim);
+    }
+    if (first + Rows < count) {
+        c.Print(1920 - Margin - GlyphWidth, top + Rows * RowHeight, "▼", Color::Dim);
+    }
+}
+
 void MenuUi::DrawGames(Canvas& c) const {
+    if (game_cfg_open_) {
+        DrawGameConfig(c);
+        return;
+    }
     const Lang l = lang();
     int top = ContentTop;
     if (games_.empty()) {
@@ -872,8 +1047,9 @@ void MenuUi::DrawGames(Canvas& c) const {
         const bool is_game = index < int(games_.size());
         const std::string size = is_game ? FormatSize(games_[size_t(index)].bytes, l) : std::string();
         const int text_x = Margin + 20 + ThumbSize + 18;
-        const int name_cells = (list_w - (text_x - Margin) - 24 - TextWidth(size)) / GlyphWidth - 1;
-        const std::string title = is_game ? DisplayName(games_[size_t(index)].name) : std::string(T("Teste do emulador (Homebrew Menu)", "Emulator test (Homebrew Menu)"));
+        const bool has_config = is_game && games_[size_t(index)].has_config;
+        const int name_cells = (list_w - (text_x - Margin) - 24 - TextWidth(size) - (has_config ? 44 : 0)) / GlyphWidth - 1;
+        const std::string title = is_game ? TitleOf(games_[size_t(index)]) : std::string(T("Teste do emulador (Homebrew Menu)", "Emulator test (Homebrew Menu)"));
         const std::string name = Clip(title, name_cells);
         const bool selected = index == selected_[TabGames];
         const int y = top + r * RowHeight;
@@ -887,6 +1063,11 @@ void MenuUi::DrawGames(Canvas& c) const {
         c.Print(text_x, y, name, selected ? 0xFFFFFFFF : (is_game ? Color::Text : Color::Dim));
         if (is_game) {
             c.Print(Margin + list_w - 24 - TextWidth(size), y, size, Color::Dim);
+            if (games_[size_t(index)].has_config) {
+                // 0.9.5: this game has settings of its own (R2)
+                DrawIcon(c, Icon::Sliders, float(Margin + list_w - 24 - TextWidth(size) - 34), float(y + 18), 28.0f, Color::Teal,
+                         selected ? Color::Selected : Color::Panel);
+            }
         }
     }
     if (first > 0) {
@@ -1064,15 +1245,17 @@ void MenuUi::DrawHelp(Canvas& c, const std::vector<std::string>& lines) const {
 }
 
 void MenuUi::DrawFooter(Canvas& c) const {
-    // key: 0 up/down, 1 left/right, 2 cross, 3 circle, 4 triangle, 5 square, 6 L1/R1, 7 OPTIONS (see DrawHint)
+    // key: 0 up/down, 1 left/right, 2 cross, 3 circle, 4 triangle, 5 square, 6 L1/R1, 7 OPTIONS, 8 R2 (see DrawHint)
     struct Hint {
         int key;
         const char* pt;
         const char* en;
     };
     std::vector<Hint> hints;
-    if (tab_ == TabGames) {
-        hints = {{0, "escolher", "choose"}, {1, "página", "page"}, {2, "jogar", "play"}, {6, "abas", "tabs"}, {7, "último jogo", "last game"}};
+    if (game_cfg_open_) {
+        hints = {{0, "escolher", "choose"}, {1, "alterar", "change"}, {4, "global", "global"}, {3, "voltar", "back"}, {7, "jogar", "play"}};
+    } else if (tab_ == TabGames) {
+        hints = {{0, "escolher", "choose"}, {2, "jogar", "play"}, {8, "opções do jogo", "game options"}, {1, "página", "page"}, {6, "abas", "tabs"}, {7, "último jogo", "last game"}};
     } else if (tab_ == TabLog) {
         hints = {{1, "trocar de sessão", "switch session"}, {3, "voltar", "back"}, {6, "abas", "tabs"}};
     } else if (tab_ == TabControls) {
@@ -1083,7 +1266,7 @@ void MenuUi::DrawFooter(Canvas& c) const {
     int x = Margin;
     for (const Hint& hint : hints) {
         const std::string label = lang() == Lang::Pt ? hint.pt : hint.en;
-        const char* caps[] = {"▲▼", "◀▶", "", "", "", "", "L1 R1", "OPTIONS"};
+        const char* caps[] = {"▲▼", "◀▶", "", "", "", "", "L1 R1", "OPTIONS", "R2"};
         const bool drawn = hint.key >= 2 && hint.key <= 5;
         const int need = (drawn ? 44 : TextWidth(caps[hint.key]) + 24) + 10 + TextWidth(label);
         if (x + need > 1920 - Margin) {
@@ -1099,7 +1282,18 @@ void MenuUi::Draw(Canvas& c) const {
     DrawTabs(c);
     std::vector<std::string> help;
     constexpr int HelpCells = (1920 - 2 * Margin - 52) / GlyphWidth;
-    if (tab_ == TabGames) {
+    if (tab_ == TabGames && game_cfg_open_) {
+        DrawGames(c);
+        if (game_sel_ < int(game_opts_.size())) {
+            help = Wrap(std::string(T("Só vale para este jogo; \"global\" usa o valor das outras abas. ", "Only for this game; \"global\" uses the value of the other tabs. ")) +
+                            game_opts_[size_t(game_sel_)]->Help(lang()),
+                        HelpCells, 2);
+        } else {
+            help = Wrap(T("Tira todas as opções próprias deste jogo: ele volta a usar só o que está nas outras abas. O arquivo per-game/ do jogo é apagado.",
+                          "Removes every option of this game's own: it goes back to using only what is in the other tabs. The game's per-game/ file is deleted."),
+                        HelpCells, 2);
+        }
+    } else if (tab_ == TabGames) {
         DrawGames(c);
         const bool on_homebrew = selected_[TabGames] >= int(games_.size());
         help = Wrap(on_homebrew

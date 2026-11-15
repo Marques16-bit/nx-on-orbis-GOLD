@@ -55,6 +55,7 @@ static_assert(Menu::Pad::Up == Ps4::Button::Up && Menu::Pad::Down == Ps4::Button
               Menu::Pad::Left == Ps4::Button::Left && Menu::Pad::Right == Ps4::Button::Right);
 static_assert(Menu::Pad::Cross == Ps4::Button::Cross && Menu::Pad::Circle == Ps4::Button::Circle &&
               Menu::Pad::Triangle == Ps4::Button::Triangle);
+static_assert(Menu::Pad::L2 == Ps4::Button::L2 && Menu::Pad::R2 == Ps4::Button::R2);
 static_assert(Menu::Pad::L1 == Ps4::Button::L1 && Menu::Pad::R1 == Ps4::Button::R1 &&
               Menu::Pad::Options == Ps4::Button::Options);
 

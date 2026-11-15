@@ -61,7 +61,14 @@ int main() {
                 "have the EXPERIMENTAL/TESTS tab and the LOG tab; a release for everyone, built with `EDEN_PS4_PUBLIC=1`, has\n"
                 "neither) or **hidden** (the default is what this port needs, so the menu does not offer a switch). A line for\n"
                 "any of them written by hand in `settings.txt` still works, and `show_advanced=on` shows all of them in the\n"
-                "TESTS tab.\n\n");
+                "TESTS tab.\n\n"
+                "**Per game** (0.9.5). R2 on a game in the game list opens that game's own options. They are saved in\n"
+                "`/data/edenps4/per-game/<title id>.txt` (the title id in the game's file name, like `[0100000000010000]`; without one, the\n"
+                "file name without its extension, letters, digits and `-` kept, the rest turned into `_`), with the same `key=value` lines as\n"
+                "`settings.txt`, and applied **on top of it** when that game starts: an option the game's file does not name keeps the\n"
+                "global value. The last column says which options a game's file may set. The ones that are global (`language`, `menu_theme`,\n"
+                "`covers`, `memory_profile`, `show_advanced`) are skipped with a line in `boot.log`. In the R2 screen each option reads\n"
+                "`global (value)` until you pick one for the game; Triangle puts one back to global.\n\n");
 
     const auto& catalog = Menu::Catalog();
     int count = 0;
@@ -76,7 +83,7 @@ int main() {
                 continue;
             }
             if (!header) {
-                std::printf("## %s\n\n| Key | Option | Values | What it does | In the menu |\n|---|---|---|---|---|\n", GroupTitle(group));
+                std::printf("## %s\n\n| Key | Option | Values | What it does | In the menu | Per game |\n|---|---|---|---|---|---|\n", GroupTitle(group));
                 header = true;
             }
             std::string values;
@@ -93,8 +100,12 @@ int main() {
             const char* shown = tier == Menu::Tier::Mandatory      ? "hidden (the default is what this port needs)"
                                 : tier == Menu::Tier::Experimental ? "TESTS tab, test builds only"
                                                                    : "yes";
-            std::printf("| `%s` | %s | %s | %s | %s |\n", option.key, Cell(option.label_en).c_str(), Cell(values).c_str(),
-                        Cell(option.help_en).c_str(), shown);
+            const char* per_game = Menu::GlobalOnly(option.key)          ? "no (global only)"
+                                   : Menu::PerGameOffered(option)        ? "yes (R2)"
+                                   : tier == Menu::Tier::Mandatory       ? "by hand only"
+                                                                         : "by hand only (not offered)";
+            std::printf("| `%s` | %s | %s | %s | %s | %s |\n", option.key, Cell(option.label_en).c_str(), Cell(values).c_str(),
+                        Cell(option.help_en).c_str(), shown, per_game);
             ++count;
         }
         if (header) {

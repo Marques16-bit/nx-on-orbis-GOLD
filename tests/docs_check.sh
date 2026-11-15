@@ -211,7 +211,17 @@ check "the CONTROLS tab has the four player models, automatic by default (0.9.5)
 CL095="$(awk '/^## \[0\.9\.5\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)" # a variable: grep -q on a pipe would end awk early (pipefail)
 check "the CHANGELOG 0.9.5 names the public build, the CONTROLS tab and the new keys" '
     grep -q "EDEN_PS4_PUBLIC" <<<"$CL095" && grep -q "CONTROLS tab" <<<"$CL095" && grep -q "player1_type" <<<"$CL095"'
+
 check "the 0.9.5 CHANGELOG says what was not run on a console" 'grep -q "Nothing of this zip has run on a console" <<<"$CL095"'
+check "SETTINGS.md has the Per game column, and resolution is yes (R2) while language is global only (0.9.5, second zip)" '
+    grep -q "| Per game |" docs/SETTINGS.md && grep "^| \`resolution\` |" docs/SETTINGS.md | grep -q "yes (R2)" && grep "^| \`language\` |" docs/SETTINGS.md | grep -q "no (global only)"'
+check "the 0.9.5 CHANGELOG names the per-game files and the .nro reader, and the log line is the one main.cpp writes" '
+    grep -q "per-game/<title id>.txt" <<<"$CL095" && grep -q "asset section" <<<"$CL095" && grep -qF "per-game config: %s is applied on top of settings.txt" frontend/main.cpp && grep -qF "per-game config: <file> is applied on top of settings.txt" <<<"$CL095"'
+check "main.cpp applies the game's file after settings.txt and skips the global-only keys" '
+    grep -q "ApplySettingsFile(game);" frontend/main.cpp && grep -q "per_game && Menu::GlobalOnly(key)" frontend/main.cpp && grep -qF "ApplySettingsLines(in, \"per-game\", true)" frontend/main.cpp'
+check "the README tells the user about R2 and per-game/" 'grep -q "R2" README.md && grep -q "per-game/" README.md'
+check "game_config.h and nro_assets.h are header only, with no console code" '
+    ! grep -q "sce[A-Z]\|Ps4::" frontend/menu/game_config.h frontend/menu/nro_assets.h'
 check "part 2 of the pack is a script next to the patch, and the docs say it edits six files" '
     [ -f patches/eden-jit/0002-JIT-direct-page-table-copy.py ] && python3 -I -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" patches/eden-jit/0002-JIT-direct-page-table-copy.py &&
     [ "$(grep -c "^    (\"src/" patches/eden-jit/0002-JIT-direct-page-table-copy.py)" = 6 ]'
