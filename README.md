@@ -74,7 +74,10 @@ Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **n
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
-## What is new in 0.9.5: a menu made for people (first and second zip)
+## What is new in 0.9.5: a menu made for people (first, second and third zip)
+
+**Third zip:** the **extra RAM** option (`sysflex_mib`) is back in the CPU AND MEMORY tab, because some games open only with less of it (and R2 can set it for one game only). The build for everyone
+(`PUBLIC_BUILD` file in the repository root, see docs/BUILDING.md) has no log tab, no test options, no screenshots and no profiler.
 
 **Second zip:** press **R2** on a game in the list to open that game's own options (resolution, console mode, GPU and CPU accuracy, controllers and their models, region...). They are saved in
 `per-game/<title id>.txt` and applied on top of `settings.txt` only when that game starts; a game that has some is marked in the list. The list also shows the **name and icon of each `.nro`**

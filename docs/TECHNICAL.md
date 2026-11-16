@@ -344,6 +344,13 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - **Reading the 0.9.4 boot.log** (Mario vs. Donkey Kong, Nov 13): the `profile` lines count a sample as "jit" when the instruction pointer is outside the eboot image and the kernel library, so the rest of a busy thread is the
   emulator itself (compiling blocks, memory callbacks, the emulated kernel). On the three busy `CPUCore_` threads the JIT share was 28-50% of 56-79% busy; the GPU thread 4-11% busy. The stalls (1.0-7.3 s) came with one core at 91% busy.
 
+### 0.9.5, third zip: the extra RAM, the public build
+
+- `sysflex_mib` left the Mandatory tier (`TierOf`), so it is listed in the CPU tab and by `PerGameOffered`; the rest of the memory plumbing (`memory_action`, the arena and VRAM env lines) stays hidden.
+- Public build (`EDEN_PS4_PUBLIC`): `Menu::PublicBuild` hides the LOG tab and ignores `show_advanced` (`MenuUi` builds its tab list with `everything = !PublicBuild && ...`); `kPublicBuild` in `main.cpp` turns
+  off the screenshot combo, `g_autoshot` and the profiler (`Ps4::SetProfiling(false)` before settings.txt is read). `frontend.cmake` adds `-public` to the build id. `ci/stage-eden.sh` passes `-DEDEN_PS4_PUBLIC=ON`
+  when `PUBLIC_BUILD` exists in the repository root.
+
 ### 0.9.5, second zip: a game's own settings, `.nro` assets
 
 - **Files** (`frontend/menu/game_config.h`, header only): `KeyFor(game file name)` is the title id (`Covers::TitleIdOf`) or the sanitised stem; `PathFor`, `Load`, `Save` (temporary file then rename, then a

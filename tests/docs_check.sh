@@ -213,6 +213,8 @@ check "the CHANGELOG 0.9.5 names the public build, the CONTROLS tab and the new 
     grep -q "EDEN_PS4_PUBLIC" <<<"$CL095" && grep -q "CONTROLS tab" <<<"$CL095" && grep -q "player1_type" <<<"$CL095"'
 
 check "the 0.9.5 CHANGELOG says what was not run on a console" 'grep -q "Nothing of this zip has run on a console" <<<"$CL095"'
+check "the extra RAM (sysflex_mib) is shown in the menu again, and the public build is built by a PUBLIC_BUILD file (0.9.5, third zip)" '
+    grep "^| \`sysflex_mib\` |" docs/SETTINGS.md | grep -q "| yes |" && grep -q "PUBLIC_BUILD" ci/stage-eden.sh && grep -q "PUBLIC_BUILD" docs/BUILDING.md && grep -q "EDEN_PS4_PUBLIC=ON" ci/stage-eden.sh && grep -q "kPublicBuild" frontend/main.cpp'
 check "SETTINGS.md has the Per game column, and resolution is yes (R2) while language is global only (0.9.5, second zip)" '
     grep -q "| Per game |" docs/SETTINGS.md && grep "^| \`resolution\` |" docs/SETTINGS.md | grep -q "yes (R2)" && grep "^| \`language\` |" docs/SETTINGS.md | grep -q "no (global only)"'
 check "the 0.9.5 CHANGELOG names the per-game files and the .nro reader, and the log line is the one main.cpp writes" '

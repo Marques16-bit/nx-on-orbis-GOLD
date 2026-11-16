@@ -2,6 +2,9 @@
 
 ## The easy way: GitHub builds it
 
+**A build for everyone (0.9.5):** an empty file named `PUBLIC_BUILD` in the root of the repository (next to `README.md`) makes the CI configure Eden with `-DEDEN_PS4_PUBLIC=ON`: no LOG tab, no EXPERIMENTAL/TESTS tab, no
+screenshots and no sampling profiler; the build id in `boot.log` ends in `-public`. Without the file you get the test build, with all of those.
+
 The workflow **Build PS4 package** (`.github/workflows/build.yml`) builds everything on an Ubuntu
 24.04 runner, with no hand step. In the repository: *Actions → Build PS4 package → Run workflow*.
 When it finishes, the `.pkg` and the matching `.elf` are in the run's artifact `ps4-package` (kept

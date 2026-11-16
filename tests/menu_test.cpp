@@ -221,6 +221,8 @@ void TestVisibility() {
               TierOf("memory_profile") == Tier::Normal && TierOf("hud") == Tier::Normal && TierOf("players") == Tier::Normal,
           "the everyday options are normal");
     Check(TierOf("no_such_option") == Tier::Normal, "an unknown key is normal");
+    Check(TierOf("sysflex_mib") == Tier::Normal && PerGameOffered(*FindOption("sysflex_mib")),
+          "the extra RAM (sysflex_mib) is shown in the menu again, and a game may set it (third zip)");
     for (const Option& o : Catalog()) {
         Check(TierOf(o.key) != Tier::Mandatory || o.group != Group::Controls, "no mandatory option sits in the controls group");
     }
@@ -271,8 +273,14 @@ void TestVisibility() {
     Check(lists(r.ui, MenuUi::TabAdvanced, "cpu_clock") && lists(r.ui, MenuUi::TabAdvanced, "astc_recompress") && !lists(r.ui, MenuUi::TabAdvanced, "jit_page_reuse"),
           "test build: the EXPERIMENTAL tab lists the experimental options, not the mandatory ones");
 #endif
-    // show_advanced=on in settings.txt shows everything, in the last tab, in either build.
+    Check(lists(r.ui, MenuUi::TabCpu, "sysflex_mib"), "the CPU/RAM tab has the extra RAM (sysflex_mib)");
+    // show_advanced=on in settings.txt shows everything, in the last tab, in a test build; the public build ignores it.
     Rig all("show_advanced=on\n");
+#if EDEN_PS4_PUBLIC
+    Check(all.ui.TabOptions(MenuUi::TabAdvanced).empty() && all.ui.Tabs().size() == 6 && !lists(all.ui, MenuUi::TabAdvanced, "cpu_clock"),
+          "public build: show_advanced=on shows nothing (no LOG, no TESTS)");
+    Check(!lists(all.ui, MenuUi::TabCpu, "jit_page_reuse") && !lists(all.ui, MenuUi::TabCpu, "cpu_clock"), "public build: ...and no hidden option appears anywhere");
+#else
     Check(lists(all.ui, MenuUi::TabAdvanced, "jit_page_reuse") && lists(all.ui, MenuUi::TabAdvanced, "colour_swap") && lists(all.ui, MenuUi::TabAdvanced, "cpu_clock") &&
               all.ui.Tabs().back() == MenuUi::TabAdvanced,
           "show_advanced=on: the mandatory and the experimental options are all in the last tab");
@@ -287,6 +295,7 @@ void TestVisibility() {
         found += somewhere ? 1 : 0;
     }
     Check(found == int(Catalog().size()), "with show_advanced=on, every option of the catalog is in some tab");
+#endif
 }
 
 const std::filesystem::path TempDir(const char* name) {

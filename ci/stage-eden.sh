@@ -14,6 +14,11 @@ fi
 if [ -n "${NXO_VERSION:-}" ]; then
     extra+=(-DEDEN_PS4_VERSION="$NXO_VERSION")
 fi
+# 0.9.5: the build for everyone (no LOG tab, no TESTS tab, no screenshots, no profiler): an empty file named PUBLIC_BUILD in the root of the repository.
+if [ -f PUBLIC_BUILD ]; then
+    echo "PUBLIC_BUILD is present: building the release for everyone (EDEN_PS4_PUBLIC=ON)"
+    extra+=(-DEDEN_PS4_PUBLIC=ON)
+fi
 bash configure-eden.sh "${extra[@]}"
 
 # The cross build must never see the runner's own (Linux) headers or libraries. Check now, in

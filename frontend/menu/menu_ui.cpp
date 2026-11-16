@@ -316,8 +316,9 @@ const char* ModelName(const std::string& type, Lang lang) {
 MenuUi::MenuUi(std::vector<GameEntry> games, int initial_game, SystemInfo info,
                const std::string& settings_text, SaveFn save)
     : games_(std::move(games)), info_(std::move(info)), file_(settings_text), save_(std::move(save)) {
-    // 0.9.5: who sees what (settings_model.h, Tier). `show_advanced=on` in settings.txt shows everything, in the last tab.
-    const bool everything = file_.Get("show_advanced") == "on";
+    // 0.9.5: who sees what (settings_model.h, Tier). `show_advanced=on` in settings.txt shows everything, in the last tab, in a test build.
+    // The public build has no such switch: no LOG tab, no TESTS tab, whatever settings.txt says (third zip).
+    const bool everything = !PublicBuild && file_.Get("show_advanced") == "on";
     for (const Option& option : Catalog()) {
         const Tier tier = TierOf(option.key);
         if (option.group == Group::Controls) {
@@ -360,7 +361,7 @@ MenuUi::MenuUi(std::vector<GameEntry> games, int initial_game, SystemInfo info,
         }
     }
     for (int tab = 0; tab < TabCount; ++tab) {
-        if (tab == TabLog && PublicBuild && !everything) {
+        if (tab == TabLog && PublicBuild) {
             continue; // the public build has no log screen
         }
         if (tab == TabAdvanced && options_[TabAdvanced].empty()) {

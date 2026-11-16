@@ -4,6 +4,18 @@ Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub a
 
 ## [0.9.5] - A menu made for people: controls, fewer switches, a new look (zips 1 and 2 of 0.9.5)
 
+### Third zip of 0.9.5: the extra RAM is back in the menu, and the public build is clean
+
+**Nothing of this zip has run on a console.** On a PC: the menu tests (the normal and the public build) and the docs check; `main.cpp` and the build scripts are compiled and run only by the CI.
+
+- **Extra RAM (`sysflex_mib`) is shown again**, in the CPU AND MEMORY tab (it was hidden in the first zip). Games differ: some open only with less of it. The help now says what to try (a lower value or Off when
+  a game does not open or closes by itself, a higher one when it runs out of memory), and a game can have its own value (R2 in the game list). Automatic (1536 MiB at most) is still the default.
+- **The public build has no log and no screenshot options.** Built with `EDEN_PS4_PUBLIC=ON` it has no LOG tab, no EXPERIMENTAL tab (and `show_advanced=on` no longer shows them), no L3 + TouchPad screenshot, no
+  automatic screenshots after a freeze (`autoshot` is ignored), no `shots/` folder and the sampling profiler is off (`profile=on` is ignored). `boot.log` itself stays: it is what a bug report needs. The build id ends in
+  `-public`.
+- **How to ask for it:** put an empty file named `PUBLIC_BUILD` in the root of the repository (next to `README.md`); `ci/stage-eden.sh` then configures the build with `-DEDEN_PS4_PUBLIC=ON`. Delete the file for a test
+  build again. Without the file everything is as before.
+
 ### Second zip of 0.9.5: a game's own settings (R2) and the name and picture of a `.nro`
 
 **Nothing of this zip has run on a console.** What ran, on a PC: the menu (every screen drawn to a picture and the buttons walked through, 307 checks in the normal build, 308 in the public build), the

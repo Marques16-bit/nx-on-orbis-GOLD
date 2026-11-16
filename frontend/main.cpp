@@ -651,7 +651,9 @@ unsigned g_jit_cache_used_mib = 0; // what ForStart made of it for this start (0
 bool g_memory_roomy = false;       // the memory plan's tier is Roomy (ApplyMemoryPlan)
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
-bool g_autoshot = true;
+// The public build (EDEN_PS4_PUBLIC=1, third zip of 0.9.5) takes screenshots out altogether: no L3 + TouchPad, no automatic ones, no shots/ folder.
+constexpr bool kPublicBuild = Menu::PublicBuild;
+bool g_autoshot = !kPublicBuild;
 // 0.8.2: the last start died before the game drew anything, so the experimental lines of settings.txt are ignored for this
 // one start (safe_mode.h). Set in main() before the memory plan and settings.txt are read.
 bool g_safe_mode = false;
@@ -797,7 +799,7 @@ void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
         } else if (key == "bgra" && (value == "auto" || value == "on" || value == "off")) {
             Vulkan::ps4_bgra_mode = value == "auto" ? 0 : value == "on" ? 1 : 2;
         } else if (key == "profile" && (value == "on" || value == "off")) {
-            Ps4::SetProfiling(value == "on");
+            Ps4::SetProfiling(value == "on" && !kPublicBuild); // the public build never runs the sampling profiler
         } else if (key == "reactive_flushing" && (value == "on" || value == "off")) {
             v.use_reactive_flushing.SetValue(value == "on");
         } else if (key == "a2b10" && (value == "auto" || value == "off")) {
@@ -853,7 +855,7 @@ void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
         } else if (key == "memory_profile" && (value == "auto" || value == "roomy" || value == "standard" || value == "tight" || value == "strict")) {
             // Already applied by ApplyMemoryPlan(), before this file's other lines.
         } else if (key == "autoshot" && (value == "on" || value == "off")) {
-            g_autoshot = value == "on";
+            g_autoshot = value == "on" && !kPublicBuild;
         } else if (key == "sysflex_mib" && Ps4Memory::ParseSystemFlexibleCap(value, &g_sysflex_cap_mib)) {
             // Applied by ConfigureSystemFlexible() after this file is read, before the core starts.
             if (value == "128" || value == "384") {
@@ -1118,7 +1120,7 @@ int main() {
                    "roms/       seus jogos .nsp ou .xci / your .nsp or .xci games\n"
                    "covers/     capas: PNG, JPG ou BMP com o ID do titulo (01009B90006DC000.png) ou o nome do jogo\n"
                    "            covers: PNG, JPG or BMP named by title id or by the game's file name\n"
-                   "shots/      capturas de tela (L3 + TouchPad; e 3 depois de cada travada de 1 s ou mais) / screenshots (L3 + TouchPad; and 3 after each freeze of 1 s or more)\n"
+                   "shots/      capturas de tela (L3 + TouchPad; e 3 depois de cada travada de 1 s ou mais; so nas versoes de teste) / screenshots (L3 + TouchPad; and 3 after each freeze of 1 s or more; test builds only)\n"
                    "logs/       os ultimos 8 boot.log / the last 8 boot logs\n"
                    "updates/    atualizacoes e DLC (.nsp) / updates and DLC (.nsp)\n"
                    "nand/ sdmc/ saves e dados do emulador / saves and the emulator's data\n"
@@ -1172,6 +1174,9 @@ int main() {
     Ps4Safe::MarkStart(SafeStartFile(), game);
     ApplyPs4Settings();
     ApplyMemoryPlan();
+    if (kPublicBuild) {
+        Ps4::SetProfiling(false); // the sampling profiler writes into boot.log for the developer: the public build leaves it off
+    }
     ApplySettingsFile(game);
     if (g_safe_mode && g_sysflex_cap_mib > Ps4Memory::SystemFlexibleProvenMiB) {
         // The last start died before drawing: the pool is not switched off (that costs direct memory), but it goes back
@@ -1260,7 +1265,9 @@ int main() {
             Ps4::Log("overlay: classic drawing (0.7.3), %d ms wait", hook.draw_delay_ms);
         }
         Ps4Hook::Arm(Ps4Hook::Pending());
-        Ps4::Log("screenshot: L3 + TouchPad saves the screen (HUD included) as %s/shots/shot_NNNN.bmp; the game pauses for a moment", Ps4::DataDir);
+        if (!kPublicBuild) {
+            Ps4::Log("screenshot: L3 + TouchPad saves the screen (HUD included) as %s/shots/shot_NNNN.bmp; the game pauses for a moment", Ps4::DataDir);
+        }
     } else {
         Ps4::Log("overlay off: no HUD, no pause menu, no colour swap");
     }
@@ -1583,7 +1590,7 @@ int main() {
         }
         combo_before = menu_combo;
         {
-            const bool shot_combo = (pad.buttons & Ps4::Button::L3) && (pad.buttons & Ps4::Button::TouchPad) &&
+            const bool shot_combo = !kPublicBuild && (pad.buttons & Ps4::Button::L3) && (pad.buttons & Ps4::Button::TouchPad) &&
                                     !(pad.buttons & Ps4::Button::R3) && !(pad.buttons & Ps4::Button::Options);
             if (shot_combo && !shot_before) {
                 take_shot();
