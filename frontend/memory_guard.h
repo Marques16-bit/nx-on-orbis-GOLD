@@ -20,6 +20,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Ps4Memory {
 
@@ -71,6 +72,29 @@ std::uint64_t SystemFlexibleBudgetMiB(std::uint64_t cap_mib, std::uint64_t pool_
 /// between the smallest size and max_mib. 0 when even the smallest is refused. `accepts` is assumed monotonic (a
 /// size the pool accepts, every smaller size it accepts too).
 std::uint64_t LargestAcceptedMiB(std::uint64_t max_mib, const std::function<bool(std::uint64_t)>& accepts);
+
+/// 0.9.6: the split of the console's direct memory among the parts of the emulator, as the lines of a table for boot.log. The parts
+/// that are taken for the whole run at the start are the GPU driver's arena and the JIT's code caches (and Eden's 128 MiB stream buffer,
+/// a GARLIC block outside the arena); what is left is for the guest's RAM (committed as the game touches it, first from the system
+/// pool's budget), the C heap and the GPU images the driver puts outside its arena. The table changes nothing: it makes the
+/// fixed plan visible, so the next run's log says which slice a crash or a slowdown belongs to.
+struct ArenaInputs {
+    std::uint64_t direct_mib = 0;         // what the process was given (sceKernelGetDirectMemorySize)
+    std::uint64_t gpu_arena_mib = 0;      // ORBIS_ARENA_MIB
+    std::uint64_t jit_cache_mib = 0;      // the JIT's code cache of ONE emulated core
+    int jit_cores = 4;                    // emulated cores, one cache each
+    std::uint64_t stream_buffer_mib = 128; // Eden's stream buffer (patch 0028), a GARLIC block outside the arena
+    std::uint64_t sysflex_budget_mib = 0; // guest memory that comes from the system flexible pool instead of direct memory
+};
+struct ArenaLine {
+    std::string name;
+    std::uint64_t mib = 0;
+    std::string note;
+};
+/// The slices in the order they are taken, then the rest ("left"), whose size is direct_mib minus the slices (0 if they do not fit).
+std::vector<ArenaLine> BuildArenaTable(const ArenaInputs& in);
+/// The table as the lines boot.log gets (a heading line first).
+std::vector<std::string> DescribeArenaTable(const ArenaInputs& in);
 
 enum class Stage { Ok, Low, Critical };
 enum class Action { Warn, Pause }; // settings.txt: memory_action=warn|pause

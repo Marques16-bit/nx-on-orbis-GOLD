@@ -211,4 +211,33 @@ std::string BannerText(const Status& status, bool portuguese) {
     return line;
 }
 
+std::vector<ArenaLine> BuildArenaTable(const ArenaInputs& in) {
+    std::vector<ArenaLine> lines;
+    lines.push_back({"GPU driver arena", in.gpu_arena_mib, "taken at start, the driver places its buffers inside it (ORBIS_ARENA_MIB)"});
+    lines.push_back({"JIT code caches", in.jit_cache_mib * static_cast<std::uint64_t>(in.jit_cores > 0 ? in.jit_cores : 0),
+                     std::to_string(in.jit_cores) + " cores x " + std::to_string(in.jit_cache_mib) + " MiB; a full cache is emptied whole, never grown (jit_cache_mib)"});
+    lines.push_back({"Stream buffer", in.stream_buffer_mib, "GARLIC, outside the arena (Eden patch 0028)"});
+    std::uint64_t taken = 0;
+    for (const ArenaLine& line : lines) {
+        taken += line.mib;
+    }
+    const std::uint64_t left = in.direct_mib > taken ? in.direct_mib - taken : 0;
+    lines.push_back({"Left", left,
+                     "guest RAM as the game touches it" +
+                         std::string(in.sysflex_budget_mib > 0 ? " (the first " + std::to_string(in.sysflex_budget_mib) + " MiB from the system pool, not from this)" : "") +
+                         ", the C heap and the GPU images outside the arena"});
+    return lines;
+}
+
+std::vector<std::string> DescribeArenaTable(const ArenaInputs& in) {
+    std::vector<std::string> out;
+    out.push_back("memory arenas: " + std::to_string(in.direct_mib) + " MiB of direct memory split as follows (planned at start; the free block is watched while the game runs)");
+    for (const ArenaLine& line : BuildArenaTable(in)) {
+        char text[320];
+        std::snprintf(text, sizeof(text), "memory arenas:   %-18s %5llu MiB  %s", line.name.c_str(), static_cast<unsigned long long>(line.mib), line.note.c_str());
+        out.push_back(text);
+    }
+    return out;
+}
+
 } // namespace Ps4Memory

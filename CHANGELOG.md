@@ -2,6 +2,30 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.6] - The optimisation list, read against the code: core placement, the memory split written out, and what is already there
+
+**Nothing in this version has run on a console.** On a PC: the placement plan (which core each thread gets, for 4, 5, 6 and 7 allowed cores, gaps in the mask, an unknown mask), the memory table and the new option
+in the menu are tested (`tests/memory_guard_test.cpp`: 73 checks; `tests/menu_test.cpp`: 392, normal and public build); the platform code was syntax-checked on a PC against stand-ins and the CPU-feature line was run on a PC.
+The console calls (`scePthreadSetaffinity` and the others, `main.cpp`, `ps4_platform.cpp`) compile only in CI and have never run on a console.
+
+The list of six optimisations that came with this version (11 items) was compared with the code and with the 29 console tests, item by item, in
+[docs/OPTIMIZATION.md](docs/OPTIMIZATION.md). The short result: **one item is new** (2b, core placement, which also places the audio thread of 3b), **one is made visible** (4, the memory split), **one is a log line that
+proves a premise** (2c, the CPU's features), and **the rest are not changes**, each with its reason: the frame fence (5), the linear allocators (6), the HLE of the Horizon kernel (3a) and the sink that plays silence when the guest
+is late (3b) are how Eden's Vulkan backend, kernel and audio sink already work; the memory types (1c) and the thin command path (1a: RADV writes the GPU's packets itself, there is no GNMX layer) are how the driver works,
+and a GNM renderer would be a new renderer, not a setting; ASTC with compute shaders (1b) was tried and lost the GPU twice (`astc=gpu` stays in the TESTS tab); fastmem (2a) was built and measured and not kept
+(370,000 slow-path redirects a session and 128 MiB more of heap; the JIT pack's direct table is the same saving by another road).
+
+- **`cpu_affinity=auto|off`** (CPU AND MEMORY tab, "Núcleos da CPU fixos"; per game too). The four threads that run the Switch's cores (`CPUCore_0..3`) each get a PS4 core of their own; every other named thread (GPU, Vulkan
+  worker, presenter, **audio feeder**, file system and GPU services, shader builders) is kept on the cores that remain, so none of them runs on a core with guest code. The console is asked which cores the process may use
+  (`scePthreadGetaffinity`); **if it cannot tell, nothing is pinned**. At most six cores are used, five are needed, the plan follows the allowed mask (`0x7C` = cores 2 to 6), the main thread and unnamed threads are left alone, a
+  refused pin is counted and ignored, and the kernel functions are found by name (`sceKernelDlsym`) so a missing one cannot break the link. A start after a crash (safe mode) runs without it. **It is a guess about the PS4's
+  scheduler and the first console run decides it**: compare the FPS with `cpu_affinity=off`. `boot.log`: `thread placement: ...` (the cores allowed, the plan, and for the first 20 threads the core each ended up on).
+- **`memory arenas:` in `boot.log`.** The split of the console's direct memory as the plan stands at the start: the GPU driver's arena, the JIT's code caches (4 x `jit_cache_mib`), Eden's 128 MiB stream buffer and what is left
+  (guest RAM as touched, the C heap, the GPU images outside the arena; the system flexible pool's share is not taken from it). It changes nothing in how memory is used: the plan already was fixed slices, each with its own rule at the
+  ceiling (docs/OPTIMIZATION.md, item 4). `sysflex_mib` (the extra RAM option) stays: it is the per-game override of that plan, and the list's figures (4 GB + 3 x 512 MB) do not fit the 4608 MiB a PS4 Pro gives the process.
+- **`cpu features:` in `boot.log`.** SSE4.1/4.2, AVX and whether the system saves its state, AVX2, FMA, F16C, BMI1: Dynarmic picks its SSE/AVX forms of the Switch's NEON instructions from the same answers, and nobody had seen them on this console.
+- **What to send back:** `boot.log` of a game that was measured before, with `cpu_affinity=auto` and with `cpu_affinity=off`, and the `cpu features`, `thread placement` and `memory arenas` lines in them.
+
 ## [0.9.5] - A menu made for people: controls, fewer switches, a new look (zips 1 to 5 of 0.9.5)
 
 ### Fifth zip of 0.9.5: a new HUD, a new L3 + R3 menu, and sounds and music in the menu

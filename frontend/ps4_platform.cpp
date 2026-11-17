@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include <cpuid.h>
 #include <pthread.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -27,6 +28,7 @@
 #include "common/orbis_lazy_memory.h"
 #include "memory_guard.h"
 #include "ps4_platform.h"
+#include "thread_placement.h"
 
 extern "C" {
 int sceKernelInstallExceptionHandler(int signal, void (*handler)(int, void*));
@@ -772,6 +774,115 @@ void ProfileWindow(bool report) {
     g_profile_command.store(report ? 2 : 1, std::memory_order_release);
 }
 
+void LogCpuFeatures() {
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (__get_cpuid(1, &a, &b, &c, &d) == 0) {
+        Log("cpu features: cpuid is not available");
+        return;
+    }
+    const unsigned family = ((a >> 8) & 0xF) + (((a >> 8) & 0xF) == 0xF ? ((a >> 20) & 0xFF) : 0);
+    const unsigned model = ((a >> 4) & 0xF) | (((a >> 16) & 0xF) << 4);
+    const auto yes = [](bool v) { return v ? "yes" : "no"; };
+    const bool osxsave = (c >> 27) & 1u;
+    bool os_avx = false;
+    if (osxsave) {
+        unsigned lo = 0, hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        os_avx = (lo & 6u) == 6u; // the system saves the SSE and AVX registers of a thread
+    }
+    bool bmi1 = false, avx2 = false;
+    unsigned ma = 0, mb = 0, mc = 0, md = 0;
+    if (__get_cpuid_max(0, nullptr) >= 7) {
+        __cpuid_count(7, 0, ma, mb, mc, md);
+        bmi1 = (mb >> 3) & 1u;
+        avx2 = (mb >> 5) & 1u;
+    }
+    Log("cpu features: family 0x%x model 0x%x; SSE4.1 %s, SSE4.2 %s, AVX %s (system saves its state: %s), AVX2 %s, FMA %s, F16C %s, BMI1 %s, POPCNT %s, PCLMUL %s, AES %s",
+        family, model, yes((c >> 19) & 1u), yes((c >> 20) & 1u), yes((c >> 28) & 1u), yes(os_avx), yes(avx2), yes((c >> 12) & 1u), yes((c >> 29) & 1u), yes(bmi1),
+        yes((c >> 23) & 1u), yes((c >> 1) & 1u), yes((c >> 25) & 1u));
+}
+
+// ---- 0.9.6: thread placement (thread_placement.h) ----
+// The four kernel functions are found by name in libkernel (sceKernelDlsym, the way the system flexible pool's call is), and are
+// never declared here: the SDK's headers may declare them with other parameter types, and a second declaration would not compile.
+// The mask is a plain 64-bit value (the SDK may say 32 bits: the upper half is zero either way, and a 64-bit buffer takes both).
+namespace {
+
+using PlaceSetFn = int32_t (*)(void* thread, std::uint64_t mask);
+using PlaceGetFn = int32_t (*)(void* thread, std::uint64_t* mask);
+using PlaceSelfFn = void* (*)();
+using PlaceCpuFn = int32_t (*)();
+
+Ps4Placement::Plan g_plan;
+PlaceSetFn g_place_set = nullptr;
+PlaceSelfFn g_place_self = nullptr;
+PlaceCpuFn g_place_cpu = nullptr;
+std::atomic<bool> g_place_active{false};
+std::atomic<unsigned> g_place_guest{0}, g_place_other{0}, g_place_failed{0};
+
+void* FindKernelSymbol(const char* name) {
+    if (&sceKernelDlsym == nullptr) {
+        return nullptr;
+    }
+    void* address = nullptr;
+    const int32_t rc = sceKernelDlsym(0x2001, name, &address); // libkernel's module handle
+    return rc == 0 ? address : nullptr;
+}
+
+} // namespace
+
+void ConfigureThreadPlacement(bool enabled) {
+    if (!enabled) {
+        Log("thread placement: off (cpu_affinity=off, or a start after a crash): every thread stays where the system puts it");
+        return;
+    }
+    g_place_set = reinterpret_cast<PlaceSetFn>(FindKernelSymbol("scePthreadSetaffinity"));
+    const PlaceGetFn get = reinterpret_cast<PlaceGetFn>(FindKernelSymbol("scePthreadGetaffinity"));
+    g_place_self = reinterpret_cast<PlaceSelfFn>(FindKernelSymbol("scePthreadSelf"));
+    g_place_cpu = reinterpret_cast<PlaceCpuFn>(FindKernelSymbol("sceKernelGetCurrentCpu"));
+    Log("thread placement: libkernel has scePthreadSetaffinity %s, scePthreadGetaffinity %s, scePthreadSelf %s, sceKernelGetCurrentCpu %s",
+        g_place_set != nullptr ? "yes" : "NO", get != nullptr ? "yes" : "NO", g_place_self != nullptr ? "yes" : "NO", g_place_cpu != nullptr ? "yes" : "NO");
+    if (g_place_set == nullptr || get == nullptr) {
+        Log("thread placement: not used (the console's affinity calls could not be found)");
+        return;
+    }
+    void* self = g_place_self != nullptr ? g_place_self() : reinterpret_cast<void*>(pthread_self());
+    std::uint64_t mask = 0;
+    const int32_t rc = get(self, &mask);
+    if (rc != 0 || (mask & 0xFFFF) == 0) {
+        Log("thread placement: not used (scePthreadGetaffinity = 0x%08x, mask 0x%llx)", static_cast<unsigned>(rc), static_cast<unsigned long long>(mask));
+        return;
+    }
+    g_plan = Ps4Placement::Plan{mask & 0xFFFF};
+    Log("%s", g_plan.Describe().c_str());
+    g_place_active.store(g_plan.Active(), std::memory_order_release);
+}
+
+void PlaceCurrentThread(const char* name) {
+    if (!g_place_active.load(std::memory_order_acquire) || name == nullptr) {
+        return;
+    }
+    const Ps4Placement::Decision decision = g_plan.For(name);
+    if (decision.role == Ps4Placement::Role::Free) {
+        return;
+    }
+    void* self = g_place_self != nullptr ? g_place_self() : reinterpret_cast<void*>(pthread_self());
+    const int32_t rc = g_place_set(self, decision.mask);
+    if (rc != 0) {
+        g_place_failed.fetch_add(1);
+    } else {
+        (decision.role == Ps4Placement::Role::Guest ? g_place_guest : g_place_other).fetch_add(1);
+    }
+    // The first 20 get a line each (which core they were given and, asked from the thread itself, which core it is on now).
+    static std::atomic<int> lines{0};
+    if (lines.fetch_add(1) < 20) {
+        const int on = g_place_cpu != nullptr ? g_place_cpu() : -1;
+        Log("thread placement: %s -> mask 0x%llx (%s): scePthreadSetaffinity = 0x%08x, running on core %d", name,
+            static_cast<unsigned long long>(decision.mask), decision.role == Ps4Placement::Role::Guest ? "its own core" : "the other cores",
+            static_cast<unsigned>(rc), on);
+    }
+}
+
 void RegisterThread(const char* name) {
     std::lock_guard lock{g_named_mutex};
     const int n = g_named_count.load();
@@ -1270,6 +1381,14 @@ std::uint64_t ProbeSystemFlexibleMiB(SystemFlexibleMapFn map, std::uint64_t max_
 
 } // namespace
 
+namespace {
+std::atomic<std::uint64_t> g_sysflex_budget_mib{0};
+} // namespace
+
+std::uint64_t SystemFlexibleBudgetMiB() {
+    return g_sysflex_budget_mib.load();
+}
+
 void ConfigureSystemFlexible(std::uint64_t cap_mib) {
     if (cap_mib == 0) {
         Log("system flexible memory: off (sysflex_mib=off); all guest memory comes from direct memory");
@@ -1285,6 +1404,7 @@ void ConfigureSystemFlexible(std::uint64_t cap_mib) {
     Log("system flexible memory: cap %lu MiB, the pool could map %lu MiB at once (probed up to cap + reserve), reserve %lu MiB for the system -> budget %lu MiB for guest memory",
         static_cast<unsigned long>(cap_mib), static_cast<unsigned long>(pool_mib),
         static_cast<unsigned long>(Ps4Memory::SystemFlexibleReserveMiB), static_cast<unsigned long>(budget_mib));
+    g_sysflex_budget_mib.store(budget_mib);
     Common::Orbis::ConfigureSystemFlexible(map, static_cast<std::size_t>(budget_mib) << 20);
 }
 
@@ -1381,6 +1501,7 @@ extern "C" void EdenPs4OnRenderPass(std::uint64_t renderpass, std::uint64_t fram
 extern "C" void EdenPs4OnThreadNamed(pthread_t thread, const char* name) {
     (void)thread; // always the calling thread
     Ps4::RegisterThread(name);
+    Ps4::PlaceCurrentThread(name); // 0.9.6: after RegisterThread has let go of its lock
 }
 
 /// The registered name of a thread (texture-cache history), or "?".

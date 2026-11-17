@@ -215,6 +215,16 @@ check "the menu sounds: made by the program, the options exist and are global, t
     grep -q "sceAudioOutOpen(0xFF" frontend/menu/rom_menu.cpp && grep -q "audio port and .main.cpp. have never been run" CHANGELOG.md'
 check "the HUD and the pause panel of zip 5 are in the CHANGELOG and tested" '
     grep -q "^### Fifth zip of 0.9.5" CHANGELOG.md && grep -q "BuildHud" frontend/video_hook.cpp && grep -q "BuildPanel" frontend/video_hook.cpp && grep -q "SetHudStatsForTest" tests/video_hook_test.cpp'
+check "0.9.6: cpu_affinity is an option (auto by default), read by main.cpp, off in safe mode, tested, and the CHANGELOG says it is untried" '
+    settings_key cpu_affinity && settings_default cpu_affinity auto && grep -q "\"cpu_affinity\"" frontend/main.cpp && grep -q "ConfigureThreadPlacement(g_cpu_affinity && !g_safe_mode)" frontend/main.cpp &&
+    grep -q "PlaceCurrentThread(name)" frontend/ps4_platform.cpp && grep -q "Plan six" tests/memory_guard_test.cpp &&
+    grep -q "^## \[0.9.6\]" CHANGELOG.md && grep -q "Nothing in this version has run on a console" CHANGELOG.md'
+check "0.9.6: docs/OPTIMIZATION.md answers every item of the list, README links it, and the log lines it promises are in the source" '
+    [ -f docs/OPTIMIZATION.md ] && grep -q "docs/OPTIMIZATION.md" README.md &&
+    for item in "1a. Direct GNM" "1b. ASTC" "1c. Onion" "2a. Fastmem" "2b. Core affinity" "2c. SIMD" "3a. HLE" "3b. Audio" "## 4. Memory arenas" "## 5. Frame fence" "## 6. Linear allocators"; do
+        grep -q -- "$item" docs/OPTIMIZATION.md || exit 1
+    done &&
+    grep -q "memory arenas: " frontend/memory_guard.cpp && grep -q "cpu features: " frontend/ps4_platform.cpp && grep -q "thread placement: " frontend/ps4_platform.cpp'
 check "jit_direct_table is an option, ON by default since 0.9.5, and hidden in the menu" '
     settings_key jit_direct_table && settings_default jit_direct_table on && grep "^| \`jit_direct_table\` |" docs/SETTINGS.md | grep -q "| hidden"'
 check "the 0.9.5 tiers: colour_swap hidden, cpu_clock in the TESTS tab of the test builds, resolution always shown" '

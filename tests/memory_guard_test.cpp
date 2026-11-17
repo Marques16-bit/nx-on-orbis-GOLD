@@ -4,8 +4,10 @@
 //   g++ -std=c++20 -Ifrontend tests/memory_guard_test.cpp frontend/memory_guard.cpp -o memory_guard_test
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "memory_guard.h"
+#include "thread_placement.h"
 
 namespace {
 int g_failures = 0;
@@ -165,6 +167,75 @@ int main() {
             }
             Check(all_ok, "probe: for every pool size from 0 to 2300 MiB (steps of 7) the answer is the largest step the pool accepts, capped at the maximum");
         }
+    }
+    {
+        // 0.9.6: the arena table.
+        ArenaInputs in;
+        in.direct_mib = 4608;
+        in.gpu_arena_mib = 1280;
+        in.jit_cache_mib = 64;
+        in.sysflex_budget_mib = 1536;
+        const std::vector<ArenaLine> table = BuildArenaTable(in);
+        Check(table.size() == 4 && table[0].mib == 1280 && table[1].mib == 4 * 64 && table[2].mib == 128, "arenas: the GPU arena, 4 JIT caches and the stream buffer come first");
+        Check(table[3].name == "Left" && table[3].mib == 4608 - 1280 - 256 - 128, "arenas: what is left is the rest of the direct memory");
+        Check(table[3].note.find("1536 MiB from the system pool") != std::string::npos, "arenas: the note says the system pool's share is not taken from it");
+        in.sysflex_budget_mib = 0;
+        Check(BuildArenaTable(in)[3].note.find("system pool") == std::string::npos, "arenas: with the pool off the note does not mention it");
+        in.direct_mib = 1000; // slices larger than the memory: nothing left, never a wrapped-round number
+        Check(BuildArenaTable(in)[3].mib == 0, "arenas: when the slices do not fit, the rest is 0 (no unsigned wrap)");
+        in.direct_mib = 4608;
+        in.jit_cores = 0;
+        Check(BuildArenaTable(in)[1].mib == 0, "arenas: no cores, no JIT cache");
+        in.jit_cores = 4;
+        const std::vector<std::string> lines = DescribeArenaTable(in);
+        Check(lines.size() == 5 && lines[0].find("4608 MiB") != std::string::npos && lines[1].find("GPU driver arena") != std::string::npos &&
+                  lines[4].find("Left") != std::string::npos,
+              "arenas: boot.log gets a heading and one line per slice");
+    }
+    {
+        // 0.9.6: thread placement (frontend/thread_placement.h).
+        namespace PP = Ps4Placement;
+        using PP::Mode;
+        using PP::Role;
+        using PP::GuestIndexOf;
+        using PP::GuestCores;
+        using PP::ParseMode;
+        Mode mode = Mode::Off;
+        Check(ParseMode("auto", &mode) && mode == Mode::Auto && ParseMode("off", &mode) && mode == Mode::Off && !ParseMode("max", &mode), "placement: auto and off are read, anything else is not");
+        Check(GuestIndexOf("CPUCore_0") == 0 && GuestIndexOf("CPUCore_3") == 3 && GuestIndexOf("CPUCore_4") == -1 && GuestIndexOf("CPUCore_10") == -1 &&
+                  GuestIndexOf("CPUCore_") == -1 && GuestIndexOf("CPUThread") == 0 && GuestIndexOf("VulkanWorker") == -1,
+              "placement: the Switch's four cores are recognised by name (CPUThread is the single-core mode)");
+        const PP::Plan six{0x3F}; // cores 0 to 5
+        Check(six.Active() && six.Cores() == 6 && six.GuestMask(0) == 0x01 && six.GuestMask(3) == 0x08 && six.SecondaryMask() == 0x30, "placement: six cores: the guest on 0-3, the rest on 4-5");
+        Check(six.For("CPUCore_2").role == Role::Guest && six.For("CPUCore_2").mask == 0x04, "placement: CPUCore_2 gets core 2 alone");
+        const char* others[] = {"GPU", "VulkanWorker", "VulkanPresent", "AudioOutPS4", "AudioRenderSystemManager", "FS", "nvservices", "HostTiming", "ShaderBuilder"};
+        bool others_ok = true;
+        for (const char* name : others) {
+            others_ok = others_ok && six.For(name).role == Role::Secondary && six.For(name).mask == 0x30;
+        }
+        Check(others_ok, "placement: every other named thread shares cores 4 and 5 (GPU, Vulkan, audio, services, builders)");
+        Check(six.For("main").role == Role::Free && six.For("").role == Role::Free, "placement: the main thread and unnamed threads are left alone");
+        const PP::Plan seven{0x7F}; // a console that offers a seventh core: still six
+        Check(seven.Cores() == 6 && seven.SecondaryMask() == 0x30, "placement: never more than six cores are used");
+        const PP::Plan five{0x1F};
+        Check(five.Active() && five.SecondaryMask() == 0x10 && five.GuestMask(3) == 0x08, "placement: five cores: one left for the rest");
+        const PP::Plan gap{0x7C}; // cores 2 to 6: the guest takes the first four it may use, whatever their numbers
+        Check(gap.Active() && gap.GuestMask(0) == 0x04 && gap.GuestMask(3) == 0x20 && gap.SecondaryMask() == 0x40, "placement: it follows the cores the console allows, not fixed numbers");
+        const PP::Plan four{0x0F};
+        Check(!four.Active() && four.For("CPUCore_0").role == Role::Free && four.GuestMask(0) == 0, "placement: four cores or fewer: nothing is pinned");
+        const PP::Plan none{0};
+        Check(!none.Active() && !PP::Plan{}.Active() && PP::Plan{}.For("GPU").mask == 0, "placement: an unknown mask (0) or no plan: nothing is pinned");
+        Check(six.Describe().find("cores 0x3f") != std::string::npos && six.Describe().find("cores 0,1,2,3") != std::string::npos && six.Describe().find("on 4,5") != std::string::npos,
+              "placement: the log line names the cores");
+        Check(four.Describe().find("not used") != std::string::npos, "placement: the log line says when it is not used");
+        bool disjoint = true;
+        for (int i = 0; i < GuestCores; ++i) {
+            for (int j = i + 1; j < GuestCores; ++j) {
+                disjoint = disjoint && (six.GuestMask(i) & six.GuestMask(j)) == 0;
+            }
+            disjoint = disjoint && (six.GuestMask(i) & six.SecondaryMask()) == 0;
+        }
+        Check(disjoint, "placement: no core is given to two guest threads, and none to a guest thread and the rest");
     }
     std::printf(g_failures == 0 ? "memory guard test: PASSED\n" : "memory guard test: FAILED\n");
     return g_failures == 0 ? 0 : 1;

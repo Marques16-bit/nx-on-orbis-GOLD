@@ -82,6 +82,7 @@
 #include "jit_cache.h"
 #include "jit_pack.h"
 #include "safe_mode.h"
+#include "thread_placement.h"
 #include "menu/cover_loader.h"
 #include "menu/game_config.h"
 #include "menu/menu_ui.h"
@@ -643,6 +644,10 @@ std::string g_player_type[4];
 /// in a row in one game (safe mode) switches it off, and so does a line `jit_page_reuse=off` written by hand.
 /// Applied before the core starts, read by the JIT when it compiles a block.
 bool g_jit_page_reuse = true;
+/// 0.9.6, settings.txt: cpu_affinity=auto|off - the four threads that run the Switch's cores each get a PS4 core of their own and the other
+/// named threads (GPU, Vulkan worker, audio, services, shader builders) share the remaining cores (thread_placement.h). Default auto; off in
+/// safe mode. Applied before the game's threads start.
+bool g_cpu_affinity = true;
 /// 0.9.3, settings.txt: jit_direct_table=on|off - Dynarmic reads a decoded copy of the page table (the JIT pack's part 2).
 /// 0.9.5: ON by default, hidden, off in safe mode, like the one above. Applied before the core starts: the copy is made
 /// when the first page table is sized.
@@ -743,6 +748,7 @@ void ApplyMemoryPlan() {
 ///   menu_volume=20|35|50|70|100 0.9.5 (zip 5): the volume of the menu's audio, in percent
 ///   players=1|2|3|4             0.9.1: controllers given to the game (default 1). Controllers 2-4 are the other users
 ///                               logged in to the console (a second DualShock logs in as a guest on its PS button)
+///   cpu_affinity=auto|off       0.9.6: the Switch's four cores get a PS4 core each, the other threads share the rest (default auto)
 ///   jit_page_reuse=on|off       0.9.2: the JIT looks a page up once for a group of nearby accesses instead of once per access
 ///                               (default off; experimental; needs the JIT pack, boot.log says whether the build has it)
 ///   jit_direct_table=on|off     0.9.3: the JIT reads a decoded copy of the page table: four instructions fewer per memory access
@@ -868,6 +874,8 @@ void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
                          origin, value.c_str());
                 g_sysflex_cap_mib = Ps4Memory::SystemFlexibleAutoCapMiB;
             }
+        } else if (key == "cpu_affinity" && (value == "auto" || value == "on" || value == "off")) {
+            g_cpu_affinity = value != "off";
         } else if (key == "jit_page_reuse" && Ps4Jit::ParseSwitch(value, &g_jit_page_reuse)) {
             // Applied by ApplyJitPack() after this file is read, before the core starts.
         } else if (key == "jit_direct_table" && Ps4Jit::ParseSwitch(value, &g_jit_direct_table)) {
@@ -1083,6 +1091,7 @@ int main() {
     Ps4::Log("eden-ps4 starting (Eden %s %s)", Common::g_scm_branch, Common::g_scm_desc);
     Ps4::Log("PS4 build: %s (btver2 build; defaults: cpu_accuracy unsafe, gpu_accuracy low, no reactive flushing, CPU ASTC, profiler on)",
              EDEN_PS4_BUILD_ID);
+    Ps4::LogCpuFeatures();
     Ps4::InstallCrashReporting();
     Ps4::StartWatchdog();
     Ps4::RegisterThread("main");
@@ -1201,6 +1210,10 @@ int main() {
         g_jit_page_reuse = false;
         g_jit_direct_table = false;
     }
+    if (g_safe_mode && g_cpu_affinity) {
+        Ps4::Log("safe mode: cpu_affinity is off for this start (thread placement is new in 0.9.6 and a start that died is not the one to try it on)");
+    }
+    Ps4::ConfigureThreadPlacement(g_cpu_affinity && !g_safe_mode); // before Eden starts its threads
     Ps4Jit::Apply(g_jit_page_reuse);
     Ps4::Log("%s", Ps4Jit::Describe(Ps4Jit::Read(g_jit_page_reuse)).c_str());
     Ps4Jit::ApplyDirect(g_jit_direct_table);
@@ -1216,6 +1229,18 @@ int main() {
     g_jit_cache_used_mib = Ps4JitCache::ForStart(g_jit_cache_mib, g_memory_roomy, g_safe_mode);
     ps4_jit_cache_mib = g_jit_cache_used_mib;
     Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, g_jit_cache_used_mib, Ps4JitCache::Read()).c_str());
+    {
+        // 0.9.6: the fixed split of the console's memory, written out (the arena is what ApplyMemoryPlan put in the environment, with any override).
+        Ps4Memory::ArenaInputs arenas;
+        arenas.direct_mib = Ps4::DirectMemoryTotal() >> 20;
+        const char* arena_text = std::getenv("ORBIS_ARENA_MIB");
+        arenas.gpu_arena_mib = arena_text != nullptr ? std::strtoull(arena_text, nullptr, 10) : 0;
+        arenas.jit_cache_mib = g_jit_cache_used_mib;
+        arenas.sysflex_budget_mib = Ps4::SystemFlexibleBudgetMiB();
+        for (const std::string& line : Ps4Memory::DescribeArenaTable(arenas)) {
+            Ps4::Log("%s", line.c_str());
+        }
+    }
     if (g_players > 1) {
         const Ps4Eden::Result linked = Ps4Eden::ConnectPlayers(Settings::values, g_players);
         const int opened = Ps4::OpenExtraPads(g_players);

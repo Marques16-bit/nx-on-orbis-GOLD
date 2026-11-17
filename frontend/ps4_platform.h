@@ -37,6 +37,15 @@ void SetPhase(const char* phase);
 void ArmHangWatch(unsigned seconds);
 /// Records the calling thread under `name` for hang stack dumps.
 void RegisterThread(const char* name);
+/// 0.9.6: one line in boot.log with what the CPU says it can do (SSE4.2, AVX and whether the system saves AVX state, F16C, BMI1...). The JIT
+/// (Dynarmic) picks its SSE/AVX forms of the Switch's NEON instructions from the same answers; this makes the premise visible.
+void LogCpuFeatures();
+/// 0.9.6: cpu_affinity (thread_placement.h). `enabled` false: every thread stays where the system puts it. True: asks the console which
+/// cores this process may use (from the calling thread, the main one, before any game thread exists), and if it can tell and there are at
+/// least five, every thread that Eden names afterwards goes to the core or cores the plan gives it. Logs what it found and decided.
+void ConfigureThreadPlacement(bool enabled);
+/// Called for every thread Eden names (see EdenPs4OnThreadNamed), by that thread: applies the plan to it.
+void PlaceCurrentThread(const char* name);
 /// Called by the presentation path for every frame shown.
 void NoteFrame();
 /// 0.8.1: the sampling profiler normally reports every 30 s. This asks it to start a fresh window (`report` false) or to
@@ -122,5 +131,7 @@ std::uint64_t DirectMemoryTotal();
 /// call is missing or the pool is empty nothing changes and everything stays in direct memory. Call it before the
 /// first guest memory is touched.
 void ConfigureSystemFlexible(std::uint64_t cap_mib);
+/// 0.9.6: the budget ConfigureSystemFlexible settled on, in MiB (0 when the pool is off or not available).
+std::uint64_t SystemFlexibleBudgetMiB();
 
 } // namespace Ps4

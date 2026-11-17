@@ -364,6 +364,19 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
   start of the header). `Read` checks every offset and size against the file size before reading, takes the first NACP title with a name (UTF-8 checked, control characters turned to spaces) and the JPEG
   (at most 4 MiB, must start `FF D8`). `main.cpp` reads it for every `.nro` of `roms/` before the covers, so the title shows even when a picture in `covers/` wins.
 
+### 0.9.6: thread placement, the memory table, the CPU line
+
+- **Placement** (`frontend/thread_placement.h`, pure; `ps4_platform.cpp`: `ConfigureThreadPlacement`, `PlaceCurrentThread`). `main()` calls `ConfigureThreadPlacement(cpu_affinity && !safe_mode)` before Eden starts a thread: it finds
+  `scePthreadSetaffinity`, `scePthreadGetaffinity`, `scePthreadSelf` and `sceKernelGetCurrentCpu` in libkernel by name (`sceKernelDlsym(0x2001, ...)`, never declared: the SDK may declare them with other types), reads the main
+  thread's mask (a 64-bit buffer, so a 32-bit mask works too) and builds a `Plan`. Every thread Eden names reaches `EdenPs4OnThreadNamed` (patch 0006), which registers it for the hang report and then calls
+  `PlaceCurrentThread(name)` from that thread: `CPUCore_N` -> core N of the plan alone, any other name -> the secondary mask, `main` and "" -> untouched. The plan takes the six lowest allowed cores, needs five, gives the first
+  four to the guest. Nothing is pinned when a function is missing, the mask cannot be read, or fewer than five cores are allowed. A thread created by a pinned thread and never named would inherit its core: Eden names every
+  thread it starts (`Common::SetCurrentThreadName`), which is why the placement is done at the naming.
+- **Memory table** (`Ps4Memory::BuildArenaTable`/`DescribeArenaTable`, `memory_guard.cpp`): the slices taken at the start (GPU arena from `ORBIS_ARENA_MIB` as it stands after settings, JIT caches = 4 x the cache actually
+  used, the stream buffer) and the rest; `Ps4::SystemFlexibleBudgetMiB()` is what the pool probe settled on. Logged once after the JIT cache line.
+- **`Ps4::LogCpuFeatures()`**: CPUID leaf 1 and 7 and `xgetbv` (only if OSXSAVE), one line.
+- All of it is untried on a console. The pure parts are tested in `tests/memory_guard_test.cpp`; the calls to the kernel are compiled only by the CI.
+
 ### 0.9.5 zip 5: the HUD, the pause panel and the menu's sounds
 
 - **HUD and panel** (`frontend/video_hook.cpp`: `BuildHud`, `BuildPanel`): still one opaque bitmap per element, kept alive in every buffer by the same probes; only the pixels changed. `RefreshStats` keeps a history of the last 60 one-second
