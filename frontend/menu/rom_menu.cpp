@@ -9,12 +9,15 @@
 // memory under it is a risk this console answers with a reboot.
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -44,6 +47,11 @@ int32_t sceKernelMapDirectMemory(void** addr, size_t len, int prot, int flags, o
                                  size_t align);
 int32_t sceKernelReleaseDirectMemory(off_t start, size_t len);
 size_t sceKernelGetDirectMemorySize(void);
+// The same declarations as Eden's own sink (patch 0002), whose use of them is the one tested on the console.
+int sceAudioOutInit(void);
+int sceAudioOutOpen(int user_id, int type, int index, unsigned int len, unsigned int freq, unsigned int param);
+int sceAudioOutOutput(int handle, const void* ptr);
+int sceAudioOutClose(int handle);
 }
 
 namespace {
@@ -121,6 +129,152 @@ bool WriteSettings(const std::string& text) {
     return ok;
 }
 
+/// 0.9.5 (zip 5): the menu's music and sounds. One audio port (the same way Eden's own sink opens it: system user, main port, 256-frame
+/// grains of 48 kHz S16 stereo), fed by a thread from Menu::Mixer, which makes everything itself. It is closed before the game starts, so
+/// Eden's sink finds the port free.
+///
+/// It could not be tried on a console while it was written, so it is careful:
+///  - with menu_audio=off nothing is opened at all;
+///  - menu_audio.marker is written before the port is opened and removed after the port has taken its first grain; a marker left over
+///    from an earlier run means that run died there, and the menu then stays silent (and says so in the log) until the file is deleted;
+///  - the threads own a shared state, so none of them can touch freed memory if one is slow to stop, and none is ever joined (a thread
+///    stuck in the driver cannot hold the menu or the game up: closing waits at most 1.5 s).
+class MenuAudio {
+public:
+    MenuAudio() = default;
+    MenuAudio(const MenuAudio&) = delete;
+    MenuAudio& operator=(const MenuAudio&) = delete;
+    ~MenuAudio() { Close(); }
+
+    /// The menu's settings (every step): starts the port the first time sound is wanted, then follows the mode and the volume.
+    void Apply(Menu::AudioMode mode, float volume) {
+        if (mode != Menu::AudioMode::Off && !tried_) {
+            tried_ = true;
+            Start();
+        }
+        if (!state_) {
+            return;
+        }
+        state_->mixer.SetVolume(volume);
+        state_->mixer.SetEffects(mode != Menu::AudioMode::Off);
+        state_->mixer.SetMusic(mode == Menu::AudioMode::All);
+        if (mode == Menu::AudioMode::All && !music_requested_) {
+            music_requested_ = true;
+            std::shared_ptr<State> state = state_;
+            std::thread{[state] {
+                const std::uint64_t begin = Ps4::NowUs();
+                state->mixer.SetAmbient(Menu::MakeAmbient());
+                Ps4::Log("menu audio: the background loop is ready (%llu ms to make)", static_cast<unsigned long long>((Ps4::NowUs() - begin) / 1000));
+            }}.detach();
+        }
+    }
+
+    void Trigger(Menu::SoundId id) {
+        if (state_) {
+            state_->mixer.Trigger(id);
+        }
+    }
+
+    bool Running() const { return state_ != nullptr; }
+
+    /// The menu is about to close: lets the game-start chime ring (`chime`), fades everything out and gives the port back.
+    void Finish(bool chime) {
+        if (!state_) {
+            return;
+        }
+        if (chime) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        }
+        state_->mixer.FadeOut(0.3f);
+        for (int i = 0; i < 60 && !state_->mixer.Quiet(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        Close();
+    }
+
+private:
+    struct State {
+        Menu::Mixer mixer;
+        std::atomic<bool> stop{false};
+        std::atomic<bool> feeder_done{false};
+        fs::path marker;
+    };
+
+    void Start() {
+        const fs::path marker = fs::path{Ps4::DataDir} / "menu_audio.marker";
+        std::error_code ec;
+        if (fs::exists(marker, ec)) {
+            Ps4::Log("menu audio: SKIPPED. The last run left %s: it did not get past opening the audio port. The menu stays silent; delete that file to try again",
+                     marker.filename().string().c_str());
+            return;
+        }
+        if (std::ofstream out{marker}; out) {
+            out << "opening the menu audio port; removed once it has taken its first grain\n";
+        }
+        state_ = std::make_shared<State>();
+        state_->marker = marker;
+        std::shared_ptr<State> state = state_;
+        std::thread{[state] { Feed(state); }}.detach();
+    }
+
+    static void Feed(const std::shared_ptr<State>& state) {
+        std::error_code ec;
+        const int init = sceAudioOutInit();
+        if (init != 0 && static_cast<unsigned>(init) != 0x8026000Eu) { // 0x8026000E: already initialised
+            Ps4::Log("menu audio: sceAudioOutInit failed (0x%x); no menu sound", static_cast<unsigned>(init));
+            fs::remove(state->marker, ec);
+            state->feeder_done.store(true);
+            return;
+        }
+        const int handle = sceAudioOutOpen(0xFF /* system user */, 0 /* main port */, 0, GrainFrames, Menu::SampleRate, 1 /* S16 stereo */);
+        if (handle < 0) {
+            Ps4::Log("menu audio: sceAudioOutOpen failed (0x%x); no menu sound", static_cast<unsigned>(handle));
+            fs::remove(state->marker, ec);
+            state->feeder_done.store(true);
+            return;
+        }
+        Ps4::Log("menu audio: port %d open (%d Hz, %u frames)", handle, Menu::SampleRate, GrainFrames);
+        std::array<std::int16_t, GrainFrames * 2> grain{};
+        bool first = true;
+        while (!state->stop.load()) {
+            state->mixer.Render(grain.data(), int(GrainFrames));
+            const int rc = sceAudioOutOutput(handle, grain.data()); // blocks until the port has room: this paces the loop
+            if (first) {
+                first = false;
+                fs::remove(state->marker, ec);
+                Ps4::Log("menu audio: the first grain was taken (0x%x)", static_cast<unsigned>(rc));
+            }
+            if (rc < 0) {
+                Ps4::Log("menu audio: sceAudioOutOutput failed (0x%x); the menu sound stops", static_cast<unsigned>(rc));
+                break;
+            }
+        }
+        sceAudioOutOutput(handle, nullptr); // waits for the last grain
+        sceAudioOutClose(handle);
+        Ps4::Log("menu audio: port closed");
+        state->feeder_done.store(true);
+    }
+
+    void Close() {
+        if (!state_) {
+            return;
+        }
+        state_->stop.store(true);
+        for (int i = 0; i < 150 && !state_->feeder_done.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!state_->feeder_done.load()) {
+            Ps4::Log("menu audio: the audio thread did not stop in 1.5 s; the port may stay open (the game may have no sound)");
+        }
+        state_.reset(); // the threads keep the state alive until they are done
+    }
+
+    static constexpr unsigned GrainFrames = 256;
+    std::shared_ptr<State> state_;
+    bool tried_ = false;
+    bool music_requested_ = false;
+};
+
 } // Anonymous namespace
 
 MenuOutcome RunMainMenu(std::vector<Menu::GameEntry> games, int initial,
@@ -175,7 +329,16 @@ MenuOutcome RunMainMenu(std::vector<Menu::GameEntry> games, int initial,
         back ^= 1;
     };
 
+    MenuAudio audio;
+    const auto service_audio = [&] {
+        audio.Apply(ui.Audio(), ui.Volume()); // the volume first, so a tick that came from changing it is heard at the new level
+        for (const Menu::SoundId id : ui.TakeSounds()) {
+            audio.Trigger(id);
+        }
+    };
+
     ui.Update(0, Ps4::NowUs()); // the first call: draw the first screen
+    service_audio();
     present();
 
     constexpr std::uint32_t Intercepted = 0x80000000u;
@@ -195,11 +358,15 @@ MenuOutcome RunMainMenu(std::vector<Menu::GameEntry> games, int initial,
             }
             ui.SetPadsConnected(connected);
         }
-        if (ui.Update(now, Ps4::NowUs())) {
+        const bool redraw = ui.Update(now, Ps4::NowUs());
+        service_audio();
+        if (redraw) {
             present();
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
+    // The chime of a game starting rings out and the sound fades; the audio port is given back before the display is closed.
+    audio.Finish(ui.Result().kind != Menu::MenuResult::Kind::None);
 
     // Leave the display as Eden's WSI expects to find it: closed.
     {

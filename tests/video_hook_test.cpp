@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -90,11 +92,12 @@ struct Frames3 {
         }
         return false;
     }
-    /// The four inset corners of the HUD box and its centre hold the HUD (box colour 0x101830; ARGB screen).
+    /// The four inset corners of the HUD box hold the HUD (box colour 0x101830; ARGB screen). The box is 400 x 200 at 40,40
+    /// (0.9.5 zip 5); its left 4 pixels are the status bar, so the left corners are looked at 12 pixels in.
     bool Has(int b, int) const {
         constexpr std::uint32_t Back = 0xFF101830u;
         const auto at = [&](int x, int y) { return buf[b][size_t(y) * W + size_t(x)]; };
-        return at(42, 42) == Back && at(40 + 496 - 4, 42) == Back && at(42, 40 + 172 - 4) == Back && at(40 + 496 - 4, 40 + 172 - 4) == Back;
+        return at(40 + 12, 42) == Back && at(40 + 400 - 4, 42) == Back && at(40 + 12, 40 + 200 - 4) == Back && at(40 + 400 - 4, 40 + 200 - 4) == Back;
     }
 };
 constexpr int HudSpot = 0;
@@ -185,7 +188,132 @@ static double SimulateDisplay(bool keepalive, int gpu_min_ms, int gpu_max_ms) {
     return refreshes > 0 ? 100.0 * missed / refreshes : 0.0;
 }
 
-int main() {
+
+// ------------------------------------------------------------------------------------------------
+// tests/video_hook_test --render DIR: writes the HUD and the panel as the console would draw them over a
+// stand-in "game" picture (PPM files), so the look can be judged without a console.
+static void WritePpm(const std::string& path, const std::vector<std::uint32_t>& buf, int w, int h) {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (f == nullptr) {
+        return;
+    }
+    std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+    std::vector<std::uint8_t> row(size_t(w) * 3);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::uint32_t p = buf[size_t(y) * size_t(w) + size_t(x)];
+            row[size_t(x) * 3 + 0] = std::uint8_t(p >> 16);
+            row[size_t(x) * 3 + 1] = std::uint8_t(p >> 8);
+            row[size_t(x) * 3 + 2] = std::uint8_t(p);
+        }
+        std::fwrite(row.data(), 1, row.size(), f);
+    }
+    std::fclose(f);
+}
+
+static int RenderPictures(const char* dir) {
+    constexpr std::uint32_t ARGB = 0x80000000u;
+    static Frames3 f(ARGB);
+    int handle = 900;
+    const auto scene = [&](const char* name, const Ps4Hook::Settings& settings, const Ps4Hook::HudStats* stats,
+                           const std::function<void()>& extra) {
+        for (int y = 0; y < Frames3::H; ++y) { // a stand-in for a game: a sky and a ground with some detail
+            for (int x = 0; x < Frames3::W; ++x) {
+                const int sky = 0x30 + y * 0x50 / Frames3::H;
+                std::uint32_t c = 0xFF000000u | (std::uint32_t(0x40 + y / 16) << 16) | (std::uint32_t(sky + 0x30) << 8) | 0xE0;
+                if (y > 640) {
+                    c = 0xFF000000u | (std::uint32_t(0x3A + ((x / 64 + y / 64) & 1) * 0x10) << 16) | (0x6A << 8) | 0x2C;
+                }
+                for (auto& b : f.buf) {
+                    b[size_t(y) * Frames3::W + size_t(x)] = c;
+                }
+            }
+        }
+        Ps4Hook::Arm(settings, false);
+        ++handle;
+        __wrap_sceVideoOutRegisterBuffers(handle, 0, f.ptrs, 3, f.attr);
+        if (stats != nullptr) {
+            Ps4Hook::SetHudStatsForTest(*stats);
+        }
+        extra();
+        __wrap_sceVideoOutSubmitFlip(handle, 0, 1, 0);
+        Ps4Hook::Pump();
+        WritePpm(std::string(dir) + "/" + name + ".ppm", f.buf[0], Frames3::W, Frames3::H);
+        std::printf("  wrote %s/%s.ppm\n", dir, name);
+    };
+    const auto history = [](double base, double dip, int dips, double wobble) {
+        std::vector<float> h;
+        std::uint32_t rng = 7;
+        for (int i = 0; i < 60; ++i) {
+            rng = rng * 1664525u + 1013904223u;
+            double v = base + (double(rng >> 24) / 255.0 - 0.5) * wobble;
+            if (dips > 0 && i % (60 / dips) == 5) {
+                v = dip;
+            }
+            h.push_back(float(v));
+        }
+        return h;
+    };
+    Ps4Hook::Settings hud;
+    hud.hud = true;
+    hud.swap_colours = false;
+    {
+        Ps4Hook::HudStats st;
+        st.fps = 59.8; st.worst_ms = 22; st.cores = 4.6; st.cpu_temp = 62; st.soc_temp = 58; st.free_mib = 1536;
+        st.history = history(59.5, 41, 3, 1.5);
+        scene("hud_60_fine", hud, &st, [] {});
+    }
+    {
+        Ps4Hook::HudStats st;
+        st.fps = 24.3; st.worst_ms = 96; st.cores = 7.4; st.cpu_temp = 84; st.soc_temp = 79; st.free_mib = 240;
+        st.history = history(27, 12, 6, 8);
+        scene("hud_30_struggling", hud, &st, [] {});
+    }
+    {
+        Ps4Hook::HudStats st;
+        st.fps = 30.0; st.worst_ms = 36; st.cores = 3.1; st.cpu_temp = -1; st.soc_temp = -1; st.free_mib = 880;
+        st.history = history(30, 24, 2, 0.6);
+        Ps4Hook::Settings small = hud;
+        small.hud_small = true;
+        small.hud_right = true;
+        scene("hud_small_right", small, &st, [] {});
+        Ps4Hook::Settings en = hud;
+        en.portuguese = false;
+        scene("hud_30_english", en, &st, [] {});
+    }
+    {
+        Ps4Hook::Settings s = hud;
+        s.hud = false;
+        scene("panel_menu_pt", s, nullptr, [] {
+            using namespace Ps4Hook;
+            const std::string on(1, PanelValueOn), off(1, PanelValueOff);
+            ShowPanel("Menu do emulador\tEden PS4 0.9.5",
+                      {"Continuar", "HUD de desempenho\t" + on + "ligado", "Limite de velocidade\t" + on + "ligado",
+                       "Aviso de shaders e memoria\t" + off + "desligado", "Reiniciar o jogo",
+                       "Sair do jogo (volta ao menu de jogos)"},
+                      1, "Cima/Baixo: escolher   X: confirmar   O: voltar");
+        });
+        scene("panel_menu_en", s, nullptr, [] {
+            using namespace Ps4Hook;
+            const std::string on(1, PanelValueOn), off(1, PanelValueOff);
+            ShowPanel("Emulator menu\tEden PS4 0.9.5",
+                      {"Continue", "Performance HUD\t" + off + "off", "Speed limit\t" + on + "on", "Shader and memory notice\t" + on + "on",
+                       "Restart the game", "Exit game (back to the game list)"},
+                      4, "Up/Down: choose   X: confirm   O: back");
+        });
+        scene("panel_memory_alert", s, nullptr, [] {
+            Ps4Hook::ShowPanel("Memoria critica: 212 MiB livres",
+                               {"Continuar assim mesmo (pode travar)", "Reiniciar o jogo (libera a memoria)", "Sair do jogo (volta ao menu de jogos)"}, 1,
+                               "O jogo foi pausado antes de a memoria acabar.   X: confirmar");
+        });
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc >= 3 && std::strcmp(argv[1], "--render") == 0) {
+        return RenderPictures(argv[2]);
+    }
     constexpr std::uint32_t ARGB = 0x80000000u, ABGR = 0x80002200u;
     {
         Frames f(ABGR);
@@ -525,8 +653,8 @@ int main() {
         Ps4Hook::Pump();
         const std::vector<std::uint32_t> good(f.buf[1]);
         const auto same = [&](int b) { // the HUD box only (the rest of the buffer is the game's business)
-            for (int y = 40; y < 40 + 172; ++y) {
-                if (!std::equal(f.buf[b].begin() + y * Frames3::W + 40, f.buf[b].begin() + y * Frames3::W + 40 + 496,
+            for (int y = 40; y < 40 + 200; ++y) {
+                if (!std::equal(f.buf[b].begin() + y * Frames3::W + 40, f.buf[b].begin() + y * Frames3::W + 40 + 400,
                                 good.begin() + y * Frames3::W + 40)) {
                     return false;
                 }
@@ -534,8 +662,8 @@ int main() {
             return true;
         };
         const auto band = [&](int b) {
-            for (int y = 70; y < 74; ++y) { // local rows 30-33 of the HUD box: probe rows are 21, 85 and 149
-                std::fill(f.buf[b].begin() + y * Frames3::W + 40, f.buf[b].begin() + y * Frames3::W + 40 + 496, 0xFF202020u);
+            for (int y = 70; y < 74; ++y) { // local rows 30-33 of the HUD box: probe rows are 24, 99 and 174
+                std::fill(f.buf[b].begin() + y * Frames3::W + 40, f.buf[b].begin() + y * Frames3::W + 40 + 400, 0xFF202020u);
             }
         };
         band(1);
@@ -778,6 +906,59 @@ int main() {
         Check(Ps4Hook::LastStall().count == st.count, "since last flip: a freeze that has not ended is not counted yet");
     }
 
+    {
+        // 0.9.5 zip 5: the new HUD (status bar and graph) and the panel's rows with values and key caps.
+        constexpr std::uint32_t ARGB = 0x80000000u;
+        const auto pixel = [](const Frames3& g, int x, int y) { return g.buf[0][size_t(y) * Frames3::W + size_t(x)]; };
+        Ps4Hook::Settings s;
+        s.hud = true;
+        s.swap_colours = false;
+        Ps4Hook::Arm(s, false);
+        Frames3 f(ARGB);
+        __wrap_sceVideoOutRegisterBuffers(41, 0, f.ptrs, 3, f.attr);
+        Ps4Hook::HudStats good;
+        good.fps = 59.8;
+        good.cores = 3;
+        good.free_mib = 1500;
+        good.history.assign(60, 59.0f);
+        Ps4Hook::SetHudStatsForTest(good);
+        __wrap_sceVideoOutSubmitFlip(41, 0, 1, 0);
+        Ps4Hook::Pump();
+        Check(pixel(f, 41, 100) == 0xFF4CD964u, "HUD: the status bar at the left is green for a game that holds 60");
+        bool graph_green = false;
+        for (int y = 40; y < 240; ++y) {
+            for (int x = 52; x < 440; ++x) {
+                graph_green = graph_green || (y > 100 && pixel(f, x, y) == 0xFF4CD964u);
+            }
+        }
+        Check(graph_green, "HUD: the graph has green bars");
+        Ps4Hook::HudStats bad = good;
+        bad.fps = 11.0;
+        bad.history.assign(60, 11.0f);
+        Ps4Hook::SetHudStatsForTest(bad);
+        Ps4Hook::Pump();
+        Check(pixel(f, 41, 100) == 0xFFFF5A52u && Ps4Hook::GetKeepAliveStats().stamps_content >= 6,
+              "HUD: new numbers redraw it (red bar for 11 fps) into every buffer");
+        Ps4Hook::HudStats thirty = good;
+        thirty.fps = 29.5;
+        thirty.history.assign(60, 29.5f);
+        Ps4Hook::SetHudStatsForTest(thirty);
+        Ps4Hook::Pump();
+        Check(pixel(f, 41, 100) == 0xFF4CD964u, "HUD: a game that holds 30 is green too (the target is read from the best second seen)");
+
+        const std::string on(1, Ps4Hook::PanelValueOn), off(1, Ps4Hook::PanelValueOff);
+        Ps4Hook::ShowPanel("Menu\tnote", {"Continue", "HUD\t" + on + "on", "Speed\t" + off + "off"}, 1, "Up/Down: choose   X: confirm");
+        Ps4Hook::Pump();
+        bool pill_on = false, pill_off = false, cap = false, teal = false;
+        for (std::uint32_t p : f.buf[0]) {
+            pill_on = pill_on || p == 0xFF2AA85Fu;   // the chosen row's switch that is on
+            pill_off = pill_off || p == 0xFF3A3F55u; // the other row's switch that is off
+            cap = cap || p == 0xFF2E3A66u;           // a key cap
+            teal = teal || p == 0xFF2DD4C4u;         // the title and the bar of the chosen row
+        }
+        Check(pill_on && pill_off && cap && teal, "panel: value pills (on / off), key caps and the accent colour are drawn");
+        Ps4Hook::HidePanel();
+    }
     std::printf(g_failures == 0 ? "video hook test: PASSED\n" : "video hook test: FAILED\n");
     return g_failures == 0 ? 0 : 1;
 }

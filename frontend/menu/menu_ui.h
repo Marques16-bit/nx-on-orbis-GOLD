@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -16,6 +17,7 @@
 
 #include "menu/image_decode.h"
 #include "menu/menu_canvas.h"
+#include "menu/menu_sound.h"
 #include "menu/settings_model.h"
 
 namespace Menu {
@@ -108,6 +110,11 @@ public:
     void Draw(Canvas& canvas) const;
 
     const MenuResult& Result() const { return result_; }
+    /// 0.9.5 (zip 5): the sounds the steps since the last call asked for, each once, in order (the console side plays them), and how the menu's
+    /// audio is set now (settings.txt: menu_audio, menu_volume). The volume is 0 to 1.
+    std::vector<SoundId> TakeSounds() { return std::exchange(sounds_, {}); }
+    AudioMode Audio() const;
+    float Volume() const;
     int Tab() const { return tab_; }
     void SetTab(int tab);
     /// 0.9.5: the tabs that are shown, in the order L1/R1 walk them (the LOG tab is not there in a public build and the
@@ -132,6 +139,12 @@ public:
 
 private:
     Lang lang() const { return file_.Language(); }
+    /// Asks for a sound. A step can ask for a few (a button and the repeat), never two game-start chimes, and never a long queue.
+    void Sound(SoundId id) {
+        if (sounds_.size() < 4 && !(id == SoundId::Play && std::find(sounds_.begin(), sounds_.end(), id) != sounds_.end())) {
+            sounds_.push_back(id);
+        }
+    }
     const char* T(const char* pt, const char* en) const { return lang() == Lang::Pt ? pt : en; }
     int RowCount(int tab) const;
     const Option* OptionAt(int tab, int row) const;
@@ -200,6 +213,7 @@ private:
     int log_source_ = 0; // LOG tab: 0 the previous session, 1 this one
     int save_state_ = 0; // 0 nothing saved yet, 1 the last save worked, 2 it failed
     bool started_ = false;
+    std::vector<SoundId> sounds_;
 
     std::uint32_t previous_ = 0;
     std::uint64_t repeat_at_ = 0;

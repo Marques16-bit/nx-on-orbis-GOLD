@@ -108,6 +108,11 @@ struct State {
     double fps = 0, cores = 0;
     long cpu_temp = -1, soc_temp = -1;
     std::uint64_t free_mib = 0;
+    // 0.9.5 zip 5: the HUD's graph (one value per second, oldest first) and the longest flip gap of the last second.
+    std::vector<float> fps_history;
+    double worst_ms = 0;
+    std::uint64_t gap_max_window_us = 0;
+    bool stats_frozen = false;         // the host test set the numbers by hand
     double window_start = 0, cpu_start = 0;
     std::uint64_t window_flips = 0;
     // 0.7.7 fix: the buffer that was just flipped is the one on screen; it is written again for a while.
@@ -170,7 +175,18 @@ void FillRect(const State& s, Surface& sf, int x, int y, int w, int h, std::uint
     }
 }
 
-/// Text on a flat background colour; `half` draws it at half size.
+/// A colour (0x00RRGGBB) read back from a pixel of the screen format.
+std::uint32_t Rgb(const State& s, std::uint32_t pixel) {
+    if (s.format_used == FormatA8B8G8R8) {
+        pixel = (pixel & 0x0000FF00u) | ((pixel & 0xFF) << 16) | ((pixel >> 16) & 0xFF);
+    }
+    return pixel & 0x00FFFFFFu;
+}
+
+/// As the background of DrawText: draw over what is already in the bitmap (a gradient, a bar).
+constexpr std::uint32_t OverBackground = 0xFF000000u;
+
+/// Text on a flat background colour (or OverBackground); `half` draws it at half size.
 int DrawText(const State& s, Surface& sf, int x, int y, std::string_view text, std::uint32_t fg,
              std::uint32_t bg, bool half) {
     const int cell_w = half ? Menu::GlyphWidth / 2 : Menu::GlyphWidth;
@@ -195,7 +211,14 @@ int DrawText(const State& s, Surface& sf, int x, int y, std::string_view text, s
                 } else {
                     coverage = glyph[row * Menu::GlyphWidth + col];
                 }
-                sf.base[size_t(py) * size_t(sf.pitch) + size_t(px)] = Pixel(s, Mix(bg, fg, coverage));
+                std::uint32_t& dst = sf.base[size_t(py) * size_t(sf.pitch) + size_t(px)];
+                if ((bg & OverBackground) != 0) {
+                    if (coverage != 0) {
+                        dst = Pixel(s, Mix(Rgb(s, dst), fg, coverage));
+                    }
+                } else {
+                    dst = Pixel(s, Mix(bg, fg, coverage));
+                }
             }
         }
         pen += cell_w;
@@ -239,7 +262,7 @@ void RefreshStats() {
     {
         std::lock_guard lock{s.mutex};
         flips = s.flips;
-        hud = s.hud;
+        hud = s.hud && !s.stats_frozen;
     }
     if (!hud) {
         // HUD off: no call to the system at all (clocks, temperatures, memory). The window starts
@@ -272,37 +295,167 @@ void RefreshStats() {
     s.cpu_temp = scratch.cpu_temp;
     s.soc_temp = scratch.soc_temp;
     s.free_mib = free_mib;
+    s.worst_ms = double(s.gap_max_window_us) / 1000.0;
+    s.gap_max_window_us = 0;
+    s.fps_history.push_back(float(fps));
+    if (s.fps_history.size() > 60) {
+        s.fps_history.erase(s.fps_history.begin(), s.fps_history.end() - 60);
+    }
     s.element[ElHud].built = false; // new numbers: the bitmap is made again
 }
 
 // ---------------------------------------------------------------- the elements
 
-/// The HUD: four lines in a box, at the top left or right.
-void BuildHud(State& s) {
-    constexpr int Cells = 24;
-    char line[4][48];
-    std::snprintf(line[0], sizeof(line[0]), "FPS %.1f  (%.0f ms)", s.fps, s.fps > 0 ? 1000.0 / s.fps : 0.0);
-    std::snprintf(line[1], sizeof(line[1]), "CPU %.1f nucleos de 8", s.cores);
-    std::snprintf(line[2], sizeof(line[2]), "MEM livre %llu MiB", static_cast<unsigned long long>(s.free_mib));
-    if (s.cpu_temp >= 0 || s.soc_temp >= 0) {
-        std::snprintf(line[3], sizeof(line[3]), "TEMP CPU %ld  SoC %ld C", s.cpu_temp, s.soc_temp);
-    } else {
-        std::snprintf(line[3], sizeof(line[3]), "TEMP --");
+std::uint32_t Lerp(std::uint32_t a, std::uint32_t b, int t, int n) {
+    std::uint32_t out = 0;
+    for (int shift : {16, 8, 0}) {
+        const int x = int((a >> shift) & 0xFF), y = int((b >> shift) & 0xFF);
+        out |= std::uint32_t(x + (y - x) * t / std::max(n, 1)) << shift;
     }
-    const bool half = s.settings.hud_small;
-    const int cell_w = half ? Menu::GlyphWidth / 2 : Menu::GlyphWidth;
-    const int cell_h = half ? Menu::GlyphHeight / 2 : Menu::GlyphHeight;
-    const int box_w = Cells * cell_w + 16, box_h = 4 * cell_h + 12;
+    return out;
+}
+
+/// A rectangle that goes from colour `a` (left) to `b` (right).
+void FillGradientH(const State& s, Surface& sf, int x, int y, int w, int h, std::uint32_t a, std::uint32_t b) {
+    for (int i = 0; i < w; ++i) {
+        FillRect(s, sf, x + i, y, 1, h, Lerp(a, b, i, std::max(w - 1, 1)));
+    }
+}
+
+/// A rectangle that goes from colour `a` (top) to `b` (bottom).
+void FillGradientV(const State& s, Surface& sf, int x, int y, int w, int h, std::uint32_t a, std::uint32_t b) {
+    for (int j = 0; j < h; ++j) {
+        FillRect(s, sf, x, y + j, w, 1, Lerp(a, b, j, std::max(h - 1, 1)));
+    }
+}
+
+/// Width in pixels of text drawn at full or half size.
+int TextPixels(std::string_view text, bool half) {
+    return Menu::TextCells(std::string(text)) * (half ? Menu::GlyphWidth / 2 : Menu::GlyphWidth);
+}
+
+constexpr std::uint32_t HudGood = 0x4CD964, HudWarn = 0xFFC83D, HudBad = 0xFF5A52;
+
+/// The colour of a rate against what the game aims at (30 or 60).
+std::uint32_t RateColour(double fps, double target) {
+    const double ratio = target > 0 ? fps / target : 1.0;
+    return ratio >= 0.92 ? HudGood : ratio >= 0.6 ? HudWarn : HudBad;
+}
+
+/// What the game aims at, from the best second seen: 60 for a game that ever gets near it, else 30, else 20.
+double TargetRate(const std::vector<float>& history, double now) {
+    double peak = now;
+    for (float v : history) {
+        peak = std::max(peak, double(v));
+    }
+    return peak > 40 ? 60.0 : peak > 20 ? 30.0 : 20.0;
+}
+
+/// The HUD (0.9.5 zip 5): the rate in a colour that says whether the game holds its target, the time of a frame
+/// and the worst gap of the last second, a graph of the last minute, the load of the cores, the memory left and
+/// the temperatures. 400 x 200 pixels, or 300 x 124 in the small size.
+void BuildHud(State& s) {
+    const bool small = s.settings.hud_small;
+    const bool pt = s.settings.portuguese;
+    const int th = Menu::GlyphHeight / 2; // the small text is 10 x 20
+    const int box_w = small ? 300 : 400;
+    const int pad = 12;
+    const int bar_w = small ? 4 : 6, bars = 60;
+    const int graph_h = small ? 36 : 64;
+    const int top_h = small ? th : Menu::GlyphHeight;
+    const int box_h = (small ? 8 : 10) + top_h + (small ? 4 : 6) + graph_h + (small ? 6 : 8) + (small ? 2 : 3) * 22 + 6;
     const int x = s.settings.hud_right ? int(s.width) - box_w - 40 : 40;
     const int y = 40;
-    constexpr std::uint32_t Back = 0x101830, Fore = 0xE8F0FF;
+    constexpr std::uint32_t Back = 0x101830, Fore = 0xE8F0FF, Dim = 0x8FA0C8, Well = 0x0A1020, Guide = 0x2A3C70;
+
+    const double target = TargetRate(s.fps_history, s.fps);
+    const std::uint32_t status = RateColour(s.fps, target);
+
     Element& e = s.element[ElHud];
     e.rect = {x, y, box_w, box_h};
     e.px.assign(size_t(box_w) * size_t(box_h), Pixel(s, Back));
     Surface sf{e.px.data(), box_w, box_w, box_h, x, y};
-    for (int i = 0; i < 4; ++i) {
-        DrawText(s, sf, x + 8, y + 6 + i * cell_h, FitCells(line[i], Cells), i == 3 && s.cpu_temp > 80 ? 0xFF6060 : Fore, Back, half);
+    FillRect(s, sf, x, y, 4, box_h, status); // the bar at the left says how it is going
+
+    const int left = x + 4 + pad;
+    int cy = y + (small ? 8 : 10);
+    char text[64];
+    const double frame_ms = s.fps > 0 ? 1000.0 / s.fps : 0.0;
+    if (small) {
+        std::snprintf(text, sizeof(text), "%.1f", s.fps);
+        int pen = left + DrawText(s, sf, left, cy, text, status, Back, true);
+        pen += DrawText(s, sf, pen, cy, " FPS ", Dim, Back, true);
+        std::snprintf(text, sizeof(text), "%.1f ms", frame_ms);
+        pen += DrawText(s, sf, pen, cy, text, Fore, Back, true);
+        std::snprintf(text, sizeof(text), pt ? "  pior %.0f" : "  worst %.0f", s.worst_ms);
+        DrawText(s, sf, pen, cy, text, s.worst_ms > 60 ? HudBad : s.worst_ms > 40 ? HudWarn : Dim, Back, true);
+    } else {
+        std::snprintf(text, sizeof(text), s.fps >= 99.5 ? "%.0f" : "%.1f", s.fps);
+        const int used = DrawText(s, sf, left, cy, text, status, Back, false);
+        DrawText(s, sf, left + used + 6, cy + 18, "FPS", Dim, Back, true);
+        std::snprintf(text, sizeof(text), "%.1f ms", frame_ms);
+        DrawText(s, sf, x + box_w - pad - TextPixels(text, true), cy, text, Fore, Back, true);
+        std::snprintf(text, sizeof(text), pt ? "pior %.0f ms" : "worst %.0f ms", s.worst_ms);
+        DrawText(s, sf, x + box_w - pad - TextPixels(text, true), cy + 20, text,
+                 s.worst_ms > 60 ? HudBad : s.worst_ms > 40 ? HudWarn : Dim, Back, true);
     }
+    cy += top_h + (small ? 4 : 6);
+
+    // The graph: one bar per second, the newest at the right, the target drawn as a line.
+    const int graph_w = bars * bar_w;
+    const int gx = left;
+    FillRect(s, sf, gx - 2, cy, graph_w + 4, graph_h, Well);
+    double scale = std::max(target * 1.25, 1.0);
+    for (float v : s.fps_history) {
+        scale = std::max(scale, double(v));
+    }
+    const int guide_y = cy + graph_h - 1 - int(std::min(target / scale, 1.0) * (graph_h - 2));
+    FillRect(s, sf, gx - 2, guide_y, graph_w + 4, 1, Guide);
+    const int have = std::min<int>(int(s.fps_history.size()), bars);
+    for (int i = 0; i < have; ++i) {
+        const double v = double(s.fps_history[s.fps_history.size() - size_t(have) + size_t(i)]);
+        const int bh = std::clamp(int(v / scale * (graph_h - 2) + 0.5), v > 0 ? 1 : 0, graph_h - 2);
+        const int bx = gx + (bars - have + i) * bar_w;
+        FillRect(s, sf, bx, cy + graph_h - 1 - bh, bar_w - 1, bh, RateColour(v, target));
+    }
+    cy += graph_h + (small ? 6 : 8);
+
+    // CPU load: a bar and the number of busy cores.
+    const double load = std::clamp(s.cores / 8.0, 0.0, 1.0);
+    const std::uint32_t load_colour = load < 0.6 ? HudGood : load < 0.85 ? HudWarn : HudBad;
+    const auto draw_load = [&](int lx, int ly, int bar_len) {
+        int pen = lx + DrawText(s, sf, lx, ly, "CPU ", Dim, Back, true);
+        FillRect(s, sf, pen, ly + 5, bar_len, 10, Well);
+        FillRect(s, sf, pen, ly + 5, int(load * bar_len + 0.5), 10, load_colour);
+        pen += bar_len + 6;
+        std::snprintf(text, sizeof(text), "%.1f/8", s.cores);
+        return pen + DrawText(s, sf, pen, ly, text, Fore, Back, true);
+    };
+    const std::uint32_t mem_colour = s.free_mib >= 600 ? Fore : s.free_mib >= 300 ? HudWarn : HudBad;
+    const auto mem_text = [&](bool short_form) {
+        std::snprintf(text, sizeof(text), short_form ? "RAM %llu MiB" : (pt ? "RAM %llu MiB livre" : "RAM %llu MiB free"),
+                      static_cast<unsigned long long>(s.free_mib));
+    };
+    if (small) {
+        const int end = draw_load(left, cy, 40);
+        mem_text(true);
+        DrawText(s, sf, end + 10, cy, text, mem_colour, Back, true);
+        cy += 22;
+    } else {
+        draw_load(left, cy, 150);
+        cy += 22;
+        mem_text(false);
+        DrawText(s, sf, left, cy, text, mem_colour, Back, true);
+        cy += 22;
+    }
+    const long hottest = std::max(s.cpu_temp, s.soc_temp);
+    const std::uint32_t temp_colour = hottest > 85 ? HudBad : hottest > 75 ? HudWarn : Fore;
+    if (s.cpu_temp >= 0 || s.soc_temp >= 0) {
+        std::snprintf(text, sizeof(text), "TEMP  CPU %ld C   SoC %ld C", s.cpu_temp, s.soc_temp);
+    } else {
+        std::snprintf(text, sizeof(text), "TEMP  --");
+    }
+    DrawText(s, sf, left, cy, text, temp_colour, Back, true);
     e.built = true;
     ++e.version;
 }
@@ -323,36 +476,133 @@ void BuildNotice(State& s) {
     ++e.version;
 }
 
-/// The pause menu: a framed box in the middle of the screen.
+/// The pause menu (0.9.5 zip 5): a framed card in the middle of the screen. A title band with the name at the left and a
+/// note at the right, one row per line (the chosen row has a bar and a lighter background; a "label<TAB>value" row has its
+/// value in a pill at the right), and key caps at the bottom. See video_hook.h for the text conventions.
 void BuildPanel(State& s) {
-    const std::string& title = s.panel_title;
-    const std::vector<std::string>& lines = s.panel_lines;
-    const int selected = s.panel_selected;
-    const std::string& footer = s.panel_footer;
-    int cells = Menu::TextCells(title);
-    for (const std::string& l : lines) {
-        cells = std::max(cells, Menu::TextCells(l) + 4);
+    std::string title = s.panel_title, note;
+    if (const size_t tab = title.find('\t'); tab != std::string::npos) {
+        note = title.substr(tab + 1);
+        title.resize(tab);
     }
-    cells = std::max(cells, Menu::TextCells(footer));
+    struct Row {
+        std::string label, value;
+        int kind = 0; // 0 plain, 1 on, 2 off
+    };
+    std::vector<Row> rows;
+    int cells = Menu::TextCells(title) + (note.empty() ? 0 : (TextPixels(note, true) + 19) / Menu::GlyphWidth + 3);
+    for (const std::string& l : s.panel_lines) {
+        Row row;
+        if (const size_t tab = l.find('\t'); tab != std::string::npos) {
+            row.label = l.substr(0, tab);
+            row.value = l.substr(tab + 1);
+            if (!row.value.empty() && (row.value[0] == PanelValueOn || row.value[0] == PanelValueOff)) {
+                row.kind = row.value[0] == PanelValueOn ? 1 : 2;
+                row.value.erase(0, 1);
+            }
+        } else {
+            row.label = l;
+        }
+        cells = std::max(cells, Menu::TextCells(row.label) + (row.value.empty() ? 0 : Menu::TextCells(row.value) + 5) + 4);
+        rows.push_back(std::move(row));
+    }
+    // The footer: parts separated by three spaces, "KEY: words" drawn as a key cap and its words.
+    struct Part {
+        std::string key, words;
+    };
+    std::vector<Part> parts;
+    for (size_t i = 0; i < s.panel_footer.size();) {
+        size_t end = s.panel_footer.find("   ", i);
+        if (end == std::string::npos) {
+            end = s.panel_footer.size();
+        }
+        const std::string text = s.panel_footer.substr(i, end - i);
+        Part part;
+        if (const size_t colon = text.find(": "); colon != std::string::npos && colon <= 12) {
+            part.key = text.substr(0, colon);
+            part.words = text.substr(colon + 2);
+        } else {
+            part.words = text;
+        }
+        if (!part.key.empty() || !part.words.empty()) {
+            parts.push_back(std::move(part));
+        }
+        i = end;
+        while (i < s.panel_footer.size() && s.panel_footer[i] == ' ') {
+            ++i;
+        }
+    }
+    const int half_w = Menu::GlyphWidth / 2, half_h = Menu::GlyphHeight / 2;
+    int footer_px = 0;
+    for (const Part& part : parts) {
+        footer_px += (part.key.empty() ? 0 : TextPixels(part.key, true) + 16 + 8) + TextPixels(part.words, true) + 24;
+    }
+    cells = std::max(cells, (std::max(footer_px - 24, 0) + Menu::GlyphWidth - 1) / Menu::GlyphWidth);
     s.panel_cells = std::max(s.panel_cells, cells);
-    s.panel_rows = std::max(s.panel_rows, int(lines.size()));
+    s.panel_rows = std::max(s.panel_rows, int(rows.size()));
     const int w = std::min<int>(s.panel_cells * Menu::GlyphWidth + 80, int(s.width) - 80);
     const int h = s.panel_rows * 56 + 150;
     const int x = (int(s.width) - w) / 2, y = (int(s.height) - h) / 2;
-    constexpr std::uint32_t Back = 0x141C38, Edge = 0x4A86FF, Sel = 0x2B4FA6, Text = 0xEAF0FF, Dim = 0x8FA0C8;
+    // The accent colours follow the menu's colour theme (settings.txt: menu_theme; the blue theme is 0x4A86FF and 0x2DD4C4).
+    constexpr std::uint32_t Back = 0x141C38, Text = 0xEAF0FF, Dim = 0x8FA0C8;
+    const std::uint32_t Edge = Menu::Color::Accent & 0x00FFFFFFu, Teal = Menu::Color::Teal & 0x00FFFFFFu;
+    const std::uint32_t Chosen = Menu::Color::Selected & 0x00FFFFFFu, ChosenEnd = Lerp(Chosen, Back, 4, 10);
     Element& e = s.element[ElPanel];
     e.rect = {x - 4, y - 4, w + 8, h + 8};
     e.px.assign(size_t(e.rect.w) * size_t(e.rect.h), Pixel(s, Edge));
     Surface sf{e.px.data(), e.rect.w, e.rect.w, e.rect.h, e.rect.x, e.rect.y};
     FillRect(s, sf, x, y, w, h, Back);
-    DrawText(s, sf, x + 40, y + 20, title, 0x2DD4C4, Back, false);
-    for (size_t i = 0; i < lines.size(); ++i) {
-        const int ly = y + 84 + int(i) * 56;
-        const bool on = int(i) == selected;
-        FillRect(s, sf, x + 20, ly - 4, w - 40, 52, on ? Sel : Back);
-        DrawText(s, sf, x + 40, ly, lines[i], on ? 0xFFFFFF : Text, on ? Sel : Back, false);
+
+    // The title band.
+    FillGradientV(s, sf, x, y, w, 72, Lerp(Back, Edge, 2, 10), Back);
+    FillRect(s, sf, x + 40, y + 66, 120, 3, Teal);
+    FillRect(s, sf, x + 160, y + 66, 60, 3, Edge);
+    DrawText(s, sf, x + 40, y + 14, title, Teal, OverBackground, false);
+    if (!note.empty()) {
+        DrawText(s, sf, x + w - 40 - TextPixels(note, true), y + 30, note, Dim, OverBackground, true);
     }
-    DrawText(s, sf, x + 40, y + h - 52, footer, Dim, Back, false);
+
+    // The rows.
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const Row& row = rows[i];
+        const int ly = y + 84 + int(i) * 56;
+        const bool on = int(i) == s.panel_selected;
+        if (on) {
+            FillGradientH(s, sf, x + 20, ly - 4, w - 40, 52, Chosen, ChosenEnd);
+            FillRect(s, sf, x + 20, ly - 4, 6, 52, Teal);
+        }
+        DrawText(s, sf, x + 44, ly, row.label, on ? 0xFFFFFF : Text, OverBackground, false);
+        if (!row.value.empty()) {
+            const int vw = TextPixels(row.value, false);
+            const int px = x + w - 40 - vw - 12;
+            std::uint32_t pill = on ? Lerp(Chosen, 0xFFFFFF, 1, 8) : Lerp(Back, Chosen, 1, 2), ink = Text;
+            if (row.kind == 1) {
+                pill = on ? 0x2AA85F : 0x1F7A45;
+                ink = 0xFFFFFF;
+            } else if (row.kind == 2) {
+                pill = on ? 0x58607E : 0x3A3F55;
+                ink = 0xC8D0E8;
+            }
+            FillRect(s, sf, px, ly + 1, vw + 24, 42, pill);
+            DrawText(s, sf, px + 12, ly + 2, row.value, ink, pill, false);
+        }
+    }
+
+    // The key caps.
+    FillRect(s, sf, x + 40, y + h - 62, w - 80, 1, 0x2A3C70);
+    int fx = x + 40;
+    const int fy = y + h - 44;
+    for (const Part& part : parts) {
+        if (!part.key.empty()) {
+            const int cap = TextPixels(part.key, true) + 16;
+            FillRect(s, sf, fx, fy, cap, half_h + 8, 0x7C8FC8);
+            FillRect(s, sf, fx + 1, fy + 1, cap - 2, half_h + 6, 0x2E3A66);
+            DrawText(s, sf, fx + 8, fy + 4, part.key, 0xFFFFFF, 0x2E3A66, true);
+            fx += cap + 8;
+        }
+        fx += DrawText(s, sf, fx, fy + 4, part.words, Dim, Back, true) + 24;
+    }
+    (void)half_w;
     e.built = true;
     ++e.version;
 }
@@ -700,6 +950,7 @@ void Arm(const Settings& settings, bool start_worker) {
         s.notice_cells = 0;
         s.panel_cells = s.panel_rows = 0;
         s.ka = KeepAliveStats{};
+        s.stats_frozen = false;
         s.submit_us = 0;
         s.looked_flip = ~std::uint64_t{0};
         s.restamp_us = 0;
@@ -744,6 +995,20 @@ bool SaveScreenshot(const std::string& path, std::string* why) {
         }
     }
     return Ps4Shot::WriteBmp(path, copy.data(), width, height, red_low, why);
+}
+
+void SetHudStatsForTest(const HudStats& stats) {
+    State& s = S();
+    std::lock_guard lock{s.mutex};
+    s.stats_frozen = true;
+    s.fps = stats.fps;
+    s.worst_ms = stats.worst_ms;
+    s.cores = stats.cores;
+    s.cpu_temp = stats.cpu_temp;
+    s.soc_temp = stats.soc_temp;
+    s.free_mib = stats.free_mib;
+    s.fps_history = stats.history;
+    s.element[ElHud].built = false;
 }
 
 void SetHud(bool on) {
@@ -956,6 +1221,7 @@ extern "C" int32_t __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t index, u
                 s.tl.over_50ms += gap > 50000;
                 s.tl.over_100ms += gap > 100000;
                 s.tl.over_250ms += gap > 250000;
+                s.gap_max_window_us = std::max(s.gap_max_window_us, gap);
                 if (gap >= StallGapUs) {
                     ++s.stall.count;
                     s.stall.gap_us = gap;

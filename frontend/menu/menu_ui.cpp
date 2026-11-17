@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include "menu/menu_ui.h"
 
@@ -707,19 +708,26 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
             }
         }
         SetTab(tabs_[size_t((at + delta + n) % n)]);
+        Sound(SoundId::Tab);
     };
     if (game_cfg_open_) {
         // 0.9.5: a game's own settings: its own buttons; the tabs wait until it is closed.
         if (pressed & (Pad::Circle | Pad::R2)) {
             CloseGameConfig();
+            Sound(SoundId::Back);
         } else if (pressed & Pad::Cross) {
             ActivateGameConfig();
+            Sound(SoundId::Select);
         } else if (pressed & Pad::Triangle) {
             ClearGameOption();
+            Sound(SoundId::Select);
         }
     } else if (pressed & Pad::R2) {
         if (tab_ == TabGames) {
             OpenGameConfig();
+            if (game_cfg_open_) {
+                Sound(SoundId::Select);
+            }
         }
     } else if (pressed & Pad::L1) {
         step_tab(-1);
@@ -728,13 +736,16 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
     }
     if (!game_cfg_open_ && (pressed & Pad::Cross)) {
         Activate();
+        Sound(result_.kind != MenuResult::Kind::None ? SoundId::Play : SoundId::Select);
     }
     if (!game_cfg_open_ && (pressed & Pad::Circle)) {
         if (tab_ != TabGames) {
             SetTab(TabGames);
+            Sound(SoundId::Back);
         }
     }
     if (!game_cfg_open_ && (pressed & Pad::Triangle)) {
+        Sound(SoundId::Select);
         if (tab_ == TabControls) {
             static const char* const keys[4] = {"player1_type", "player2_type", "player3_type", "player4_type"};
             if (const Option* option = FindOption(keys[selected_[TabControls]])) {
@@ -755,6 +766,7 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
     if ((pressed & Pad::Options) && !games_.empty()) {
         result_.kind = MenuResult::Kind::Play; // the game last highlighted, from any tab
         result_.game = last_game_;
+        Sound(SoundId::Play);
     }
 
     // Directions: once when pressed, then repeating while held (0.4 s, then every 0.11 s).
@@ -770,6 +782,7 @@ bool MenuUi::Update(std::uint32_t held, std::uint64_t now_us) {
     for (std::uint32_t button : {Pad::Up, Pad::Down, Pad::Left, Pad::Right}) {
         if (fire & button) {
             Press(button);
+            Sound(SoundId::Move);
             break; // one direction per step
         }
     }
@@ -817,6 +830,21 @@ void MenuUi::DrawHeader(Canvas& c) const {
     }
     c.Fill(Margin, 130, 1920 - 2 * Margin, 3, Color::Panel);
     c.Fill(Margin, 130, 260, 3, Color::Accent); // a stretch of the theme colour under the title
+}
+
+AudioMode MenuUi::Audio() const {
+    const Option* option = FindOption("menu_audio");
+    const int index = option != nullptr ? file_.ChoiceIndex(*option) : 0;
+    return index == 1 ? AudioMode::Sounds : index == 2 ? AudioMode::Off : AudioMode::All;
+}
+
+float MenuUi::Volume() const {
+    const Option* option = FindOption("menu_volume");
+    if (option == nullptr) {
+        return 0.5f;
+    }
+    const int percent = std::atoi(option->choices[size_t(file_.ChoiceIndex(*option))].value);
+    return std::clamp(float(percent) / 100.0f, 0.0f, 1.0f);
 }
 
 int MenuUi::ThemeIndex() const {
@@ -1176,14 +1204,19 @@ void MenuUi::DrawSystem(Canvas& c) const {
     // Read-only facts.
     const int label_x = Margin + 46, value_x = Margin + 46 + 24 * GlyphWidth;
     const int max_cells = (1920 - Margin - value_x) / GlyphWidth;
-    int y = ContentTop + (system_options + 2) * RowHeight + 24;
-    c.Fill(Margin, y - 18, 1920 - 2 * Margin, 2, Color::Panel);
+    // 0.9.5 (zip 5): the options above took two more rows (the menu sound and its volume), so the facts are packed a little tighter,
+    // the version (it is in the header already) is not repeated, and a row that would run under the help box is left out instead of
+    // being half covered. They are in the order of what is most worth seeing.
+    constexpr int FactPitch = 34;
+    int y = ContentTop + (system_options + 2) * RowHeight + 14;
+    c.Fill(Margin, y - 10, 1920 - 2 * Margin, 2, Color::Panel);
     const auto row = [&](const char* label, const std::string& value, std::uint32_t color) {
-        c.Print(label_x, y, label, Color::Dim);
-        c.Print(value_x, y, Clip(value, max_cells), color);
-        y += 38;
+        if (y + 32 <= HelpTop) { // (the letters are about 32 px tall)
+            c.Print(label_x, y, label, Color::Dim);
+            c.Print(value_x, y, Clip(value, max_cells), color);
+        }
+        y += FactPitch;
     };
-    row(T("Versão", "Version"), info_.build_id, Color::Text);
     {
         // Can the app write in its data folder? Without it there is no boot.log and no settings.txt.
         std::string value;
@@ -1226,7 +1259,6 @@ void MenuUi::DrawSystem(Canvas& c) const {
             std::to_string(info_.free_memory_mib) + T(" MiB livres de ", " MiB free of ") + std::to_string(info_.memory_budget_mib) + " MiB (" +
                 info_.memory_tier + ")",
             Color::Text);
-        row(T("Plano de memória", "Memory plan"), info_.memory_plan, Color::Text);
     } else {
         row(T("Memória direta livre", "Free direct memory"), std::to_string(info_.free_memory_mib) + " MiB", Color::Text);
     }
@@ -1235,6 +1267,9 @@ void MenuUi::DrawSystem(Canvas& c) const {
                                            std::to_string(info_.shader_cache_mib) + T(" MiB: um por jogo, ao jogar", " MiB: one per game, filled as you play")
                                      : std::string(T("vazio: é criado e preenchido enquanto você joga (um por jogo)", "empty: made and filled as you play (one per game)")),
         info_.shader_cache_games > 0 ? Color::Good : Color::Dim);
+    if (info_.memory_budget_mib > 0) {
+        row(T("Plano de memória", "Memory plan"), info_.memory_plan, Color::Text);
+    }
     row(T("Dados e logs", "Data and logs"), info_.data_dir + "  (boot.log, mesa.log, log/)", Color::Text);
 }
 

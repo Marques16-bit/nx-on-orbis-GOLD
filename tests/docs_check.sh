@@ -209,6 +209,12 @@ check "patch 0033 is a git patch that touches only the texture cache, revalidate
 check "the controller model fit is in eden_settings.h, called from main.cpp, tested, and the CHANGELOG says Let's Go is not proven" '
     grep -q "StyleFit FitControllerStyle" frontend/eden_settings.h && grep -q "Ps4Eden::FitControllerStyle(system.HIDCore()" frontend/main.cpp &&
     grep -q "FitControllerStyle(hid, 0)" tests/eden_settings_test.cpp && grep -q "Not proven to be the cause for Let" CHANGELOG.md'
+check "the menu sounds: made by the program, the options exist and are global, the audio port is guarded by a marker, and the CHANGELOG says it is untried on a console" '
+    grep -q "MakeAmbient" frontend/menu/menu_sound.h && settings_key menu_audio && settings_key menu_volume && settings_default menu_audio all &&
+    grep "^| \`menu_audio\` |" docs/SETTINGS.md | grep -q "no (global only)" && grep -q "menu_audio.marker" frontend/menu/rom_menu.cpp &&
+    grep -q "sceAudioOutOpen(0xFF" frontend/menu/rom_menu.cpp && grep -q "audio port and .main.cpp. have never been run" CHANGELOG.md'
+check "the HUD and the pause panel of zip 5 are in the CHANGELOG and tested" '
+    grep -q "^### Fifth zip of 0.9.5" CHANGELOG.md && grep -q "BuildHud" frontend/video_hook.cpp && grep -q "BuildPanel" frontend/video_hook.cpp && grep -q "SetHudStatsForTest" tests/video_hook_test.cpp'
 check "jit_direct_table is an option, ON by default since 0.9.5, and hidden in the menu" '
     settings_key jit_direct_table && settings_default jit_direct_table on && grep "^| \`jit_direct_table\` |" docs/SETTINGS.md | grep -q "| hidden"'
 check "the 0.9.5 tiers: colour_swap hidden, cpu_clock in the TESTS tab of the test builds, resolution always shown" '

@@ -43,8 +43,8 @@ A **0.9.5** (segundo zip: **R2 num jogo abre as opções só daquele jogo**, sal
 - **Its own menu** over the PS4 video output (DualShock 4): a games list with covers read from the games themselves, and tabs
   for video, CPU and memory, advanced, system and the log; Portuguese and English; seven colour themes. Every option is saved to
   `settings.txt` at once. The full list is in [docs/SETTINGS.md](docs/SETTINGS.md) (generated from the code).
-- **In a game**, L3 + R3 opens a pause menu (continue, HUD, speed limit, exit or restart the game); an optional HUD shows FPS,
-  CPU cores in use, free direct memory and temperatures; L3 + TouchPad saves a screenshot; a notice in the corner counts
+- **In a game**, L3 + R3 opens a pause menu (continue, HUD, speed limit, exit or restart the game); an optional HUD shows FPS
+  (coloured by whether the game holds its target), a graph of the last minute, CPU cores in use, free direct memory and temperatures; L3 + TouchPad saves a screenshot; a notice in the corner counts
   the shaders being compiled and warns when memory is nearly gone.
 - **Colours**: red and blue are swapped by the video hook on the screen (`colour_swap`, on by default), which is what made
   the sky pink and the ground blue in Super Mario Maker 2.
@@ -74,7 +74,10 @@ Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **n
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
 
-## What is new in 0.9.5: a menu made for people (first, second and third zip)
+## What is new in 0.9.5: a menu made for people (first to fifth zip)
+
+**Fifth zip:** a **new HUD** (the frame rate coloured by whether the game holds its target, a graph of the last minute, CPU, memory and temperatures), a **new L3 + R3 menu** (a card with on/off pills and key caps) and **sounds and music in the menu**
+(made by the program, no files; `menu_audio` and `menu_volume` in the SYSTEM tab; the menu only, never the game). Drawn and tested on a PC only; the audio port has never been tried on a console, so it opens with a marker file that keeps the menu silent after a crash there.
 
 **Third zip:** the **extra RAM** option (`sysflex_mib`) is back in the CPU AND MEMORY tab, because some games open only with less of it (and R2 can set it for one game only). The build for everyone
 (`PUBLIC_BUILD` file in the repository root, see docs/BUILDING.md) has no log tab, no test options, no screenshots and no profiler.

@@ -20,7 +20,7 @@ TESTS tab.
 file name without its extension, letters, digits and `-` kept, the rest turned into `_`), with the same `key=value` lines as
 `settings.txt`, and applied **on top of it** when that game starts: an option the game's file does not name keeps the
 global value. The last column says which options a game's file may set. The ones that are global (`language`, `menu_theme`,
-`covers`, `memory_profile`, `show_advanced`) are skipped with a line in `boot.log`. In the R2 screen each option reads
+`menu_audio`, `menu_volume`, `covers`, `memory_profile`, `show_advanced`) are skipped with a line in `boot.log`. In the R2 screen each option reads
 `global (value)` until you pick one for the game; Triangle puts one back to global.
 
 ## CONTROLS tab
@@ -100,6 +100,8 @@ global value. The last column says which options a game's file may set. The ones
 |---|---|---|---|---|---|
 | `language` | Menu language | `pt` **(default)**, `en` | Language of this menu's texts. | yes | no (global only) |
 | `menu_theme` | Menu colour | `blue` **(default)**, `green`, `purple`, `orange`, `pink`, `red`, `grey` | Colour of the menu: blue (default), green, purple, orange, pink, red or grey. Applies at once, and to the HUD and the in-game menu too. | yes | no (global only) |
+| `menu_audio` | Menu sound | `all` **(default)**, `sounds`, `off` | Ambient music and sounds when moving, choosing, going back and starting a game. "Sounds only" drops the music; "Off" keeps the menu silent. The menu only: the game's audio does not change. If the app hangs while opening the menu's audio, it stays silent the next time (delete menu_audio.marker in the app folder to try again). | yes | no (global only) |
+| `menu_volume` | Menu volume | `20`, `35`, `50` **(default)**, `70`, `100` | The volume of the menu's music and sounds (not the game's). | yes | no (global only) |
 | `region` | Emulation region | `japan`, `usa` **(default)**, `europe`, `australia`, `china`, `korea`, `taiwan` | The console region the game sees. Use your game's own if it complains about region or opens with the wrong language or content. | yes | yes (R2) |
 
 ## ADVANCED options
@@ -130,4 +132,4 @@ that a game will open. Options a profile does not name go back to their defaults
 | More FPS (test) | `resolution=0.75`, `gpu_accuracy=low`, `reactive_flushing=off`, `sync_memory=off`, `skip_cpu_invalidation=on`, `async_presentation=on`, `anti_aliasing=none`, `anisotropy=default`, `scaling_filter=bilinear`, `astc=cpu`, `jit_cache_mib=128` | For CPU-bound games (Super Mario Maker 2's case): 0.75x resolution, low GPU accuracy, no reactive flushing or synchronised memory, skips inner CPU invalidations, shows frames from a separate thread and uses a 128 MiB JIT cache per core (4 cores take 512 MiB of direct memory when the game opens; the JIT's page lookup reuse and direct table have been on by default since 0.9.5). No extra filters. It does not promise more FPS: a light GPU helps little when the CPU is the limit. If the game hangs while opening, safe mode turns the experimental parts off for the next start. |
 | Minimum RAM (test) | `resolution=0.5`, `env:ORBIS_ARENA_MIB=1152`, `vram=conservative`, `shader_preload=256`, `driver_cache=off`, `astc=cpu`, `astc_recompress=bc3`, `memory_profile=tight`, `memory_action=pause`, `covers=thumbs`, `sysflex_mib=2048` | The most frugal setting that does not make the game too ugly: 0.5x resolution (GPU images, which live outside the arena, take a quarter), ASTC textures kept as BC3 (1/4 of the memory), 1152 MiB video arena, conservative VRAM, shader cache loaded up to ~8 MiB (what is over is kept, not deleted), no driver cache, the tight memory profile, a pause when memory turns critical and the game list with thumbnails only, and the game's RAM uses up to 2048 MiB of the system flexible memory (what the pool has, less 128 MiB; an idea from Eden4). The picture gets much softer. |
 
-61 options, 8 profiles.
+63 options, 8 profiles.

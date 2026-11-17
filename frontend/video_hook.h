@@ -45,6 +45,7 @@ struct Settings {
     bool keepalive = true;      // 0.7.6: keep the overlay alive in every buffer (false: the 0.7.3 "classic" mode)
     bool flip_stamp = true;     // keep-alive: also stamp the frame inside the wrapped flip call
     int poll_ms = 1;            // keep-alive: how often the worker checks the buffers, in milliseconds (1 to 8)
+    bool portuguese = true;     // 0.9.5 zip 5: the words on the HUD ("livre" / "free")
 };
 
 /// The settings read from settings.txt (hud, hud_size, hud_position, colour_swap, ...), until Arm().
@@ -61,6 +62,14 @@ bool Ready();
 bool SaveScreenshot(const std::string& path, std::string* why);
 void SetHud(bool on);
 bool HudOn();
+/// 0.9.5 zip 5: the numbers the HUD shows, and the text conventions of the panel.
+///   A line "label<TAB>value" is drawn with the value on the right, in a pill; a value that starts with PanelValueOn or
+///   PanelValueOff (one control character, not drawn) gets the green / grey pill of a switch.
+///   A title "title<TAB>note" has the note on the right, small.
+///   A footer is parts separated by three spaces; a part "KEY: what it does" is drawn as a key cap and its words.
+inline constexpr char PanelValueOn = '\x01';
+inline constexpr char PanelValueOff = '\x02';
+
 /// A panel over the middle of the screen: a title, lines (one highlighted, -1 for none) and a footer.
 void ShowPanel(const std::string& title, const std::vector<std::string>& lines, int selected,
                const std::string& footer);
@@ -117,6 +126,18 @@ Stall LastStall();
 /// 0.8.1: how long ago the last flip was queued, in microseconds; 0 when the hook has seen no flip yet. A freeze in
 /// progress shows up here a second before LastStall() can report it.
 std::uint64_t SinceLastFlipUs();
+
+/// What the HUD shows. Filled once a second by the worker; the host test sets it by hand.
+struct HudStats {
+    double fps = 0;
+    double worst_ms = 0;          // the longest gap between two flips in the last second
+    double cores = 0;             // busy cores of 8
+    long cpu_temp = -1, soc_temp = -1;
+    std::uint64_t free_mib = 0;
+    std::vector<float> history;   // frames per second, one per second, oldest first (the last 60 are drawn)
+};
+/// Test seam: replaces what the HUD shows (and stops the worker's refresh from overwriting it).
+void SetHudStatsForTest(const HudStats& stats);
 
 /// Test seam: replaces the clock (microseconds); nullptr puts the real one back.
 void SetClockForTest(std::uint64_t (*now_micros)());

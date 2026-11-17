@@ -739,6 +739,8 @@ void ApplyMemoryPlan() {
 ///                               memory (outside the ~4.5 GiB of direct memory), keeping 128 MiB of that pool for the
 ///                               system. 0.9.0: off by default, experimental. 0.9.1: default auto (1536 MiB, or what the
 ///                               pool has); a start after a death before drawing (safe mode) limits it to 512. Idea from Eden4.
+///   menu_audio=all|sounds|off   0.9.5 (zip 5): the menu's music and sounds (the menu only; read by rom_menu.cpp)
+///   menu_volume=20|35|50|70|100 0.9.5 (zip 5): the volume of the menu's audio, in percent
 ///   players=1|2|3|4             0.9.1: controllers given to the game (default 1). Controllers 2-4 are the other users
 ///                               logged in to the console (a second DualShock logs in as a guest on its PS button)
 ///   jit_page_reuse=on|off       0.9.2: the JIT looks a page up once for a group of nearby accesses instead of once per access
@@ -906,6 +908,10 @@ void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
             // Read by the menu code before the game list opens.
         } else if (key == "language" && (value == "pt" || value == "en")) {
             // Only the menu reads it.
+        } else if (key == "menu_audio" && (value == "all" || value == "sounds" || value == "off")) {
+            // Only the menu reads them (rom_menu.cpp); the game's audio is Eden's own.
+        } else if (key == "menu_volume" && (value == "20" || value == "35" || value == "50" || value == "70" || value == "100")) {
+            // (the same)
         } else if (key == "menu_theme" && Menu::FindOption("menu_theme") != nullptr && value.size() < 16) {
             // The menu's colour (0.7.10). The menu applies it as it draws; this is for a start with no menu
             // (nomenu.txt), so the HUD and the pause menu still get it.
@@ -1266,6 +1272,7 @@ int main() {
         } else {
             Ps4::Log("overlay: classic drawing (0.7.3), %d ms wait", hook.draw_delay_ms);
         }
+        Ps4Hook::Pending().portuguese = MenuInPortuguese(); // 0.9.5 zip 5: the HUD's words follow the menu's language
         Ps4Hook::Arm(Ps4Hook::Pending());
         if (!kPublicBuild) {
             Ps4::Log("screenshot: L3 + TouchPad saves the screen (HUD included) as %s/shots/shot_NNNN.bmp; the game pauses for a moment", Ps4::DataDir);
@@ -1438,15 +1445,20 @@ int main() {
                                pt ? "O jogo foi pausado antes de a memoria acabar.   X: confirmar" : "The game was paused before memory ran out.   X: confirm");
             return;
         }
-        const auto state = [&](bool on) { return std::string(on ? (pt ? "ligado" : "on") : (pt ? "desligado" : "off")); };
+        // 0.9.5 zip 5: "label<TAB>value" rows (the value in a green or grey pill), the version at the right of the title, key caps below.
+        const auto state = [&](const char* label_pt, const char* label_en, bool on) {
+            return std::string(pt ? label_pt : label_en) + '\t' + (on ? Ps4Hook::PanelValueOn : Ps4Hook::PanelValueOff) +
+                   (on ? (pt ? "ligado" : "on") : (pt ? "desligado" : "off"));
+        };
         const std::vector<std::string> lines = {
             pt ? "Continuar" : "Continue",
-            std::string(pt ? "HUD de desempenho: " : "Performance HUD: ") + state(Ps4Hook::HudOn()),
-            std::string(pt ? "Limite de velocidade: " : "Speed limit: ") + state(Settings::values.use_speed_limit.GetValue()),
-            std::string(pt ? "Aviso de shaders e memoria: " : "Shader and memory notice: ") + state(notice_on),
+            state("HUD de desempenho", "Performance HUD", Ps4Hook::HudOn()),
+            state("Limite de velocidade", "Speed limit", Settings::values.use_speed_limit.GetValue()),
+            state("Aviso de shaders e memoria", "Shader and memory notice", notice_on),
             pt ? "Reiniciar o jogo" : "Restart the game",
             pt ? "Sair do jogo (volta ao menu de jogos)" : "Exit game (back to the game list)"};
-        Ps4Hook::ShowPanel(pt ? "Menu do emulador" : "Emulator menu", lines, menu_sel,
+        const std::string build_id = EDEN_PS4_BUILD_ID;
+        Ps4Hook::ShowPanel(std::string(pt ? "Menu do emulador" : "Emulator menu") + "\tEden PS4 " + build_id.substr(0, build_id.find('-')), lines, menu_sel,
                            pt ? "Cima/Baixo: escolher   X: confirmar   O: voltar" : "Up/Down: choose   X: confirm   O: back");
     };
     std::uint64_t last_status = Ps4::NowUs(), last_notice = 0, last_mem_check = 0, last_timeline = Ps4::NowUs();

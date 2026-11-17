@@ -364,6 +364,20 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
   start of the header). `Read` checks every offset and size against the file size before reading, takes the first NACP title with a name (UTF-8 checked, control characters turned to spaces) and the JPEG
   (at most 4 MiB, must start `FF D8`). `main.cpp` reads it for every `.nro` of `roms/` before the covers, so the title shows even when a picture in `covers/` wins.
 
+### 0.9.5 zip 5: the HUD, the pause panel and the menu's sounds
+
+- **HUD and panel** (`frontend/video_hook.cpp`: `BuildHud`, `BuildPanel`): still one opaque bitmap per element, kept alive in every buffer by the same probes; only the pixels changed. `RefreshStats` keeps a history of the last 60 one-second
+  rates (`fps_history`) and the worst frame gap of the second (`worst_ms`, from the flip handler); `TargetRate` is 60 when the best second seen is above 40, 30 above 20, else 20; `RateColour` is green from 92% of the target, yellow from 60%, else red. The panel's rows are `label<TAB>value` strings; the values `PanelValueOn` / `PanelValueOff` are drawn as pills. `Settings::portuguese` (from `MenuInPortuguese()`) chooses the language. `SetHudStatsForTest`
+  and `tests/video_hook_test.cpp --render DIR` draw both into a fake buffer.
+- **Menu sounds** (`frontend/menu/menu_sound.h`, header only): `MakeEffect(SoundId)` and `MakeAmbient(seconds)` return 48 kHz S16 stereo samples made from sine recurrences (a bell is a sine with a quieter octave and a faster
+  fading partial; a pad is three sines with the right channel 0.24% sharp for a slow chorus); `Mix` is float and `wrap`s notes past the end of the loop and the echo is circular, so the loop has no seam (the test compares the
+  seam with the biggest step anywhere). `Mixer` holds the loop, up to 8 voices and atomics (music, effects, volume, fade); `Render` clips and never wraps; the music fades in and out over 0.6 s; `FadeOut` is a master gain to 0.
+- **Events**: `MenuUi::Update` calls `Sound(id)` at the buttons (a direction: Move; X: Select, or Play when it ended the menu; Circle out of a tab or a game's settings: Back; L1/R1: Tab; R2 opening a game's settings: Select;
+  OPTIONS: Play) and `TakeSounds()` hands them over once, at most 4 per step and never two Play. `Audio()` and `Volume()` read `menu_audio` / `menu_volume` from the settings text.
+- **Console side** (`frontend/menu/rom_menu.cpp`, `MenuAudio`): `sceAudioOutOpen(0xFF, 0, 0, 256, 48000, 1)` and a thread that calls `Mixer::Render` and `sceAudioOutOutput` (the same calls as patch 0002's sink, whose use is the tested one).
+  `libSceAudioOut` is already loaded by `LoadSystemModules` and linked (`frontend.cmake`). State shared by `shared_ptr`, threads detached, `Finish()` = chime 0.7 s + fade 0.3 s + `Close()` (stop flag, wait up to 1.5 s).
+  **This class is only syntax-checked on a PC** (`g++ -fsyntax-only` with the real header): it is the part of the zip nothing here could run.
+
 ### 0.9.5: tiers for options, the CONTROLS tab, the cached background
 
 - **Tiers** (`frontend/menu/settings_model.h`, `Tier`, `TierOf(key)`): a table of keys, not a field of `Option`, so the catalog's initialisers did not change. Mandatory options are not in any tab unless

@@ -67,7 +67,7 @@ int main() {
                 "file name without its extension, letters, digits and `-` kept, the rest turned into `_`), with the same `key=value` lines as\n"
                 "`settings.txt`, and applied **on top of it** when that game starts: an option the game's file does not name keeps the\n"
                 "global value. The last column says which options a game's file may set. The ones that are global (`language`, `menu_theme`,\n"
-                "`covers`, `memory_profile`, `show_advanced`) are skipped with a line in `boot.log`. In the R2 screen each option reads\n"
+                "`menu_audio`, `menu_volume`, `covers`, `memory_profile`, `show_advanced`) are skipped with a line in `boot.log`. In the R2 screen each option reads\n"
                 "`global (value)` until you pick one for the game; Triangle puts one back to global.\n\n");
 
     const auto& catalog = Menu::Catalog();

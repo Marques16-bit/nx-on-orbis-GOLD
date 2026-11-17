@@ -256,6 +256,16 @@ const std::vector<Option>& Catalog() {
          "Colour of the menu: blue (default), green, purple, orange, pink, red or grey. Applies at once, and to the HUD and the in-game menu too.",
          {{"blue", "Azul", "Blue"}, {"green", "Verde", "Green"}, {"purple", "Roxo", "Purple"}, {"orange", "Laranja", "Orange"},
           {"pink", "Rosa", "Pink"}, {"red", "Vermelho", "Red"}, {"grey", "Cinza", "Grey"}}, 0},
+        // 0.9.5 (zip 5): the menu's own sounds. Made by the program, no files; they stop before a game starts (the game gets the
+        // audio port). Only the menu: nothing here touches the game's audio.
+        {"menu_audio", Group::System, "Som do menu", "Menu sound",
+         "Música ambiente e sons ao mover, escolher, voltar e iniciar um jogo. \"Só sons\" tira a música; \"Desligado\" deixa o menu mudo. Só vale no menu: o áudio do jogo não muda. Se o app travar ao abrir o áudio do menu, ele fica mudo na vez seguinte (apague menu_audio.marker na pasta do app para tentar de novo).",
+         "Ambient music and sounds when moving, choosing, going back and starting a game. \"Sounds only\" drops the music; \"Off\" keeps the menu silent. The menu only: the game's audio does not change. If the app hangs while opening the menu's audio, it stays silent the next time (delete menu_audio.marker in the app folder to try again).",
+         {{"all", "Música e sons", "Music and sounds"}, {"sounds", "Só sons", "Sounds only"}, {"off", "Desligado", "Off"}}, 0},
+        {"menu_volume", Group::System, "Volume do menu", "Menu volume",
+         "O volume da música e dos sons do menu (não é o do jogo).",
+         "The volume of the menu's music and sounds (not the game's).",
+         {{"20", "20%", "20%"}, {"35", "35%", "35%"}, {"50", "50%", "50%"}, {"70", "70%", "70%"}, {"100", "100%", "100%"}}, 2},
         {"region", Group::System, "Região da emulação", "Emulation region",
          "A região do console que o jogo enxerga. Use a do seu jogo se ele reclamar de região ou abrir com idioma ou conteúdo errados.",
          "The console region the game sees. Use your game's own if it complains about region or opens with the wrong language or content.",
@@ -315,7 +325,7 @@ Tier TierOf(std::string_view key) {
 }
 
 bool GlobalOnly(std::string_view key) {
-    static constexpr std::string_view global[] = {"language", "menu_theme", "covers", "show_advanced", "memory_profile"};
+    static constexpr std::string_view global[] = {"language", "menu_theme", "menu_audio", "menu_volume", "covers", "show_advanced", "memory_profile"};
     for (const std::string_view k : global) {
         if (k == key) {
             return true;

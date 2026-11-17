@@ -6,6 +6,8 @@
 //   ./menu_test                 # exit code 0 = all good
 //   ./menu_test --render DIR    # also writes DIR/*.ppm, one screenshot per tab and language
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -658,9 +660,9 @@ void TestNavigation() {
         r.Tap(Pad::Cross); // language
         Check(r.saved.find("language=en") != std::string::npos, "Cross on the language switches to English");
         Check(r.ui.Result().kind == MenuResult::Kind::None, "...and does not start a game");
-        r.Tap(Pad::Down); // the menu colour
-        r.Tap(Pad::Down); // the number of controllers (0.9.1)
-        r.Tap(Pad::Down); // restore defaults
+        for (size_t i = 0; i < r.ui.TabOptions(MenuUi::TabSystem).size(); ++i) {
+            r.Tap(Pad::Down); // the colour, the menu sound (0.9.5, zip 5), ... down to restore defaults, the row after the options
+        }
         r.saves = 0;
         r.Tap(Pad::Cross);
         Check(r.saves == 0, "restore defaults asks for confirmation first");
@@ -724,9 +726,9 @@ void TestNavigation() {
     {
         Rig r("mode=docked\nastc=gpu\n");
         r.ui.SetTab(MenuUi::TabSystem);
-        r.Tap(Pad::Down);
-        r.Tap(Pad::Down);
-        r.Tap(Pad::Down); // language, colour, controllers: now on restore defaults
+        for (size_t i = 0; i < r.ui.TabOptions(MenuUi::TabSystem).size(); ++i) {
+            r.Tap(Pad::Down); // past the options (language, colour, sound, ...): now on restore defaults
+        }
         r.Tap(Pad::Cross);
         r.Tap(Pad::Up); // moving cancels the confirmation
         r.Tap(Pad::Down);
@@ -855,10 +857,9 @@ void TestNavigation() {
             ui.Update(0, now);
             now += 50000;
         };
-        tap(Pad::Down);
-        tap(Pad::Down);
-        tap(Pad::Down);
-        tap(Pad::Down); // language, colour, controllers (0.9.1), restore defaults, clear the cache
+        for (size_t i = 0; i <= ui.TabOptions(MenuUi::TabSystem).size(); ++i) {
+            tap(Pad::Down); // past the options (language, colour, sound, ...), then restore defaults: now on clear the cache
+        }
         tap(Pad::Cross);
         Check(cleared == 0, "clear shader cache: the first press only asks");
         tap(Pad::Up);
@@ -1131,6 +1132,238 @@ void TestDrawing(const char* render_dir) {
     }
 }
 
+/// 0.9.5 (zip 5): the menu's sounds. The synthesis and the mixer are plain arithmetic, so they are checked here; the console's audio port
+/// (rom_menu.cpp, MenuAudio) is not, and the notes say so.
+void TestSound() {
+    std::printf("sound (0.9.5, zip 5)\n");
+    const auto peak_of = [](const Samples& s) {
+        int peak = 0;
+        for (const std::int16_t v : s) {
+            peak = std::max(peak, std::abs(int(v)));
+        }
+        return peak;
+    };
+    // The effects: stereo, short, 0.7 of full scale, silent at both ends (no click when one starts or stops).
+    for (int i = 0; i < SoundCount; ++i) {
+        const Samples e = MakeEffect(SoundId(i));
+        const int frames = int(e.size() / 2);
+        Check(e.size() % 2 == 0 && frames > SampleRate / 10 && frames <= SampleRate * 3 / 2, "an effect is stereo and between 0.1 s and 1.5 s long");
+        const int peak = peak_of(e);
+        Check(peak > int(0.69 * 32767) && peak <= int(0.7 * 32767) + 1, "an effect's loudest sample is 0.7 of full scale");
+        Check(e[0] == 0 && e[1] == 0 && e[e.size() - 2] == 0 && e[e.size() - 1] == 0, "an effect starts and ends in silence");
+        bool left_sounds = false, right_sounds = false;
+        for (size_t k = 0; k < e.size(); k += 2) {
+            left_sounds |= e[k] != 0;
+            right_sounds |= e[k + 1] != 0;
+        }
+        Check(left_sounds && right_sounds, "an effect sounds in both ears");
+        Check(MakeEffect(SoundId(i)) == e, "an effect is the same every time it is made");
+    }
+    Check(MakeEffect(SoundId::Play).size() > MakeEffect(SoundId::Move).size() * 3, "the game-start chime is much longer than the tick");
+    // The background loop: whole seconds, 0.8 of full scale, and its end leads into its start without a jump.
+    for (const int seconds : {8, 32}) {
+        const Samples a = MakeAmbient(seconds);
+        Check(int(a.size() / 2) == seconds * SampleRate, "the loop is as long as asked");
+        const int peak = peak_of(a);
+        Check(peak > int(0.79 * 32767) && peak <= int(0.8 * 32767) + 1, "the loop's loudest sample is 0.8 of full scale");
+        long biggest_step = 0;
+        for (size_t k = 2; k < a.size(); k += 2) {
+            biggest_step = std::max<long>(biggest_step, std::abs(int(a[k]) - int(a[k - 2])));
+        }
+        const long seam = std::abs(int(a[0]) - int(a[a.size() - 2]));
+        Check(seam <= biggest_step, "the loop joins itself without a jump (the seam is no bigger than any other step)");
+        double energy = 0;
+        for (const std::int16_t v : a) {
+            energy += double(v) * double(v);
+        }
+        const double rms = std::sqrt(energy / double(a.size())) / 32767.0;
+        Check(rms > 0.05 && rms < 0.5, "the loop is neither silent nor a wall of noise");
+    }
+    Check(int(MakeAmbient(30).size() / 2) == 28 * SampleRate, "a loop length that is not a multiple of 4 s is rounded down");
+    // The mixer.
+    {
+        Mixer m;
+        std::vector<std::int16_t> out(2 * 4800);
+        m.Render(out.data(), 4800);
+        Check(peak_of(out) == 0, "nothing playing: silence");
+        m.SetVolume(1.0f);
+        m.Trigger(SoundId::Select);
+        Check(m.Active() == 1, "a triggered effect is waiting");
+        m.Render(out.data(), 4800);
+        Check(peak_of(out) > 1000 && m.Active() == 1, "...it plays");
+        for (int i = 0; i < 20; ++i) {
+            m.Render(out.data(), 4800);
+        }
+        Check(m.Active() == 0, "...and is let go when it ends");
+        m.Render(out.data(), 4800);
+        Check(peak_of(out) == 0, "...leaving silence");
+        m.SetEffects(false);
+        m.Trigger(SoundId::Move);
+        Check(m.Active() == 0, "with the sounds off an effect is ignored");
+        m.SetEffects(true);
+        for (int i = 0; i < 30; ++i) {
+            m.Trigger(SoundId::Play);
+        }
+        Check(m.Active() <= 8, "no more than 8 effects wait at once");
+        // Everything at full volume, the background loop on: clipped, never wrapped round.
+        m.SetAmbient(MakeAmbient(8));
+        m.SetMusic(true);
+        bool wrapped = false;
+        int loudest = 0;
+        for (int i = 0; i < 40; ++i) {
+            m.Render(out.data(), 4800);
+            for (const std::int16_t v : out) {
+                wrapped |= v == -32768;
+                loudest = std::max(loudest, std::abs(int(v)));
+            }
+        }
+        Check(!wrapped && loudest > 20000, "a loud mix is clipped, not wrapped round");
+        Check(m.Active() <= 8, "the voices are still capped");
+        // Volume 0 is silence.
+        m.SetVolume(0.0f);
+        m.Trigger(SoundId::Select);
+        m.Render(out.data(), 4800);
+        Check(peak_of(out) == 0, "volume 0 is silence");
+    }
+    {
+        // The music comes in and goes out gently (0.6 s), not with a click.
+        Mixer m;
+        m.SetVolume(1.0f);
+        m.SetAmbient(MakeAmbient(8));
+        std::vector<std::int16_t> out(2 * 480);
+        m.Render(out.data(), 480);
+        Check(peak_of(out) < 200, "the music starts from nothing and comes in");
+        for (int i = 0; i < 100; ++i) { // 1 s
+            m.Render(out.data(), 480);
+        }
+        Check(peak_of(out) > 3000, "...and is there after a second");
+        m.SetMusic(false);
+        for (int i = 0; i < 100; ++i) {
+            m.Render(out.data(), 480);
+        }
+        Check(peak_of(out) == 0, "music off: gone a second later");
+        // FadeOut: silent after the time asked for, and Quiet() says so.
+        m.SetMusic(true);
+        for (int i = 0; i < 100; ++i) {
+            m.Render(out.data(), 480);
+        }
+        Check(!m.Quiet(), "not quiet before a fade out");
+        m.FadeOut(0.2f);
+        int quiet_after_blocks = -1;
+        for (int i = 0; i < 100; ++i) {
+            m.Render(out.data(), 480);
+            if (m.Quiet() && quiet_after_blocks < 0) {
+                quiet_after_blocks = i + 1;
+            }
+        }
+        Check(quiet_after_blocks > 0 && quiet_after_blocks <= 25, "FadeOut(0.2 s) is quiet within about 0.25 s");
+        Check(peak_of(out) == 0, "...and stays silent");
+    }
+    // The menu asks for the sounds, and says how the audio is set.
+    {
+        Rig r("");
+        Check(r.ui.TakeSounds().empty(), "no sound before anything is pressed");
+        r.Tap(Pad::Down);
+        std::vector<SoundId> got = r.ui.TakeSounds();
+        Check(got.size() == 1 && got[0] == SoundId::Move, "a direction: the tick");
+        Check(r.ui.TakeSounds().empty(), "the sounds are given once");
+        r.Tap(Pad::Right);
+        got = r.ui.TakeSounds();
+        Check(got.size() == 1 && got[0] == SoundId::Move, "Left/Right on the list: the tick");
+        r.Tap(Pad::R1);
+        got = r.ui.TakeSounds();
+        Check(got.size() == 1 && got[0] == SoundId::Tab, "R1: the tab sound");
+        r.Tap(Pad::L1);
+        got = r.ui.TakeSounds();
+        Check(got.size() == 1 && got[0] == SoundId::Tab, "L1: the tab sound");
+        r.Tap(Pad::R1); // CONTROLS
+        r.ui.TakeSounds();
+        r.Tap(Pad::Circle); // back to the games
+        got = r.ui.TakeSounds();
+        Check(got.size() == 1 && got[0] == SoundId::Back && r.ui.Tab() == MenuUi::TabGames, "Circle out of a tab: the back sound");
+        r.Tap(Pad::Circle);
+        Check(r.ui.TakeSounds().empty(), "Circle on the game list does nothing, silently");
+        r.ui.SetTab(MenuUi::TabSystem);
+        r.ui.TakeSounds();
+        r.Tap(Pad::Cross);
+        got = r.ui.TakeSounds();
+        Check(got.size() == 1 && got[0] == SoundId::Select, "Cross on an option: the choose sound");
+    }
+    {
+        Rig r(""); // (a fresh menu: the one above has walked down the list to the Homebrew Menu)
+        r.Tap(Pad::R2);
+        std::vector<SoundId> got = r.ui.TakeSounds();
+        Check(r.ui.GameConfigOpen() && got.size() == 1 && got[0] == SoundId::Select, "R2 on a game opens its settings with the choose sound");
+        r.Tap(Pad::Circle);
+        got = r.ui.TakeSounds();
+        Check(!r.ui.GameConfigOpen() && got.size() == 1 && got[0] == SoundId::Back, "Circle closes them with the back sound");
+        r.Tap(Pad::Cross);
+        got = r.ui.TakeSounds();
+        Check(r.ui.Result().kind == MenuResult::Kind::Play && got.size() == 1 && got[0] == SoundId::Play, "Cross on a game: the game-start chime");
+    }
+    {
+        Rig r("");
+        r.Tap(Pad::Options);
+        const std::vector<SoundId> got = r.ui.TakeSounds();
+        Check(r.ui.Result().kind == MenuResult::Kind::Play && got.size() == 1 && got[0] == SoundId::Play, "OPTIONS: the game-start chime");
+    }
+    {
+        Rig r("");
+        r.held = Pad::Cross | Pad::Options; // two ways to start in the same step
+        r.ui.Update(r.held, r.now);
+        const std::vector<SoundId> got = r.ui.TakeSounds();
+        Check(std::count(got.begin(), got.end(), SoundId::Play) == 1, "never two game-start chimes");
+    }
+    {
+        Rig r("");
+        for (int i = 0; i < 20; ++i) {
+            r.Tap(Pad::Down); // 20 steps without anyone taking the sounds
+        }
+        Check(r.ui.TakeSounds().size() <= 4, "the queue of sounds is capped");
+        Rig quiet("");
+        quiet.ui.Update(0, quiet.now);
+        quiet.ui.Update(0, quiet.now + 16000);
+        Check(quiet.ui.TakeSounds().empty(), "steps with no button: no sound");
+    }
+    {
+        Check(Rig("").ui.Audio() == AudioMode::All && Rig("").ui.Volume() == 0.5f, "by default: music and sounds at 50%");
+        Check(Rig("menu_audio=sounds\nmenu_volume=100\n").ui.Audio() == AudioMode::Sounds && Rig("menu_audio=sounds\nmenu_volume=100\n").ui.Volume() == 1.0f,
+              "menu_audio=sounds, menu_volume=100");
+        Check(Rig("menu_audio=off\nmenu_volume=20\n").ui.Audio() == AudioMode::Off && Rig("menu_audio=off\nmenu_volume=20\n").ui.Volume() == 0.2f, "menu_audio=off, menu_volume=20");
+        Check(Rig("menu_audio=loud\nmenu_volume=7\n").ui.Audio() == AudioMode::All && Rig("menu_audio=loud\nmenu_volume=7\n").ui.Volume() == 0.5f,
+              "a value that is not a choice is the default");
+        const Option* audio = FindOption("menu_audio");
+        const Option* volume = FindOption("menu_volume");
+        Check(audio != nullptr && volume != nullptr && audio->group == Group::System && volume->group == Group::System, "both options are in the SYSTEM tab");
+        Check(GlobalOnly("menu_audio") && GlobalOnly("menu_volume") && !PerGameOffered(*audio) && !PerGameOffered(*volume),
+              "...for the whole app: a game's own file does not offer them");
+        Check(audio != nullptr && audio->default_index == 0 && volume != nullptr && std::string(volume->choices[size_t(volume->default_index)].value) == "50",
+              "the defaults are the ones the menu reads when the lines are absent");
+        for (const Option* o : {audio, volume}) {
+            Check(o != nullptr && o->label_pt[0] && o->label_en[0] && o->help_pt[0] && o->help_en[0], "the sound options have texts in both languages");
+        }
+        // Changing it in the menu: saved, and heard at once.
+        Rig r("");
+        r.ui.SetTab(MenuUi::TabSystem);
+        r.Tap(Pad::Down); // colour
+        r.Tap(Pad::Down); // menu sound
+        r.Tap(Pad::Cross);
+        Check(r.saved.find("menu_audio=sounds") != std::string::npos && r.ui.Audio() == AudioMode::Sounds, "Cross on the menu sound row: sounds only, saved");
+        r.Tap(Pad::Cross);
+        Check(r.saved.find("menu_audio=off") != std::string::npos && r.ui.Audio() == AudioMode::Off, "...then off");
+        r.Tap(Pad::Down); // volume
+        r.Tap(Pad::Right);
+        Check(r.saved.find("menu_volume=70") != std::string::npos && r.ui.Volume() == 0.7f, "Right on the volume row: 70%");
+        // Restore defaults keeps what belongs to the app (like the language and the colour).
+        for (size_t i = 0; i < r.ui.TabOptions(MenuUi::TabSystem).size(); ++i) {
+            r.Tap(Pad::Down);
+        }
+        r.Tap(Pad::Cross);
+        r.Tap(Pad::Cross);
+        Check(r.ui.Audio() == AudioMode::Off && r.ui.Volume() == 0.7f, "restore defaults keeps the menu sound settings");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1143,6 +1376,7 @@ int main(int argc, char** argv) {
     TestGameConfig();
     TestNro();
     TestNavigation();
+    TestSound();
     TestDrawing(render_dir);
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     std::printf(g_failures == 0 ? "menu test: PASSED\n" : "menu test: FAILED\n");

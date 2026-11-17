@@ -2,7 +2,32 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.9.5] - A menu made for people: controls, fewer switches, a new look (zips 1 to 4 of 0.9.5)
+## [0.9.5] - A menu made for people: controls, fewer switches, a new look (zips 1 to 5 of 0.9.5)
+
+### Fifth zip of 0.9.5: a new HUD, a new L3 + R3 menu, and sounds and music in the menu
+
+**Nothing of this zip has run on a console.** On a PC: the HUD and the pause menu were drawn into fake video buffers and the pictures looked at (`tests/video_hook_test.cpp`, `--render DIR`; the geometry, the colours, the
+text and the keep-alive probes are checked), the sounds were made and checked as numbers (lengths, levels, no click at the start or end of an effect, the loop joining itself, the mixer's voices, fades and clipping) and the menu
+asks for them at the right buttons (`tests/menu_test.cpp`, 391 checks in the normal and in the public build). **The console's audio port and `main.cpp` have never been run or compiled for the console here**: the first is the one
+piece of this zip that can only be tried on the console, and it is built so that a failure there costs the menu its sound and nothing else (below).
+
+- **New HUD** (`hud=on`). A card with the frame rate in large figures in a colour that says whether the game holds what it aims at (green from 92% of the target, yellow from 60%, red below; the target is 60, 30 or 20, taken from the best second seen), the time of a
+  frame and the worst gap of the last second, a graph of the last minute (one bar per second, the target drawn as a line), the load of the CPU cores as a bar, the memory left (red below 300 MiB) and the temperatures. The small
+  size (`hud_size=small`) is one line of figures, the graph and one line of CPU and memory. Left or right (`hud_position`). The keep-alive that stops the flicker is unchanged: the card is one opaque bitmap, put back in every video buffer.
+- **New L3 + R3 menu.** A framed card in the middle of the screen with a title band (the name and the version), one row per option (the chosen one has a bar and a lighter background), the state of each switch as a green
+  *ligado* / grey *desligado* pill at the right, and key caps (the buttons drawn as the pad has them) at the bottom. It uses the colour theme of the menu, and Portuguese or English as the menu is. The rows are the same as
+  before: continue, HUD, speed limit, shader notice, restart, exit, and the memory alert.
+- **Sounds and music in the menu** (`menu_audio=all|sounds|off`, `menu_volume=20|35|50|70|100`, SYSTEM tab, "Som do menu" and "Volume do menu"; default music and sounds at 50%). Nothing is a file: the program makes the sounds
+  itself (`frontend/menu/menu_sound.h`): a soft tick when the highlight moves, two notes going up when something is chosen, two going down for back, a small step for another tab, a rising chime when a game starts, and a calm background
+  loop of 24 seconds (four slow chords with a few bell notes and an echo; its end leads into its start). It is the menu only: when a game is chosen the chime rings for 0.7 s, everything fades out in 0.3 s and the audio port is
+  closed before the video output is, so Eden's own sink finds the port free. The game's audio is not touched. The two options are for the whole app (a game's own file does not offer them).
+- **How the audio is kept from hurting.** With `menu_audio=off` nothing is opened at all. Otherwise a marker file `menu_audio.marker` is written before the port is opened (the way Eden's own sink opens it, system user, main
+  port, 48 kHz, 16 bit stereo) and removed once the port has taken its first grain; if the app dies there, the next run finds the marker, **keeps the menu silent** and says so in `boot.log` (delete the file to try again). The threads
+  are never joined, so one stuck in the console's audio driver cannot hold the menu or the game up (closing waits at most 1.5 s), and the 24 s loop is made on its own thread (the first seconds have only the effects) because a
+  console's CPU may need a second or two for it. `boot.log` lines: `menu audio: port N open`, `the first grain was taken`, `the background loop is ready (N ms to make)`, `port closed`, or why it did not start.
+- **SYSTEM tab.** Two new rows, so the read-only list under the options is packed a little tighter, no longer repeats the version (it is in the header) and leaves out a row that would not fit instead of running under the help
+  box (the memory plan and the data folder are the first to go on a small list; they are in `boot.log`).
+- **Still open:** `.nro` games that do not start (the line `load failed: status N` / `loader: ...` of a `boot.log` names the cause), `.nsz` (the converter is the next zip), Mario Odyssey's RAM changing with the pad idle (no log of that run).
 
 ### Fourth zip of 0.9.5: the Let's Go controller, Mario Maker 2 textures, and what is still open
 
