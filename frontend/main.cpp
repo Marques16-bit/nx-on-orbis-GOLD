@@ -64,6 +64,8 @@
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
 #include "core/perf_stats.h"
+#include "hid_core/frontend/emulated_controller.h"
+#include "hid_core/hid_core.h"
 #include "input_common/drivers/virtual_gamepad.h"
 #include "input_common/main.h"
 #include "video_core/gpu.h"
@@ -1502,12 +1504,25 @@ int main() {
         shot_until = Ps4::NowUs() + 4000000;
     };
     const char* leave_reason = "the game exited";
+    std::uint64_t style_checked_us = 0;
     for (;;) {
         {
             std::unique_lock lock{exit_mutex};
             if (exit_cv.wait_for(lock, std::chrono::milliseconds(8), [&] { return exited; })) {
                 Ps4::Log("the game exited");
                 break;
+            }
+        }
+        // 0.9.5 zip 4: a controller model the game does not accept never reaches the game (Pokemon Let's Go read no buttons).
+        // Every quarter of a second: if the game's list of accepted models does not hold the player's model, give the player one it does.
+        if (const std::uint64_t now_us = Ps4::NowUs(); now_us - style_checked_us >= 250000) {
+            style_checked_us = now_us;
+            for (int player = 0; player < std::max(g_players, 1) && player < 4; ++player) {
+                const Ps4Eden::StyleFit fit = Ps4Eden::FitControllerStyle(system.HIDCore(), player);
+                if (fit.changed) {
+                    Ps4::Log("controllers: the game does not accept the %s model for player %d: it is now a %s (the game's list of accepted models decides)",
+                             fit.from.c_str(), player + 1, fit.to.c_str());
+                }
             }
         }
         const Ps4::PadState pad = Ps4::ReadPad();

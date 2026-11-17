@@ -113,6 +113,40 @@ struct ValuesSmall {
     SmallSettingMock players;
 };
 
+
+// 0.9.5 zip 4: a mock of Eden's HID core for FitControllerStyle.
+enum class NpadStyleMock { None, Fullkey, Handheld, JoyconDual, JoyconLeft, JoyconRight, GameCube };
+enum class NpadStyleSetMock : unsigned { None = 0 };
+struct StyleTagMock {
+    NpadStyleSetMock raw{NpadStyleSetMock::None};
+    bool fullkey = false, handheld = false, joycon_dual = false, joycon_left = false, joycon_right = false;
+};
+struct ControllerMock {
+    NpadStyleMock style{NpadStyleMock::Fullkey};
+    bool connected = true;
+    int connects = 0, disconnects = 0;
+    NpadStyleMock GetNpadStyleIndex() const { return style; }
+    void SetNpadStyleIndex(NpadStyleMock s) { style = s; }
+    bool IsConnected() const { return connected; }
+    void Connect() { connected = true; ++connects; }
+    void Disconnect() { connected = false; ++disconnects; }
+};
+struct HidMock {
+    std::array<ControllerMock, 4> pads{};
+    StyleTagMock tag{};
+    ControllerMock* GetEmulatedControllerByIndex(std::size_t i) { return i < pads.size() ? &pads[i] : nullptr; }
+    StyleTagMock GetSupportedStyleTag() const { return tag; }
+    void Accept(bool full, bool hand, bool dual, bool left, bool right) {
+        tag = {};
+        tag.fullkey = full;
+        tag.handheld = hand;
+        tag.joycon_dual = dual;
+        tag.joycon_left = left;
+        tag.joycon_right = right;
+        tag.raw = static_cast<NpadStyleSetMock>((full ? 1u : 0u) | (hand ? 2u : 0u) | (dual ? 4u : 0u) | (left ? 8u : 0u) | (right ? 16u : 0u));
+    }
+};
+
 using Ps4Eden::Apply;
 using Ps4Eden::Result;
 
@@ -278,6 +312,42 @@ int main() {
         Check(Ps4Eden::ApplyPlayerType(integer, 0, "pro") == Result::Missing, "a controller_type that is not an enum: Missing");
         ValuesEmpty none;
         Check(Ps4Eden::ApplyPlayerType(none, 0, "pro") == Result::Missing, "an Eden without the setting: Missing");
+    }
+    {
+        // 0.9.5 zip 4: the model the game accepts (Pokemon Let's Go: no buttons when the model was not on its list).
+        HidMock hid;
+        auto fit = Ps4Eden::FitControllerStyle(hid, 0);
+        Check(!fit.changed && hid.pads[0].connects == 0, "before the game gives its list nothing is touched");
+        hid.Accept(true, true, true, true, true);
+        fit = Ps4Eden::FitControllerStyle(hid, 0);
+        Check(!fit.changed && hid.pads[0].style == NpadStyleMock::Fullkey && hid.pads[0].disconnects == 0, "a model the game accepts is left alone");
+        hid.Accept(false, true, false, true, true); // handheld and single Joy-Con only
+        fit = Ps4Eden::FitControllerStyle(hid, 0);
+        Check(fit.changed && hid.pads[0].style == NpadStyleMock::Handheld && hid.pads[0].connected && fit.from == "Pro Controller" && fit.to == "Handheld",
+              "a game that accepts only handheld and single Joy-Con: the player becomes Handheld, reconnected");
+        fit = Ps4Eden::FitControllerStyle(hid, 0);
+        Check(!fit.changed && hid.pads[0].disconnects == 1 && hid.pads[0].connects == 1, "...and a second look changes nothing");
+        hid.pads[1] = ControllerMock{NpadStyleMock::Fullkey, false, 0, 0};
+        fit = Ps4Eden::FitControllerStyle(hid, 1);
+        Check(fit.changed && hid.pads[1].style == NpadStyleMock::Handheld && !hid.pads[1].connected && hid.pads[1].connects == 0,
+              "player 2, not plugged in: the model changes but it is not connected for nothing");
+        hid.pads[0] = ControllerMock{NpadStyleMock::Fullkey, false, 0, 0}; // Eden disconnected it ("not supported")
+        fit = Ps4Eden::FitControllerStyle(hid, 0);
+        Check(fit.changed && hid.pads[0].connected, "player 1 that Eden left disconnected is connected again");
+        hid.Accept(false, false, true, false, false); // only dual
+        hid.pads[2] = ControllerMock{NpadStyleMock::Handheld, true, 0, 0};
+        fit = Ps4Eden::FitControllerStyle(hid, 2);
+        Check(fit.changed && hid.pads[2].style == NpadStyleMock::JoyconDual && fit.to == "Dual Joy-Con", "only Dual accepted: Dual");
+        hid.Accept(true, true, false, false, false);
+        hid.pads[3] = ControllerMock{NpadStyleMock::JoyconRight, true, 0, 0};
+        fit = Ps4Eden::FitControllerStyle(hid, 3);
+        Check(fit.changed && hid.pads[3].style == NpadStyleMock::Fullkey, "Pro Controller comes first when accepted");
+        hid.Accept(false, false, false, false, false);
+        hid.tag.raw = static_cast<NpadStyleSetMock>(64u); // a list of models this port cannot give
+        hid.pads[0] = ControllerMock{NpadStyleMock::Fullkey, true, 0, 0};
+        fit = Ps4Eden::FitControllerStyle(hid, 0);
+        Check(!fit.changed && hid.pads[0].connected && hid.pads[0].disconnects == 0, "a list with none of the five models: nothing is touched");
+        Check(!Ps4Eden::FitControllerStyle(hid, 9).changed, "a slot that does not exist is ignored");
     }
     std::printf(g_failures == 0 ? "eden settings test: PASSED\n" : "eden settings test: FAILED\n");
     return g_failures == 0 ? 0 : 1;

@@ -202,6 +202,13 @@ check "package-eden.sh puts jit-pack-report.txt in the package, and boot.log quo
     grep -q "assets/misc/jit-pack-report.txt" package-eden.sh && grep -q "assets/misc/jit-pack-report.txt" frontend/main.cpp && grep -q "ReportLines" frontend/main.cpp'
 
 echo "== the JIT direct table (0.9.3)"
+check "patch 0033 is a git patch that touches only the texture cache, revalidates NULL and Remapped views, and the CHANGELOG says it is not proven" '
+    [ "$(grep "^diff --git" patches/eden/0033-*.patch | wc -l | tr -d " ")" = 1 ] && grep "^diff --git" patches/eden/0033-*.patch | grep -q "texture_cache/texture_cache.h" &&
+    grep -q "is_remapped_view" patches/eden/0033-*.patch && ! grep -q "PS5_NATIVE" patches/eden/0033-*.patch &&
+    grep -q "not proven to be the whole cause of the MM2 blinking" CHANGELOG.md'
+check "the controller model fit is in eden_settings.h, called from main.cpp, tested, and the CHANGELOG says Let's Go is not proven" '
+    grep -q "StyleFit FitControllerStyle" frontend/eden_settings.h && grep -q "Ps4Eden::FitControllerStyle(system.HIDCore()" frontend/main.cpp &&
+    grep -q "FitControllerStyle(hid, 0)" tests/eden_settings_test.cpp && grep -q "Not proven to be the cause for Let" CHANGELOG.md'
 check "jit_direct_table is an option, ON by default since 0.9.5, and hidden in the menu" '
     settings_key jit_direct_table && settings_default jit_direct_table on && grep "^| \`jit_direct_table\` |" docs/SETTINGS.md | grep -q "| hidden"'
 check "the 0.9.5 tiers: colour_swap hidden, cpu_clock in the TESTS tab of the test builds, resolution always shown" '

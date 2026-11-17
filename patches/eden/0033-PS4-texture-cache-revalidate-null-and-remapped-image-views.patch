@@ -1,0 +1,131 @@
+From f1149aadd202b9594b0b0c1c17696419401fb05a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 21:38:12 -0300
+Subject: [PATCH 33/33] PS4: texture cache: revalidate NULL and remapped image
+ views
+
+0.9.5 zip 4, for Super Mario Maker 2, whose textures blink between sharp and flat/missing for a few frames.
+
+VisitImageView() only looks at a texture again when the TIC bytes change. Two cases never changed them, so a view stayed wrong until the game
+rewrote the TIC:
+ - the first view of a slot was NULL because a GPU page was not mapped yet; the page is mapped a moment later (the game streams its theme
+   textures) but the cached NULL stays: the texture is missing/flat;
+ - the GPU address was remapped (UnmapGPUMemory marks the image Remapped) and the cached view still points at the retired image.
+Now a cached NULL view, and a view of a Remapped image, are checked again at the next lookup (IsValidEntry, then CreateImageView, which
+already knows how to replace a Remapped image), and texture_bindings_serial is advanced so the feedback-loop decision is made again. Render
+targets do not go through the TIC lookup, so a remapped image attached as a render target marks the framebuffer dirty to be bound again.
+A sampled view that is valid keeps the old fast path.
+
+Adapted from the backports of ProsperoEden-Encore by niakw (GPL-3.0): eden-ps5-texture-null-view-remap, -shared-null-new-slot,
+-remapped-view-rebind, -missing-channel-slot-guard and -remap-target-invalidation, with the PS5-only #ifdef removed and a null check
+for the Maxwell3D channel added.
+---
+ src/video_core/texture_cache/texture_cache.h | 74 +++++++++++++++++++-
+ 1 file changed, 73 insertions(+), 1 deletion(-)
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 87d14d6..5bb8a67 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -716,11 +716,24 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
+     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
+     // Is new (on the tegra engine side)?
+     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
++    // A GPU remap can retire an image without changing the TIC bytes.
++    // Only check valid cached views; never reuse a remapped backing image.
++    const auto is_remapped_view = [this](ImageViewId id) {
++        if (id == NULL_IMAGE_VIEW_ID) {
++            return false;
++        }
++        const ImageViewBase& view = slot_image_views[id];
++        return !view.IsBuffer() &&
++               True(slot_images[view.image_id].flags & ImageFlagBits::Remapped);
++    };
+     if (is_new) {
+         if (IsValidEntry(*gpu_memory, descriptor)) {
+             // Is new (registered view) on the texture cache side?
+             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
+-            if (is_new_tc)
++            // The descriptor may be new to this slot but share a cached NULL
++            // view with another slot whose first creation failed transiently.
++            if (is_new_tc || pair->second == NULL_IMAGE_VIEW_ID ||
++                is_remapped_view(pair->second))
+                 pair->second = CreateImageView(descriptor);
+             PrepareImageView(pair->second, false, false);
+             channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
+@@ -730,6 +743,40 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
+         return NULL_IMAGE_VIEW_ID;
+     }
+     auto const it = channel_state->image_view_ids.find(map_index);
++    // A null image-view lookup was cached when the TIC had no valid GPU
++    // backing. Remapping a GPU virtual address does NOT rewrite the TIC bytes,
++    // so DescriptorTable::Read returns is_new=false forever and the texture
++    // otherwise stays missing (e.g. streamed HUD/jersey material).
++    // Only revalidate previously NULL views: common valid views retain the
++    // original zero-overhead fast path and sparse TICs retain their semantics.
++    const bool remapped_cached_view =
++        it != channel_state->image_view_ids.end() && is_remapped_view(it->second);
++    if ((it == channel_state->image_view_ids.end() ||
++         it->second == NULL_IMAGE_VIEW_ID || remapped_cached_view) &&
++        IsValidEntry(*gpu_memory, descriptor)) {
++        const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
++        // CreateImageView can itself return NULL after a transient missing GPU
++        // page. An existing map entry with a NULL value must be retried too;
++        // otherwise the image remains absent for the entire guest session.
++        if (is_new_tc || pair->second == NULL_IMAGE_VIEW_ID ||
++            is_remapped_view(pair->second))
++            pair->second = CreateImageView(descriptor);
++        PrepareImageView(pair->second, false, false);
++        // CheckFeedbackLoop caches barrier decisions by this serial. Reviving
++        // an image without rewriting its TIC must invalidate that decision.
++        if (pair->second != NULL_IMAGE_VIEW_ID)
++            ++texture_bindings_serial;
++        channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
++        return pair->second;
++    }
++    if (it == channel_state->image_view_ids.end() || remapped_cached_view) {
++        // If its backing is not resident, publish NULL until it returns.
++        if (remapped_cached_view) {
++            ++texture_bindings_serial;
++        }
++        channel_state->image_view_ids.insert_or_assign(map_index, NULL_IMAGE_VIEW_ID);
++        return NULL_IMAGE_VIEW_ID;
++    }
+     if (it->second != NULL_IMAGE_VIEW_ID)
+         PrepareImageView(it->second, false, false);
+     return it->second;
+@@ -864,6 +911,31 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
+             continue;
+         }
+         image.flags |= ImageFlagBits::Remapped;
++        // A sampled view is checked on its next TIC lookup, but render
++        // targets can bypass that lookup. Force only attached remapped views
++        // through the normal framebuffer rebinding path on the next draw.
++        bool framebuffer_affected = false;
++        if (maxwell3d != nullptr) { // no channel yet: nothing is bound, nothing to rebind
++            auto& dirty = maxwell3d->dirty.flags;
++            for (const ImageViewId view_id : image.image_view_ids) {
++                if (view_id == NULL_IMAGE_VIEW_ID) {
++                    continue;
++                }
++                if (view_id == render_targets.depth_buffer_id) {
++                    dirty[Dirty::ZetaBuffer] = true;
++                    framebuffer_affected = true;
++                }
++                for (size_t rt = 0; rt < NUM_RT; ++rt) {
++                    if (view_id == render_targets.color_buffer_ids[rt]) {
++                        dirty[Dirty::ColorBuffer0 + rt] = true;
++                        framebuffer_affected = true;
++                    }
++                }
++            }
++            if (framebuffer_affected) {
++                dirty[Dirty::RenderTargets] = true;
++            }
++        }
+     }
+ }
+ 
+-- 
+2.43.0
+

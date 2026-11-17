@@ -388,3 +388,9 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
   each outcome in `ps4_jit_cache_large` / `ps4_jit_cache_small`. `a64_interface.cpp` counts `ps4_jit_blocks_compiled` (in `Impl::Compile`, once per block) and `ps4_jit_ranges_invalidated` (in
   `Impl::InvalidateCacheRange`, each of which halts the core that receives it). All four are defined weak in `frontend/jit_cache.h`. Compile counts are relaxed atomics shared by the cores: one add per compiled block
   (a block costs tens of microseconds to compile), nothing on the execution path.
+
+- **Patch 0033** (`texture_cache.h`): `VisitImageView` re-checks a slot whose cached view is `NULL_IMAGE_VIEW_ID` or belongs to an image flagged `Remapped` (`IsValidEntry`, then `CreateImageView`, which replaces a Remapped
+  image) and advances `texture_bindings_serial` when it revives one, because `CheckFeedbackLoop` caches its barrier decision by that serial. `UnmapGPUMemory` marks the framebuffer dirty (`Dirty::RenderTargets`, the
+  zeta/colour entry) when the remapped image is bound as a render target, since those do not pass through the TIC lookup. A valid sampled view keeps its fast path. Adapted from ProsperoEden-Encore's backports.
+- **Controller model fit** (`Ps4Eden::FitControllerStyle`, `frontend/eden_settings.h`): `HIDCore::GetSupportedStyleTag()` is what the game accepted; `EmulatedController::IsControllerSupported` decides whether Eden connects
+  a controller. Eden's own fallback (`SetSupportedNpadStyleTag`) knows Pro <-> Dual only, so any other list left the controller disconnected. main.cpp calls the function every 250 ms for the players in use.

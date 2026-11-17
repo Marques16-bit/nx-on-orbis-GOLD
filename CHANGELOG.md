@@ -2,7 +2,23 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
-## [0.9.5] - A menu made for people: controls, fewer switches, a new look (zips 1 and 2 of 0.9.5)
+## [0.9.5] - A menu made for people: controls, fewer switches, a new look (zips 1 to 4 of 0.9.5)
+
+### Fourth zip of 0.9.5: the Let's Go controller, Mario Maker 2 textures, and what is still open
+
+**Nothing of this zip has run on a console.** On a PC: the controller rule against a mock of Eden's HID core (14 new checks in `tests/eden_settings_test.cpp`), the new patch applied with `git am` on the pinned Eden + the 32 patches before it and with `git apply --check` after the JIT pack, and the menu and docs tests. `main.cpp` and the Eden patch are compiled only by the CI.
+
+- **Pokemon Let's Go (and any game that lists few controller models): the buttons now reach the game.** Eden's HID core connects a controller only if its model is in the list the game hands it, and its own fallback knows
+  only Pro Controller <-> Dual Joy-Con. A game that accepts other models (handheld, single Joy-Con) saw no controller at all. Every quarter of a second the frontend now looks at that list; when the model of a
+  player is not in it, the player gets the first accepted one of Pro Controller, Dual Joy-Con, Handheld, Left, Right, and is reconnected. `boot.log` says `controllers: the game does not accept the X model for player N: it is now a Y`.
+  **Not proven to be the cause for Let's Go:** no log of that game was available. If it still reads nothing, send `boot.log`; the line above (or its absence) tells which case it is. Meanwhile R2 on the game
+  (CONTROLS: "Player 1 controller model") sets the model by hand per game.
+- **Patch 0033: texture views that stay wrong (Super Mario Maker 2 blinking textures).** Eden looks at a texture again only when the game rewrites its descriptor (TIC). Two cases never did: a view created
+  as "missing" because a GPU page was not mapped yet (the game streams its theme textures) stayed missing, and a view of an image whose GPU address was remapped kept pointing at the old image. Now both are
+  checked again at the next lookup, the feedback-loop decision is made again, and a remapped render target is bound again. Adapted from the Eden backports of ProsperoEden-Encore (niakw, GPL-3.0). **This is a
+  real flaw of the texture cache that fits the symptom (flat or missing for a few frames, then right again); it is not proven to be the whole cause of the MM2 blinking.** A frame dump of a blink would tell.
+- **Open, with the reason:** `.nro` games that do not start (no `boot.log` of one: the line `load failed: status N` / `loader: ...` names the cause; the bundled Homebrew Menu does start), `.nsz`
+  (Eden has no reader for it; the converter is the next zip), Mario Odyssey's RAM changing with the pad idle (no log of that run), the new HUD and L3/R3 menu, menu sounds.
 
 ### Third zip of 0.9.5: the extra RAM is back in the menu, and the public build is clean
 

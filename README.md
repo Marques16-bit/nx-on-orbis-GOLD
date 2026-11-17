@@ -21,7 +21,7 @@ A **0.9.5** (segundo zip: **R2 num jogo abre as opções só daquele jogo**, sal
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 32 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 33 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
 | Renderer | Vulkan only (`-DENABLE_OPENGL=OFF`), on Mesa RADV "PlayStation 4 Liverpool" (Vulkan 1.3) |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Build | GitHub Actions builds the `.pkg` and the ELF from a tag ([docs/BUILDING.md](docs/BUILDING.md)); [Releases](../../releases) |
@@ -200,7 +200,7 @@ version, the number of patches, the options named here, the profiles, the links,
   Eden4 in turn builds on **DolphinPS4** by **ShiroKlein** and contributors (the PS4 runtime and the GNM winsys), and credits
   **ProsperoEden**, **SwitchLauncher** by kasobos67, shadPS4 and others in its own `CREDITS.md`.
 - **ProsperoEden** by BlackBearReloaded: the PS5 port this started from, and the Eden commit it pins.
-- **ProsperoEden-Encore** by niakw (GPL-3.0): the community PS5 continuation, read in full for 0.9.5 as the reference for the menu, the option policy and what comes next (sounds, formats, backports). Its ideas guide this work; no code of it is in this version.
+- **ProsperoEden-Encore** by niakw (GPL-3.0): the community PS5 continuation, read in full for 0.9.5 as the reference for the menu, the option policy and what comes next (sounds, formats, backports). Its ideas guide this work. Since zip 4 of 0.9.5 one patch (0033, texture-cache views) is adapted from its Eden backports, with the PS5-only code removed.
 - **orbis-ports**: orbis-compat and the PS4 Mesa RADV driver. **OpenOrbis**: the toolchain. **switchbrew**: nx-hbmenu.
   DejaVu fonts.
 - **Alejo ([@alechurri](https://github.com/alechurri))**: the original port (v0.1.0): Eden booting on a PS4 Pro and Mario Kart 8

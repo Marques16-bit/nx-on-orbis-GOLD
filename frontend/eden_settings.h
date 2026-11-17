@@ -389,4 +389,100 @@ Result ApplyPlayerType(Values& v, int player, const std::string& type) {
     }
 }
 
+/// What FitControllerStyle did for one player, for the log.
+struct StyleFit {
+    bool changed = false;
+    std::string from;
+    std::string to;
+};
+
+namespace detail {
+
+template <typename Style>
+const char* StyleName(Style s) {
+    if (s == Style::Fullkey) {
+        return "Pro Controller";
+    }
+    if (s == Style::Handheld) {
+        return "Handheld";
+    }
+    if (s == Style::JoyconDual) {
+        return "Dual Joy-Con";
+    }
+    if (s == Style::JoyconLeft) {
+        return "Left Joy-Con";
+    }
+    if (s == Style::JoyconRight) {
+        return "Right Joy-Con";
+    }
+    return "other";
+}
+
+template <typename Tag, typename Style>
+bool StyleSupported(const Tag& tag, Style s) {
+    if (s == Style::Fullkey) {
+        return bool(tag.fullkey);
+    }
+    if (s == Style::Handheld) {
+        return bool(tag.handheld);
+    }
+    if (s == Style::JoyconDual) {
+        return bool(tag.joycon_dual);
+    }
+    if (s == Style::JoyconLeft) {
+        return bool(tag.joycon_left);
+    }
+    if (s == Style::JoyconRight) {
+        return bool(tag.joycon_right);
+    }
+    return false;
+}
+
+} // namespace detail
+
+/// 0.9.5 (zip 4): a controller whose model the game does not accept never reaches the game. Eden's HID core connects a
+/// controller only when its model is in the list the game gave it (NPad::SetSupportedNpadStyleSet), and its own fallback only
+/// knows Pro Controller <-> Dual Joy-Con. A game that lists only other models (handheld, single Joy-Con) therefore sees no
+/// controller at all: "the game does not read the buttons" (seen with Pokemon Let's Go). This looks at what the game accepts and,
+/// when player `player`'s model is not in that list, gives the player the first accepted model of: Pro Controller, Dual Joy-Con,
+/// Handheld, Left Joy-Con, Right Joy-Con. The player is reconnected if it was connected (player 1 always is). Nothing happens
+/// before the game has given its list, while the model is accepted, or when the game accepts none of the five.
+/// `hid` is Eden's Core::HID::HIDCore (a mock in tests/eden_settings_test.cpp).
+template <typename Hid>
+StyleFit FitControllerStyle(Hid& hid, int player) {
+    StyleFit fit;
+    auto* controller = hid.GetEmulatedControllerByIndex(static_cast<std::size_t>(player));
+    if (controller == nullptr) {
+        return fit;
+    }
+    const auto tag = hid.GetSupportedStyleTag();
+    if (static_cast<unsigned>(tag.raw) == 0) {
+        return fit; // the game has not said yet
+    }
+    using Style = std::remove_cvref_t<decltype(controller->GetNpadStyleIndex())>;
+    const Style now = controller->GetNpadStyleIndex();
+    if (detail::StyleSupported(tag, now)) {
+        return fit;
+    }
+    const Style order[] = {Style::Fullkey, Style::JoyconDual, Style::Handheld, Style::JoyconLeft, Style::JoyconRight};
+    for (const Style candidate : order) {
+        if (!detail::StyleSupported(tag, candidate)) {
+            continue;
+        }
+        const bool was_connected = controller->IsConnected();
+        if (was_connected) {
+            controller->Disconnect();
+        }
+        controller->SetNpadStyleIndex(candidate);
+        if (was_connected || player == 0) {
+            controller->Connect();
+        }
+        fit.changed = true;
+        fit.from = detail::StyleName(now);
+        fit.to = detail::StyleName(candidate);
+        break;
+    }
+    return fit;
+}
+
 } // namespace Ps4Eden
