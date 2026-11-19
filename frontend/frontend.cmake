@@ -25,7 +25,7 @@ execute_process(COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-parse --short=12 HEAD
     COMMAND_ERROR_IS_FATAL ANY)
 # The project version (bump it with every release; see CHANGELOG.md) leads the build id, which is
 # printed at the top of boot.log and in the release's ELF name.
-set(EDEN_PS4_VERSION "0.9.6" CACHE STRING "nx-on-orbis version")
+set(EDEN_PS4_VERSION "0.9.7" CACHE STRING "nx-on-orbis version")
 # 0.9.5: -DEDEN_PS4_PUBLIC=ON builds the release for everyone: no LOG tab, no EXPERIMENTAL tab, no screenshots and no sampling profiler
 # (frontend/menu/settings_model.h, PublicBuild; main.cpp, kPublicBuild). The test builds (the default) keep all of it.
 # ci/stage-eden.sh turns it on when an empty file named PUBLIC_BUILD is in the root of the repository; the build id then ends in "-public".

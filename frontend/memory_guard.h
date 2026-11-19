@@ -85,6 +85,7 @@ struct ArenaInputs {
     int jit_cores = 4;                    // emulated cores, one cache each
     std::uint64_t stream_buffer_mib = 128; // Eden's stream buffer (patch 0028), a GARLIC block outside the arena
     std::uint64_t sysflex_budget_mib = 0; // guest memory that comes from the system flexible pool instead of direct memory
+    bool jit_lazy = false;                // 0.9.7: the code caches are reserved and take direct memory in 2 MiB steps (Eden patch 0034)
 };
 struct ArenaLine {
     std::string name;

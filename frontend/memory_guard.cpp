@@ -214,8 +214,16 @@ std::string BannerText(const Status& status, bool portuguese) {
 std::vector<ArenaLine> BuildArenaTable(const ArenaInputs& in) {
     std::vector<ArenaLine> lines;
     lines.push_back({"GPU driver arena", in.gpu_arena_mib, "taken at start, the driver places its buffers inside it (ORBIS_ARENA_MIB)"});
-    lines.push_back({"JIT code caches", in.jit_cache_mib * static_cast<std::uint64_t>(in.jit_cores > 0 ? in.jit_cores : 0),
-                     std::to_string(in.jit_cores) + " cores x " + std::to_string(in.jit_cache_mib) + " MiB; a full cache is emptied whole, never grown (jit_cache_mib)"});
+    const std::uint64_t jit_cores = in.jit_cores > 0 ? static_cast<std::uint64_t>(in.jit_cores) : 0;
+    if (in.jit_lazy) {
+        // The two first 2 MiB steps of each cache are taken with it (the constant pool and the prelude); the rest as the code grows.
+        lines.push_back({"JIT code caches", 4 * jit_cores,
+                         "taken at start; each of " + std::to_string(in.jit_cores) + " caches may grow to " + std::to_string(in.jit_cache_mib) + " MiB (" +
+                             std::to_string(in.jit_cache_mib * jit_cores) + " MiB reserved), in 2 MiB steps as the code needs them (jit_cache_commit)"});
+    } else {
+        lines.push_back({"JIT code caches", in.jit_cache_mib * jit_cores,
+                         std::to_string(in.jit_cores) + " cores x " + std::to_string(in.jit_cache_mib) + " MiB; a full cache is emptied whole, never grown (jit_cache_mib)"});
+    }
     lines.push_back({"Stream buffer", in.stream_buffer_mib, "GARLIC, outside the arena (Eden patch 0028)"});
     std::uint64_t taken = 0;
     for (const ArenaLine& line : lines) {
@@ -225,7 +233,7 @@ std::vector<ArenaLine> BuildArenaTable(const ArenaInputs& in) {
     lines.push_back({"Left", left,
                      "guest RAM as the game touches it" +
                          std::string(in.sysflex_budget_mib > 0 ? " (the first " + std::to_string(in.sysflex_budget_mib) + " MiB from the system pool, not from this)" : "") +
-                         ", the C heap and the GPU images outside the arena"});
+                         ", the C heap and the GPU images outside the arena" + std::string(in.jit_lazy ? ", and the code caches as they grow" : "")});
     return lines;
 }
 

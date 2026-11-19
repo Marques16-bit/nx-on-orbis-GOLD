@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 09:36:36 -0300
+Subject: [PATCH] PS4: counters for image uploads and for DMA copies done by
+ the CPU
+
+0.9.7, diagnostics only (no behaviour change), for Super Mario Maker 2, whose classic-theme textures blink between sharp and flat.
+
+Two places decide how much texture data the CPU moves:
+ - TextureCache::RefreshContents uploads an image whole when its CpuModified flag is set (a new image, or one the CPU wrote to anywhere in it);
+ - Maxwell DMA copies between pitch and block-linear memory, or between two block-linear surfaces, on the CPU when the GPU path
+   (AccessAccelerateDMA) declines them; a sub-rectangle written that way marks the whole image CpuModified, so the next draw uploads it all.
+Both now count, under #ifdef __ORBIS__, into extern "C" counters the frontend defines (weak) and logs every ten seconds: uploads, bytes, the
+largest single upload, and the three kinds of CPU copy with their bytes. A blinking title then shows in boot.log whether it is these paths that
+move the data and how much, before anything is changed in them. The asynchronous decode and unswizzle paths are not counted (they queue
+the work instead of uploading in RefreshContents).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PwQLQy9xSN2RjJRnq5bYjb
+---
+ src/video_core/engines/maxwell_dma.cpp       | 22 ++++++++++++++++++++
+ src/video_core/texture_cache/texture_cache.h | 20 ++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/src/video_core/engines/maxwell_dma.cpp b/src/video_core/engines/maxwell_dma.cpp
+index ed4675e..ef41d61 100644
+--- a/src/video_core/engines/maxwell_dma.cpp
++++ b/src/video_core/engines/maxwell_dma.cpp
+@@ -17,6 +17,22 @@
+ #include "video_core/renderer_base.h"
+ #include "video_core/textures/decoders.h"
+ 
++#ifdef __ORBIS__
++// eden-ps4 (0.9.7): copies the GPU path declined, which the CPU then swizzles one by one. The frontend defines the counters (weak) and
++// logs them every ten seconds; a game whose textures blink (Super Mario Maker 2) shows here whether it is these copies that rewrite them.
++extern "C" {
++extern unsigned long long ps4_dma_cpu_swizzles;        // pitch -> block-linear copies done by the CPU
++extern unsigned long long ps4_dma_cpu_swizzle_bytes;
++extern unsigned long long ps4_dma_cpu_unswizzles;      // block-linear -> pitch copies done by the CPU
++extern unsigned long long ps4_dma_cpu_unswizzle_bytes;
++extern unsigned long long ps4_dma_cpu_bl_copies;       // block-linear -> block-linear copies done by the CPU
++extern unsigned long long ps4_dma_cpu_bl_copy_bytes;
++}
++#define PS4_COUNT(counter, amount) __atomic_fetch_add(&(counter), static_cast<unsigned long long>(amount), __ATOMIC_RELAXED)
++#else
++#define PS4_COUNT(counter, amount) ((void)0)
++#endif
++
+ namespace Tegra::Engines {
+ 
+ using namespace Texture;
+@@ -217,6 +233,8 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
+     Tegra::Memory::GpuGuestMemoryScoped<u8, Tegra::Memory::GuestMemoryFlags::UnsafeReadCachedWrite>
+         tmp_write_buffer(memory_manager, dst_operand.address, dst_size, &write_buffer);
+ 
++    PS4_COUNT(ps4_dma_cpu_unswizzles, 1);
++    PS4_COUNT(ps4_dma_cpu_unswizzle_bytes, dst_size);
+     UnswizzleSubrect(tmp_write_buffer, tmp_read_buffer, bytes_per_pixel, width, height, depth,
+                      x_offset, src_params.origin.y, x_elements, regs.line_count, block_height,
+                      block_depth, dst_operand.pitch);
+@@ -282,6 +300,8 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
+         tmp_write_buffer(memory_manager, dst_addr, dst_size, &write_buffer);
+ 
+     //  If the input is linear and the output is tiled, swizzle the input and copy it over.
++    PS4_COUNT(ps4_dma_cpu_swizzles, 1);
++    PS4_COUNT(ps4_dma_cpu_swizzle_bytes, src_size);
+     SwizzleSubrect(tmp_write_buffer, tmp_read_buffer, bytes_per_pixel, width, height, depth,
+                    x_offset, dst_params.origin.y, x_elements, regs.line_count, block_height,
+                    block_depth, regs.pitch_in);
+@@ -335,6 +355,8 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
+     Tegra::Memory::GpuGuestMemoryScoped<u8, Tegra::Memory::GuestMemoryFlags::SafeReadCachedWrite>
+         tmp_write_buffer(memory_manager, regs.offset_out, dst_size, &write_buffer);
+ 
++    PS4_COUNT(ps4_dma_cpu_bl_copies, 1);
++    PS4_COUNT(ps4_dma_cpu_bl_copy_bytes, mid_buffer_size);
+     UnswizzleSubrect(intermediate_buffer, tmp_read_buffer, bytes_per_pixel, src_width, src.height,
+                      src.depth, src_x_offset, src.origin.y, x_elements, regs.line_count,
+                      src.block_size.height, src.block_size.depth, pitch);
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 5bb8a67..70e1867 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -93,6 +93,16 @@ inline s32 audit_failures = 3;
+ #endif
+ 
+ 
++#ifdef __ORBIS__
++// eden-ps4 (0.9.7): how often, and how much, the cache uploads an image whole (a new one, or one the CPU wrote to). The frontend defines the counters
++// (weak) and logs them every ten seconds, next to the ones in maxwell_dma.cpp.
++extern "C" {
++extern unsigned long long ps4_tex_uploads;
++extern unsigned long long ps4_tex_upload_bytes;
++extern unsigned long long ps4_tex_upload_largest;  // bytes of the largest single upload
++}
++#endif
++
+ #ifdef __ORBIS__
+ #include <cstdlib>
+ namespace VideoCommon {
+@@ -1387,6 +1397,16 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+         QueueAsyncUnswizzle(image, image_id);
+         return;
+     }
++#ifdef __ORBIS__
++    {
++        const unsigned long long bytes = static_cast<unsigned long long>(MapSizeBytes(image));
++        __atomic_fetch_add(&ps4_tex_uploads, 1ULL, __ATOMIC_RELAXED);
++        __atomic_fetch_add(&ps4_tex_upload_bytes, bytes, __ATOMIC_RELAXED);
++        if (bytes > __atomic_load_n(&ps4_tex_upload_largest, __ATOMIC_RELAXED)) {
++            __atomic_store_n(&ps4_tex_upload_largest, bytes, __ATOMIC_RELAXED); // one thread writes it (the GPU thread)
++        }
++    }
++#endif
+     auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
+     UploadImageContents(image, staging);
+     runtime.InsertUploadMemoryBarrier();
+-- 
+2.43.0
+

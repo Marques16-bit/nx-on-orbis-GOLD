@@ -25,6 +25,13 @@ __attribute__((weak)) unsigned long long ps4_jit_cache_large = 0;        // code
 __attribute__((weak)) unsigned long long ps4_jit_cache_small = 0;        // code caches that had to settle for 16 KiB boundaries
 __attribute__((weak)) unsigned long long ps4_jit_blocks_compiled = 0;    // blocks the JIT compiled (all cores)
 __attribute__((weak)) unsigned long long ps4_jit_ranges_invalidated = 0; // cache ranges the emulator asked to invalidate (each halts a core)
+// Eden patch 0034 (0.9.7): the code caches take their direct memory in 2 MiB steps as the code grows.
+__attribute__((weak)) unsigned ps4_jit_cache_lazy = 1;                   // 1: reserve the cache and fill it as it grows; 0: take it whole (set before the cores are made)
+__attribute__((weak)) unsigned long long ps4_jit_chunks_large = 0;       // steps taken on 2 MiB boundaries
+__attribute__((weak)) unsigned long long ps4_jit_chunks_small = 0;       // steps that had to settle for 16 KiB boundaries
+__attribute__((weak)) unsigned long long ps4_jit_commit_failed = 0;      // steps the kernel refused (that cache stops growing)
+__attribute__((weak)) unsigned long long ps4_jit_reserved_bytes = 0;     // address space reserved for the code caches
+__attribute__((weak)) unsigned long long ps4_jit_committed_bytes = 0;    // direct memory the code caches hold now
 }
 
 namespace Ps4JitCache {
@@ -56,12 +63,39 @@ inline bool Parse(const std::string& value, unsigned* out) {
     return true;
 }
 
-/// What goes into ps4_jit_cache_mib for this start (0 = Eden's 32). A value in settings.txt is used as it is. With "auto" a console with room for it
-/// ("roomy": 4.3 GiB of direct memory or more) gets AutoRoomyMiB; any other console, and a start after a death before drawing (safe mode, when the
-/// memory may have been the cause), keep 32.
-inline unsigned ForStart(unsigned requested, bool roomy, bool safe_mode) {
+/// 0.9.7, settings.txt jit_cache_commit=lazy|full. "lazy" (the default): a cache is reserved address space and takes its direct memory in 2 MiB steps as
+/// the code grows (Eden patch 0034); "full": the whole cache is taken when the core is made, as until 0.9.6.
+inline bool ParseCommit(const std::string& value, bool* lazy) {
+    if (value == "lazy" || value == "auto" || value == "on") {
+        *lazy = true;
+        return true;
+    }
+    if (value == "full" || value == "off") {
+        *lazy = false;
+        return true;
+    }
+    return false;
+}
+
+/// What goes into ps4_jit_cache_lazy for this start: the setting, except after a death before drawing (safe mode: the way that was always taken, whose
+/// memory use is known).
+inline bool LazyForStart(bool requested, bool safe_mode) {
+    return requested && !safe_mode;
+}
+
+constexpr unsigned AutoLazyRoomyMiB = 256; // "auto" with lazy steps on a roomy console: the ceiling costs nothing until the code needs it
+constexpr unsigned AutoLazyMiB = 128;      // likewise on any other console
+
+/// What goes into ps4_jit_cache_mib for this start (0 = Eden's 32). A value in settings.txt is used as it is. With "auto" and the lazy steps of 0.9.7
+/// the cache is a ceiling that costs nothing until the code reaches it, so it is generous (256 MiB per core on a roomy console, 128 elsewhere): the whole
+/// flush of a full cache, a stall of seconds, is what a small cache costs. Without them (safe mode, jit_cache_commit=full) a console with room
+/// for it ("roomy": 4.3 GiB of direct memory or more) gets AutoRoomyMiB; any other console, and a start after a death before drawing, keep 32.
+inline unsigned ForStart(unsigned requested, bool roomy, bool safe_mode, bool lazy = false) {
     if (requested != 0) {
         return requested;
+    }
+    if (lazy && !safe_mode) {
+        return roomy ? AutoLazyRoomyMiB : AutoLazyMiB;
     }
     return (roomy && !safe_mode) ? AutoRoomyMiB : 0;
 }
@@ -89,6 +123,8 @@ inline std::string Describe(unsigned requested, unsigned used, const Counts& c) 
     const unsigned mib = Effective(used);
     if (c.full == 0 && c.asked == 0) {
         const char* why = requested != 0 ? "jit_cache_mib in settings.txt"
+                          : mib >= 256 ? "automatic on this console; the most the setting gives"
+                          : mib >= 128 ? "automatic on this console; jit_cache_mib=256 in settings.txt gives more room"
                           : mib > DefaultMiB ? "automatic on this console; jit_cache_mib=128 in settings.txt gives more room"
                                              : "default; jit_cache_mib=64 or 128 in settings.txt gives more room";
         std::snprintf(line, sizeof line, "JIT cache: %u MiB per core (%s); never thrown away whole so far", mib, why);
@@ -110,6 +146,40 @@ inline std::string DescribePages(unsigned long long large, unsigned long long sm
     std::snprintf(line, sizeof line,
                   "JIT cache memory: %llu core cache(s) on 2 MiB boundaries (the kernel can use large pages for them), %llu on 16 KiB boundaries (the block the kernel gave when no 2 MiB one was left)",
                   large, small);
+    return line;
+}
+
+/// How much direct memory the code caches hold (Eden patch 0034): with lazy steps it is what the code has needed so far; taken whole it is the reservation.
+struct Commit {
+    unsigned long long reserved = 0;   // bytes of address space reserved for code caches
+    unsigned long long committed = 0;  // bytes of direct memory they hold now
+    unsigned long long large = 0;      // lazy steps on 2 MiB boundaries
+    unsigned long long small = 0;      // lazy steps on 16 KiB boundaries
+    unsigned long long failed = 0;     // steps the kernel refused
+    bool operator==(const Commit& o) const { return reserved == o.reserved && committed == o.committed && failed == o.failed; }
+    bool operator!=(const Commit& o) const { return !(*this == o); }
+};
+
+inline Commit ReadCommit() {
+    return {ps4_jit_reserved_bytes, ps4_jit_committed_bytes, ps4_jit_chunks_large, ps4_jit_chunks_small, ps4_jit_commit_failed};
+}
+
+/// The boot.log line for it, once a cache exists. 'lazy' is what this start asked for. Empty before the first cache is made.
+inline std::string DescribeCommit(bool lazy, const Commit& c) {
+    if (c.reserved == 0) {
+        return {};
+    }
+    char line[420];
+    const unsigned long long reserved = c.reserved >> 20;
+    const unsigned long long committed = c.committed >> 20;
+    if (!lazy) {
+        std::snprintf(line, sizeof line, "JIT cache memory: taken whole (jit_cache_commit=full or safe mode): %llu MiB of direct memory held from the start for the code caches", committed);
+        return line;
+    }
+    std::snprintf(line, sizeof line,
+                  "JIT cache memory: %llu MiB held now of %llu MiB reserved, taken in 2 MiB steps as the code grows (%llu step(s) on 2 MiB boundaries, %llu on 16 KiB)%s",
+                  committed, reserved, c.large, c.small,
+                  c.failed == 0 ? "" : "; THE KERNEL REFUSED A STEP: that cache stops growing and is emptied whole when it is full");
     return line;
 }
 

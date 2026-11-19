@@ -187,6 +187,26 @@ int main() {
         in.jit_cores = 0;
         Check(BuildArenaTable(in)[1].mib == 0, "arenas: no cores, no JIT cache");
         in.jit_cores = 4;
+        // 0.9.7: with lazy steps the caches are reserved (a ceiling), and only their first two 2 MiB steps are taken at the start.
+        in.jit_cache_mib = 256;
+        in.jit_lazy = true;
+        const std::vector<ArenaLine> lazy_table = BuildArenaTable(in);
+        Check(lazy_table.size() == 4 && lazy_table[1].name == "JIT code caches" && lazy_table[1].mib == 4 * 4,
+              "arenas, lazy code caches: only the first two 2 MiB steps of each of the 4 caches are taken at the start");
+        Check(lazy_table[1].note.find("each of 4 caches may grow to 256 MiB") != std::string::npos && lazy_table[1].note.find("1024 MiB reserved") != std::string::npos &&
+                  lazy_table[1].note.find("jit_cache_commit") != std::string::npos,
+              "arenas, lazy code caches: the note says the ceiling, the reservation and the setting");
+        Check(lazy_table[3].mib == 4608 - 1280 - 16 - 128 && lazy_table[3].note.find("the code caches as they grow") != std::string::npos,
+              "arenas, lazy code caches: what is left is larger by what the ceiling no longer takes, and the note says the caches draw on it");
+        in.jit_lazy = false;
+        Check(BuildArenaTable(in)[1].mib == 4 * 256 && BuildArenaTable(in)[3].note.find("as they grow") == std::string::npos,
+              "arenas, caches taken whole: the whole size is taken and the note does not say they grow");
+        in.jit_lazy = true;
+        in.jit_cores = 0;
+        Check(BuildArenaTable(in)[1].mib == 0, "arenas, lazy code caches: no cores, nothing taken");
+        in.jit_cores = 4;
+        in.jit_cache_mib = 64;
+        in.jit_lazy = false;
         const std::vector<std::string> lines = DescribeArenaTable(in);
         Check(lines.size() == 5 && lines[0].find("4608 MiB") != std::string::npos && lines[1].find("GPU driver arena") != std::string::npos &&
                   lines[4].find("Left") != std::string::npos,

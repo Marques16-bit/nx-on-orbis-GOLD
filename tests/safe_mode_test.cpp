@@ -71,6 +71,8 @@ int main() {
     Check(IsExperimental("jit_direct_table", "on") && !IsExperimental("jit_direct_table", "off"), "jit_direct_table (0.9.3): on is experimental");
     Check(IsExperimental("jit_cache_mib", "64") && IsExperimental("jit_cache_mib", "256") && !IsExperimental("jit_cache_mib", "auto") && !IsExperimental("jit_cache_mib", "32"),
           "jit_cache_mib (0.9.4): a bigger cache is experimental (it takes direct memory up front), the default is not");
+    Check(IsExperimental("jit_cache_commit", "lazy") && !IsExperimental("jit_cache_commit", "full"),
+          "jit_cache_commit (0.9.7): lazy steps are experimental (a start after a death takes the memory whole, the way that was always taken)");
     Check(IsExperimental("astc", "gpu") && IsExperimental("astc", "async") && !IsExperimental("astc", "cpu"), "astc: only the CPU mode is safe");
     Check(!IsExperimental("sysflex_mib", "384") && !IsExperimental("sysflex_mib", "2048") && !IsExperimental("sysflex_mib", "auto") &&
               !IsExperimental("sysflex_mib", "off") && !IsExperimental("players", "4"),

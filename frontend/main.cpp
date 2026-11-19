@@ -80,6 +80,7 @@
 #include "firmware_zip.h"
 #include "memory_guard.h"
 #include "jit_cache.h"
+#include "texture_traffic.h"
 #include "jit_pack.h"
 #include "safe_mode.h"
 #include "thread_placement.h"
@@ -655,6 +656,8 @@ bool g_jit_direct_table = true;
 /// 0.9.4, settings.txt: jit_cache_mib=auto|16..256 - the JIT code cache of each core (Eden patch 0031; auto = 64 MiB on a roomy console since 0.9.4 fix 2, else 32).
 unsigned g_jit_cache_mib = 0;
 unsigned g_jit_cache_used_mib = 0; // what ForStart made of it for this start (0 = Eden's 32)
+/// 0.9.7, settings.txt: jit_cache_commit=lazy|full - the code caches take their direct memory in 2 MiB steps as the code grows (Eden patch 0034), or whole at the start as before.
+bool g_jit_cache_lazy = true;
 bool g_memory_roomy = false;       // the memory plan's tier is Roomy (ApplyMemoryPlan)
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
@@ -755,7 +758,9 @@ void ApplyMemoryPlan() {
 ///                               (default off; experimental; needs part 2 of the JIT pack, boot.log says whether the build has it)
 ///   jit_cache_mib=auto|16..256  0.9.4: the JIT code cache of each core in MiB (auto = 64 on a roomy console, else 32). A cache that fills up is emptied whole and
 ///                               every block compiled again (a stall); boot.log counts how often that happened
-///   memory_action=warn|pause    when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
+///   jit_cache_commit=lazy|full  0.9.7: lazy (default): each core's code cache reserves its range and takes direct memory in 2 MiB steps as the code grows (auto
+///                               then means a ceiling of 256 MiB on a roomy console, else 128); full: the whole cache is taken at the start, as until 0.9.6
+///   memory_action=warn|pause   when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
 ///   overlay_draw=on|off         draw the HUD and the pause menu over the game (default on)
@@ -882,6 +887,8 @@ void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
             // Likewise.
         } else if (key == "jit_cache_mib" && Ps4JitCache::Parse(value, &g_jit_cache_mib)) {
             // Applied before the core starts (ps4_jit_cache_mib is read when a core is made).
+        } else if (key == "jit_cache_commit" && Ps4JitCache::ParseCommit(value, &g_jit_cache_lazy)) {
+            // Likewise (ps4_jit_cache_lazy is read when a core's code cache is made).
         } else if (key.size() == 12 && key.compare(0, 6, "player") == 0 && key[6] >= '1' && key[6] <= '4' && key.compare(7, 5, "_type") == 0 &&
                    (value == "auto" || value == "pro" || value == "dual" || value == "left" || value == "right" || value == "handheld")) {
             g_player_type[key[6] - '1'] = value == "auto" ? std::string() : value; // applied before the core starts
@@ -1226,8 +1233,12 @@ int main() {
             Ps4::Log("%s", line.c_str());
         }
     }
-    g_jit_cache_used_mib = Ps4JitCache::ForStart(g_jit_cache_mib, g_memory_roomy, g_safe_mode);
+    const bool jit_lazy = Ps4JitCache::LazyForStart(g_jit_cache_lazy, g_safe_mode);
+    g_jit_cache_used_mib = Ps4JitCache::ForStart(g_jit_cache_mib, g_memory_roomy, g_safe_mode, jit_lazy);
     ps4_jit_cache_mib = g_jit_cache_used_mib;
+    ps4_jit_cache_lazy = jit_lazy ? 1u : 0u;
+    Ps4::Log("JIT cache memory: %s%s", jit_lazy ? "taken in 2 MiB steps as the code grows (Eden patch 0034; jit_cache_commit=lazy)" : "taken whole when each core is made",
+             !g_jit_cache_lazy ? " (jit_cache_commit=full in settings.txt)" : g_safe_mode ? " (safe mode)" : "");
     Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, g_jit_cache_used_mib, Ps4JitCache::Read()).c_str());
     {
         // 0.9.6: the fixed split of the console's memory, written out (the arena is what ApplyMemoryPlan put in the environment, with any override).
@@ -1235,7 +1246,8 @@ int main() {
         arenas.direct_mib = Ps4::DirectMemoryTotal() >> 20;
         const char* arena_text = std::getenv("ORBIS_ARENA_MIB");
         arenas.gpu_arena_mib = arena_text != nullptr ? std::strtoull(arena_text, nullptr, 10) : 0;
-        arenas.jit_cache_mib = g_jit_cache_used_mib;
+        arenas.jit_cache_mib = Ps4JitCache::Effective(g_jit_cache_used_mib);
+        arenas.jit_lazy = jit_lazy;
         arenas.sysflex_budget_mib = Ps4::SystemFlexibleBudgetMiB();
         for (const std::string& line : Ps4Memory::DescribeArenaTable(arenas)) {
             Ps4::Log("%s", line.c_str());
@@ -1490,6 +1502,8 @@ int main() {
     Ps4JitCache::Counts jit_cache_logged; // the JIT cache flush counts as last logged (0.9.4)
     Ps4JitCache::Activity jit_activity_logged; // the JIT work counts as last logged (0.9.4 fix 2)
     std::string jit_pages_logged;              // how the code caches were taken, as last logged (0.9.4 fix 2)
+    Ps4JitCache::Commit jit_commit_logged;     // the direct memory the code caches hold, as last logged (0.9.7)
+    Ps4TextureTraffic::Counts texture_logged;  // the texture counters as of the last status line (0.9.7, Eden patch 0035)
     // 0.8.2: safe mode says so on the screen for the first 15 s, and the file is cleared once the game has drawn.
     const std::uint64_t safe_notice_until = g_safe_mode ? Ps4::NowUs() + 30000000 : 0;
     bool safe_start_cleared = false;
@@ -1805,6 +1819,18 @@ int main() {
                 Ps4::Log("%s", Ps4JitCache::DescribeActivity(jit_activity_logged, act, 10).c_str());
                 jit_activity_logged = act;
             }
+            if (const Ps4TextureTraffic::Counts traffic = Ps4TextureTraffic::Read(); traffic != texture_logged) {
+                if (const std::string text = Ps4TextureTraffic::Describe(texture_logged, traffic, 10); !text.empty()) {
+                    Ps4::Log("%s", text.c_str());
+                }
+                texture_logged = traffic;
+            }
+            if (const Ps4JitCache::Commit commit = Ps4JitCache::ReadCommit(); commit != jit_commit_logged) {
+                jit_commit_logged = commit; // 0.9.7: how much direct memory the code caches hold now (it grows with the code, or is the whole reservation)
+                if (const std::string text = Ps4JitCache::DescribeCommit(ps4_jit_cache_lazy != 0, commit); !text.empty()) {
+                    Ps4::Log("%s", text.c_str());
+                }
+            }
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
                 Ps4::Log("%s", Ps4Hook::Describe().c_str());
@@ -1851,6 +1877,12 @@ int main() {
     }
     Ps4::Log("%s", Ps4JitCache::Describe(g_jit_cache_mib, g_jit_cache_used_mib, Ps4JitCache::Read()).c_str());
     Ps4::Log("%s", Ps4JitCache::DescribeTotals(Ps4JitCache::ReadActivity()).c_str());
+    if (const std::string text = Ps4JitCache::DescribeCommit(ps4_jit_cache_lazy != 0, Ps4JitCache::ReadCommit()); !text.empty()) {
+        Ps4::Log("%s", text.c_str());
+    }
+    if (const std::string text = Ps4TextureTraffic::DescribeTotals(Ps4TextureTraffic::Read()); !text.empty()) {
+        Ps4::Log("%s", text.c_str());
+    }
     system.Pause();
     {
         const auto mem = Common::Orbis::GetStats();

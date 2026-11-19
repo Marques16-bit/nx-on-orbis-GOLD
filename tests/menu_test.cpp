@@ -219,6 +219,9 @@ void TestVisibility() {
     Check(TierOf("overlay_mode") == Tier::Mandatory && TierOf("overlay_delay") == Tier::Mandatory, "the HUD's timing options are mandatory");
     Check(TierOf("cpu_clock") == Tier::Experimental && TierOf("cpu_ticks") == Tier::Experimental && TierOf("astc_recompress") == Tier::Experimental,
           "the clock, ticks and texture-compression options are experimental");
+    Check(TierOf("jit_cache_commit") == Tier::Experimental && FindOption("jit_cache_commit") &&
+              std::string(FindOption("jit_cache_commit")->choices[size_t(FindOption("jit_cache_commit")->default_index)].value) == "lazy",
+          "jit_cache_commit (0.9.7) is experimental and its default is lazy");
     Check(TierOf("mode") == Tier::Normal && TierOf("resolution") == Tier::Normal && TierOf("jit_cache_mib") == Tier::Normal &&
               TierOf("memory_profile") == Tier::Normal && TierOf("hud") == Tier::Normal && TierOf("players") == Tier::Normal,
           "the everyday options are normal");

@@ -1,4 +1,6 @@
-# The optimisation list (0.9.6), item by item
+# The optimisation lists (0.9.6 and 0.9.7), item by item
+
+The first list (0.9.6, six parts) is below, from item 1 to 6; **the second list (0.9.7, three parts and a texture fix) is the section "The second list (0.9.7)" after item 6.**
 
 The list that came with 0.9.6 has six parts. Each one was checked against what this port already is (Eden `5f142c79` on Mesa RADV, run through
 OpenOrbis) and against what the console runs have shown (`docs/STATUS.md`, `docs/TECHNICAL.md`). The rule was: do what applies and can be done
@@ -117,9 +119,86 @@ Also already in the hot paths: the descriptor update queue (`vk_update_descripto
 the host side with per-frame arenas would be a change in hundreds of places of an emulator that cannot be built here, for a gain nobody has measured (the
 profile shows the cost in JIT'd guest code, the page tables and the driver, not in `malloc`).
 
+## The second list (0.9.7)
+
+It came with the promise that the three items "make the PS4 run the games almost as if it were native", and with the definitive fix for Super Mario Maker 2's blinking textures. They were read against the code,
+the 29 console tests and the logs of 17 November 2026 (Super Mario Odyssey on 0.9.5, SpongeBob on 0.9.6). **Nothing in 0.9.7 has run on a console.** The rule is the same as before: do what applies, adapt what
+applies in another form, and say with the reason what does not.
+
+| # | Item | Verdict | What 0.9.7 does |
+|---|---|---|---|
+| 7 | GPU offload / ACE pipeline (a compute shader translates the Switch's command lists, `DrawIndirect` on the GPU) | **Does not apply** | nothing; `texture traffic:` shows what the CPU still moves |
+| 8 | Direct unified memory (zero-copy, hUMA, Garlic/Onion) | **Already how the driver does it where a copy can be avoided; the copy that is left is a conversion** | `texture traffic:` counts it; the code caches no longer take their memory whole |
+| 9 | AOT pre-compilation (ARM64 to x86-64 offline, a native blob) | **Adapted: the code caches grow in 2 MiB steps, so compiled code survives longer; no offline translation** | `jit_cache_commit=lazy` (patch 0034) |
+| 10 | Mario Maker 2, classic theme: page-fault tracking and sub-region unswizzle | **Page tracking is already there (by the page table, not by `mprotect`); the sub-region upload is not built: it needs the numbers first** | the counters of patch 0035 |
+
+### 7. GPU offload / ACE pipeline
+
+The premise is that the GPU is idle while the CPU translates. The logs say the opposite end of it: in the Odyssey run the driver's own BUDGET lines put the time spent **submitting** at about 0.3 % of the CPU, the
+wait for the GPU at **0 ms**, and one core, `CPUCore_0`, at about 80 % (the emulated ARM64 code). The GPU is not the limit, so work moved onto it has nothing to win; the cost is in the JIT'd guest code.
+What the item describes is also not what a Switch command list is: Eden does not translate command lists one by one, it runs the Maxwell engines (the macro interpreter and the state tracking) on the CPU and draws with
+Vulkan. Doing that on the GPU would be a new renderer (as item 1a), and the driver of this console has already shown it cannot be trusted with the GPU-driven paths: `VK_KHR_draw_indirect_count` and
+`VK_EXT_conditional_rendering` **hung the GPU** on this hardware (TECHNICAL.md, "The GPU driver"), and each submission is flattened into a 2 MiB staging buffer by the driver, so large generated command streams do not fit
+either. An ACE (asynchronous compute) pipeline would need a second queue to feed: Eden submits everything to one graphics queue, and a compute queue on this driver is something that would have to be tried on a console, with a GPU that already hangs on the paths above. Nothing is added.
+
+### 8. Direct unified memory (zero-copy)
+
+The PS4 does share one memory between the CPU and the GPU, and the port already uses it that way where a copy can go: the host-visible buffers (staging, stream, uniforms) are in the driver's Onion arena, which both
+sides see, and the images are in Garlic (item 1c), so nothing is copied "from CPU memory to GPU memory" in between: the CPU writes the staging buffer once and the GPU reads it. What is left is not a copy, it is a **conversion**: the
+Switch keeps textures in Maxwell's block-linear (GOB) layout, often ASTC-compressed, which a GCN GPU cannot sample, so every upload goes through an unswizzle (and a decode for ASTC) into a layout the GPU can read.
+Mapping the guest RAM straight into the GPU (an imported host pointer) would give the GPU the wrong layout, and it conflicts with how the guest RAM is kept: it is reserved whole and committed in 64 KiB chunks **as the game
+touches it** (patches 0002, 0027, 0029, 0030), so a pointer into it has pages that do not exist yet and a GPU read of one is not a fault the emulator can answer. The real memory saving of this item is elsewhere: the
+JIT's code caches (item 9). Patch 0035 counts the data the CPU still moves (`texture traffic:`), so the next run puts a number on what a zero-copy path could save instead of a guess.
+
+### 9. Pre-compilation (AOT), adapted
+
+An offline translation of the game's ARM64 to a saved x86-64 blob is not possible to do honestly in this project: Dynarmic's output is not position independent (it embeds the addresses of the page table, of the
+callbacks and of each core's state, which are different at every start), the code of a game is only available decrypted at run time (keys and the game's files stay with the person; nothing of them is here), and a blob
+saved per game would have to be validated against the game's version and patches. What the item is after, "the first time through an area is slow, the second is not", is real: the log shows compile bursts that freeze
+the game for about 1.7 s, and the caches were **flushed when full** while 1 GiB of direct memory was taken for four caches at the start, most of it never used (the Odyssey run lost 1200 MiB of free direct memory in a
+minute and died at 44 MiB). So 0.9.7 changes how the caches get their memory (patch 0034):
+
+- each of the four code caches **reserves** its address range at the start (256 MiB on a roomy console, 128 MiB otherwise: `jit_cache_mib=auto`) and takes the direct memory **in 2 MiB steps as the code grows** (the first two steps
+  at the start). A game that compiles 40 MiB of code holds 40 MiB per core, not 256: the memory goes to the game, and a large ceiling means the cache is flushed (all compiled code thrown away) far less often;
+- memory is asked for a little ahead of the code, so a step the kernel refuses is not a crash: the cache stops growing there and is flushed when less than 1 MiB is left, as a full cache always was; `boot.log` says `THE KERNEL REFUSED A STEP`;
+- `jit_cache_commit=full` takes the memory whole as 0.9.6 did (EXPERIMENTAL tier; a start after a crash uses it by itself, as every experimental option);
+- `boot.log` says how much is held (`JIT cache memory: X MiB held now of Y MiB reserved ...`), every ten seconds when it changes, and at the end.
+
+The compile time itself does not disappear: a precompiled warm-up would only move it to the loading screen, and compiling a block list on another thread needs Dynarmic's per-core state to be locked. It is not in this
+version.
+
+### 10. Super Mario Maker 2, classic theme: textures that blink
+
+The two ideas of the text are both about when a texture the CPU wrote to is uploaded again. What the code does today (Eden `5f142c79` with our patches):
+
+- **Page tracking already exists**, and is done in software, not by `mprotect` and a SIGSEGV handler: the pages a texture lives on are counted as cached (`UpdatePagesCachedCount`, `RasterizerMarkRegionCached`), a guest
+  write to one of them takes the slow path (`HandleRasterizerWrite`) instead of a plain store, and ends in `TextureCache::WriteMemory`, which sets the image's `CpuModified` flag; the next draw that uses the image uploads it
+  (`RefreshContents`). Doing it with `mprotect` would replace that check with a fault on every first write, and this port already uses SIGSEGV for another job (the commit of the guest RAM, patches 0027/0029/0030): two
+  handlers for the same signal is the kind of change that has to run on the console to be trusted.
+- **The tracking is per image, not per rectangle.** A game that writes one small piece of a large texture (a DMA copy from linear to block-linear memory into a sub-rectangle) makes `RefreshContents` upload and
+  unswizzle the whole image again. The sub-region unswizzle of the text (`UnswizzleSubrect` with x, y, w, h) exists in Eden's texture code, but the upload path (`UploadImageContents`) works on the whole image, and
+  keeping a dirty rectangle per image means changing the template code of the texture cache in many places, with no console to try it on. That is the part of the idea that could be right, and it is **not built** in 0.9.7.
+- **What is built is the measurement**: patch 0035 counts, in the two places that decide it, how many images are uploaded whole (and how many bytes, and the largest), and how many copies the GPU path declined and the CPU
+  swizzled by itself (pitch to block-linear, block-linear to pitch, block-linear to block-linear), and `boot.log` prints them every ten seconds (`texture traffic, last 10 s: ...`) and at the end. If the classic-theme
+  textures blink while this line shows a few large uploads per second, the whole-image upload is the cause and the dirty rectangle is the next patch; if it shows nothing, the cause is somewhere else (an image kept as a
+  view of the wrong memory, which patch 0033 already looks at) and a dirty rectangle would not help.
+
+### What does not change for a base PS4 or a Slim
+
+The memory plan reads what the console gives the process (the direct memory, `memory_profile`), and the numbers in this page are those of a PS4 Pro. A base PS4 and a Slim have never been tried. The lazy code caches help
+them the most: 1 GiB taken at the start is a quarter of what they have.
+
 ## What to look for in the next `boot.log`
 
 - `cpu features:` (AVX, and whether the system saves its state);
 - `thread placement:` lines: the cores allowed, the 20 first placements with `running on core N`;
 - `memory arenas:` the table;
 - then the FPS of a game that was measured before, with `cpu_affinity=auto` and with `cpu_affinity=off`.
+
+And for 0.9.7:
+
+- `JIT cache memory:` at the start (lazy or whole, the ceiling per cache) and every ten seconds while it changes: the **held** memory should grow slowly with the game, not jump to the ceiling; `THE KERNEL REFUSED A STEP`
+  would be the one line that matters;
+- `memory arenas:` again: the line for the JIT caches should be about 16 MiB at the start, not 1024;
+- the free direct block of **Super Mario Odyssey** over three minutes or more (it fell 1200 MiB a minute before and the game closed at 44 MiB);
+- `texture traffic, last 10 s:` in **Super Mario Maker 2**, classic theme, with the textures blinking, and the line at the end (`whole game`).

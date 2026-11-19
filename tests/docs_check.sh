@@ -192,6 +192,21 @@ check "frontend/jit_cache.h defines the three symbols patch 0031 declares (weak)
 check "patch 0032 is a git patch that touches the code allocator and Dynarmic's A64 interface only, and frontend/jit_cache.h defines what it declares (weak)" '
     [ "$(grep "^diff --git" patches/eden/0032-*.patch | wc -l | tr -d " ")" = 2 ] && grep "^diff --git" patches/eden/0032-*.patch | grep -q "block_of_code.cpp" &&
     for sym in ps4_jit_cache_large ps4_jit_cache_small ps4_jit_blocks_compiled ps4_jit_ranges_invalidated; do grep -q "weak)) [a-z ]* $sym" frontend/jit_cache.h && grep -q "$sym" patches/eden/0032-*.patch || exit 1; done'
+check "patch 0034 is a git patch that touches Dynarmic's code allocator and block_of_code.h only, and frontend/jit_cache.h defines what it declares (weak)" '
+    [ "$(grep "^diff --git" patches/eden/0034-*.patch | wc -l | tr -d " ")" = 2 ] && grep "^diff --git" patches/eden/0034-*.patch | grep -q "block_of_code.cpp" && grep "^diff --git" patches/eden/0034-*.patch | grep -q "block_of_code.h" &&
+    for sym in ps4_jit_cache_lazy ps4_jit_chunks_large ps4_jit_chunks_small ps4_jit_commit_failed ps4_jit_reserved_bytes ps4_jit_committed_bytes; do grep -q "weak)) [a-z ]* $sym" frontend/jit_cache.h && grep -q "$sym" patches/eden/0034-*.patch || exit 1; done'
+check "patch 0035 is a git patch that touches the DMA engine and the texture cache only, and frontend/texture_traffic.h defines what it declares (weak)" '
+    [ "$(grep "^diff --git" patches/eden/0035-*.patch | wc -l | tr -d " ")" = 2 ] && grep "^diff --git" patches/eden/0035-*.patch | grep -q "maxwell_dma.cpp" && grep "^diff --git" patches/eden/0035-*.patch | grep -q "texture_cache.h" &&
+    for sym in ps4_tex_uploads ps4_tex_upload_bytes ps4_tex_upload_largest ps4_dma_cpu_swizzles ps4_dma_cpu_swizzle_bytes ps4_dma_cpu_unswizzles ps4_dma_cpu_unswizzle_bytes ps4_dma_cpu_bl_copies ps4_dma_cpu_bl_copy_bytes; do
+        grep -q "weak)) [a-z ]* $sym" frontend/texture_traffic.h && grep -q "extern unsigned long long $sym" patches/eden/0035-*.patch || exit 1; done'
+check "the patches are numbered 0001 to 0035 without a gap, and README and ROADMAP say 35" '
+    [ "$(ls patches/eden/*.patch | wc -l | tr -d " ")" = 35 ] && [ -f patches/eden/0035-*.patch ] && grep -q "+ 35 patches in .patches/eden/." README.md && grep -q "patches/eden/. (35)" docs/ROADMAP.md'
+check "0.9.7: the version, the changelog and the optimisation page agree" '
+    grep -q "EDEN_PS4_VERSION \"0.9.7\"" frontend/frontend.cmake && grep -q "^## \[0.9.7\]" CHANGELOG.md && grep -q "v0.9.7" README.md &&
+    grep -q "^## The second list (0.9.7)" docs/OPTIMIZATION.md && grep -q "THE KERNEL REFUSED A STEP" docs/OPTIMIZATION.md && grep -q "texture traffic" CHANGELOG.md'
+check "main.cpp logs the code caches' memory and the texture traffic, and ends with the totals" '
+    grep -q "Ps4JitCache::DescribeCommit" frontend/main.cpp && grep -q "Ps4TextureTraffic::Describe(texture_logged" frontend/main.cpp && grep -q "Ps4TextureTraffic::DescribeTotals" frontend/main.cpp &&
+    grep -q "jit_cache_commit" frontend/main.cpp'
 check "part 2 of the pack reads and writes bytes (Path.read_text(newline=) is Python 3.13 only; the runner has 3.12), and its test tries every interpreter" '
     ! grep -q "newline=" patches/eden-jit/0002-*.py && grep -q "read_bytes" patches/eden-jit/0002-*.py && grep -q "python3.12" tests/jit_direct_test.sh'
 check "safe mode names the game and counts the deaths, and main.cpp asks with the game" '

@@ -364,6 +364,27 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
   start of the header). `Read` checks every offset and size against the file size before reading, takes the first NACP title with a name (UTF-8 checked, control characters turned to spaces) and the JPEG
   (at most 4 MiB, must start `FF D8`). `main.cpp` reads it for every `.nro` of `roms/` before the covers, so the title shows even when a picture in `covers/` wins.
 
+### 0.9.7: the code caches in 2 MiB steps, and the texture counters (never run on a console)
+
+- **Why.** The Odyssey run of 0.9.5 (`boot_20261117-170506.log`): the free direct block fell about 1200 MiB a minute until 44 MiB, then the game closed; the four code caches had taken 1 GiB at the start (`jit_cache_mib` x 4, whole).
+  Dynarmic's x64 backend already asks for memory by step: `BlockOfCode::EnsureMemoryCommitted(codesize)` is called before every block is compiled (`a64_interface.cpp`), after the check that flushes the cache when less than 1 MiB is left.
+  On Windows it commits pages of a reserved range; patch 0034 gives the Orbis build the same behaviour.
+- **Patch 0034** (`block_of_code.cpp/.h`). `OrbisCodeAllocator::alloc` reserves the address range (`sceKernelReserveVirtualRange`, 2 MiB aligned) and takes the first two 2 MiB steps at once; if any kernel call of that fails it falls back to the whole
+  block, taken the old way (2 MiB or 16 KiB aligned). A step is `sceKernelAllocateDirectMemory(Large, Large)` (alignment `Granule` if that is refused), `sceKernelMapDirectMemory(MapFixed)`, `sceKernelMprotect(rwx)`.
+  `BlockOfCode::EnsureMemoryCommitted` raises `committed_size` to the wanted size, rounded up by the allocator. Once the prelude is complete (`orbis_ahead`) it works a little ahead of the code: a step is asked for while
+  `codesize + 1 MiB` of room is left and the cache is taken to `codesize + 2 MiB` past the code, because Dynarmic checks `SpaceRemaining()` (and flushes a full cache) *before* it calls `EnsureMemoryCommitted` and then writes a block into what it
+  finds, so a step the kernel refuses must still leave that block its room. On a refusal `orbis_limit` is set to what is held and `SpaceRemaining()` honours it, so the next compile flushes the cache when less than 1 MiB is left and
+  nothing is written past what exists. The members `committed_size` and `orbis_limit` are declared **before** `constant_pool` in `block_of_code.h`, because the constant pool's constructor calls `EnsureMemoryCommitted`. The prelude is committed
+  1 MiB at a time (it was 16 MiB). The counters (`ps4_jit_chunks_large/small`, `ps4_jit_commit_failed`, `ps4_jit_reserved_bytes`, `ps4_jit_committed_bytes`) are weak definitions in `frontend/jit_cache.h`; `ps4_jit_cache_lazy` says which way
+  the allocator should go (0 = whole, as until 0.9.6).
+- **Frontend.** `jit_cache_commit=lazy|full` (`ParseCommit`), `LazyForStart(requested, safe_mode)` (false in safe mode), `ForStart(requested, roomy, safe_mode, lazy)` (`auto` = 256 MiB roomy / 128 with lazy steps, 64 / 32 without),
+  `DescribeCommit` for the `JIT cache memory:` line, `Ps4Memory::BuildArenaTable` (`jit_lazy`: the caches are 4 x 4 MiB at the start and the note says they grow). The option is EXPERIMENTAL in `safe_mode.h` (`value != "full"`).
+- **Patch 0035** (`maxwell_dma.cpp`, `texture_cache.h`; counters only). `TextureCache::RefreshContents` counts uploads, bytes and the largest; the three CPU paths of the Maxwell DMA engine that the GPU path declined (`CopyPitchToBlockLinear`,
+  `CopyBlockLinearToPitch`, `CopyBlockLinearToBlockLinear`) count copies and bytes. `frontend/texture_traffic.h` defines them (weak), prints the difference every ten seconds when it is not zero and the totals at the end. The asynchronous decode path is not counted.
+- **What was checked, and what was not.** On a PC: patches 0034 and 0035 apply in order; the files they change compile with `-fsyntax-only` (0034 with `-D__ORBIS__`, 0035 for `maxwell_dma.cpp`; `texture_cache.h` could not be compiled on a PC because
+  the Vulkan headers are not available there, its change is a block of plain counter increments); the frontend's logic is tested. **Not checked:** that the kernel accepts a direct-memory step of 2 MiB aligned to 2 MiB (the 16 KiB
+  fallback exists for that), that mapping over the reserved range with `MapFixed` keeps the executable flag, that Dynarmic's flush-when-full works when `orbis_limit` is hit, and the whole of it on a console.
+
 ### 0.9.6: thread placement, the memory table, the CPU line
 
 - **Placement** (`frontend/thread_placement.h`, pure; `ps4_platform.cpp`: `ConfigureThreadPlacement`, `PlaceCurrentThread`). `main()` calls `ConfigureThreadPlacement(cpu_affinity && !safe_mode)` before Eden starts a thread: it finds

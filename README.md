@@ -3,7 +3,7 @@
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
-> **Status: experimental, under development (v0.9.6).** It boots, has its own menu, and runs real games, but
+> **Status: experimental, under development (v0.9.7).** It boots, has its own menu, and runs real games, but
 > slowly: the emulated CPU is the limit, not the GPU. Some games run, some close when the console runs out of
 > memory. It is not a way to play Switch games on a PS4 yet. Everything below says what was **measured on a console**
 > and what was only written and tested on a PC.
@@ -21,7 +21,7 @@ A **0.9.5** (segundo zip: **R2 num jogo abre as opções só daquele jogo**, sal
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 33 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 35 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
 | Renderer | Vulkan only (`-DENABLE_OPENGL=OFF`), on Mesa RADV "PlayStation 4 Liverpool" (Vulkan 1.3) |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Build | GitHub Actions builds the `.pkg` and the ELF from a tag ([docs/BUILDING.md](docs/BUILDING.md)); [Releases](../../releases) |
@@ -73,6 +73,14 @@ The speeds above come from console logs of 0.7.9 to 0.9.0. The 0.8.5 and 0.9.0 l
 Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **not confirmed**: [CHANGELOG.md](CHANGELOG.md) says so
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
+
+## What is new in 0.9.7: the JIT's memory in steps, and the second optimisation list
+
+The Odyssey log of 0.9.5 showed what ends that game: the free direct memory fell about 1200 MiB a minute until 44 MiB were left, with 1 GiB of it taken at the start for four JIT code caches that were mostly empty. In 0.9.7 each cache
+**reserves** its range and takes memory **in 2 MiB steps as the code grows** (`jit_cache_commit=lazy`, the default; Eden patch 0034), so the memory goes to the game, and the ceiling can be larger (256 MiB per core on a roomy console), which
+empties the cache, a stall, far less often. A start after a crash takes it whole, as before. New `boot.log` lines: `JIT cache memory:` and `texture traffic:` (Eden patch 0035, counters only: how much texture data the CPU moves,
+for Super Mario Maker 2's blinking classic-theme textures). The second optimisation list (GPU offload, zero-copy memory, AOT pre-compilation) was read against the code and the logs: one item became the change above, two do not apply, each with the
+reason in [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md). **Nothing of it has run on a console.**
 
 ## What is new in 0.9.6: the optimisation list, read against the code
 
@@ -186,7 +194,7 @@ the repository is applied.
 ## Documentation
 
 - [docs/SETTINGS.md](docs/SETTINGS.md): every option and quick profile (generated).
-- [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md): the 0.9.6 optimisation list, item by item: what was done, what is already there, what does not apply.
+- [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md): the 0.9.6 and 0.9.7 optimisation lists, item by item: what was done, what is already there, what does not apply.
 - [docs/EDEN4.md](docs/EDEN4.md): what Eden4 has, what this project took from it, and what it did not and why.
 - [docs/STATUS.md](docs/STATUS.md): the closed v0.1.0 experiment: expectations, the 29 console tests, profiling.
 - [docs/TECHNICAL.md](docs/TECHNICAL.md): platform findings (the SDK's 16-bit `wmemchr`, the package layout that grants 4.4 GiB, the

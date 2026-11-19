@@ -2,6 +2,39 @@
 
 Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub are taken from here.
 
+## [0.9.7] - The JIT's memory in steps, the second optimisation list read against the code, and the texture counters
+
+**Nothing in this version has run on a console.** On a PC: the new code-cache settings and log lines, the memory table and the texture counters are tested (46 checks: `tests/jit_cache_test.cpp`; `tests/memory_guard_test.cpp`: 78;
+`tests/menu_test.cpp`: 394, normal and public build; `tests/safe_mode_test.cpp`), and the two new Eden patches were applied on top of the others and syntax-checked on a PC (patch 0034: Dynarmic's `block_of_code.cpp`,
+`a64_interface.cpp` and `constant_pool.cpp` with `-D__ORBIS__`; patch 0035: `maxwell_dma.cpp`). **The Orbis code of patch 0034 (the kernel calls that take direct memory) and the changes in `main.cpp`, `ps4_platform.cpp` and
+`texture_cache.h` compile only in CI and have never run on a console.**
+
+The second optimisation list (GPU offload / ACE pipeline, zero-copy memory, AOT pre-compilation, and Mario Maker 2's blinking textures) was read against the code and against the logs of 17 November (Super Mario Odyssey on
+0.9.5, SpongeBob on 0.9.6), item by item, in [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md): **one real change** (the JIT's memory, from the AOT item's goal), **one measurement** (the texture counters, for the Mario Maker 2 item) and **two items that
+do not apply**, each with its reason. The evidence behind the change: the Odyssey log lost about 1200 MiB of free direct memory a minute until 44 MiB were left and the game closed, with 1 GiB of it taken at the start for four
+JIT code caches that were mostly empty; the driver's submit time was about 0.3 % of the CPU and the wait for the GPU 0 ms, so the GPU is not what the game waits for (which is why GPU offload has nothing to win).
+
+- **JIT code caches take their memory in 2 MiB steps** (Eden patch 0034; `jit_cache_commit=lazy|full`, CPU AND MEMORY tab, EXPERIMENTAL tier, default `lazy`). Each of the four cores reserves the address range of its cache at the start
+  and takes direct memory only as its code grows (the first two 2 MiB steps at the start, then a step whenever Dynarmic's own `EnsureMemoryCommitted` asks before compiling a block). With `jit_cache_mib=auto` the ceiling is now 256 MiB
+  per core on a roomy console and 128 otherwise (it was 64 and 32, because every byte was taken at the start): a game that compiles 40 MiB of code holds 40 MiB per core, not the whole ceiling, and the cache is emptied
+  (a stall, everything compiled again) far less often. Memory is asked for a little ahead of the code (a step when 2 MiB of room is left), so a step the kernel refuses does not crash: the cache stops growing there and is emptied when less than 1 MiB is left, and `boot.log` says so. A value written in `settings.txt`
+  still wins. **A start after a crash (safe mode) takes the memory whole, as 0.9.6 did**, and so does `jit_cache_commit=full`.
+- **`JIT cache memory:` in `boot.log`**: at the start (lazy or whole, the ceiling per cache), every ten seconds when it changes (memory held now of memory reserved, how many steps were taken on 2 MiB boundaries and how many on
+  16 KiB, and whether the kernel refused one) and at the end. The `memory arenas:` table shows the caches as what is taken at the start (about 16 MiB, not 1024) and says that they grow. (It also fixes a latent 0.9.6 slip: with
+  Eden's own cache size (`jit_cache_mib=0`) the table showed 0 MiB for the caches.)
+- **`texture traffic:` in `boot.log`** (Eden patch 0035, diagnostics only, nothing changes in how textures are handled): how many images the texture cache uploaded whole and how many bytes (and the largest), and how many copies the GPU
+  path declined and the CPU swizzled by itself (pitch to block-linear, block-linear to pitch, block-linear to block-linear), every ten seconds when it moved and at the end. It is the measurement that decides the next step for
+  **Super Mario Maker 2's classic-theme textures that blink**: Eden already tracks the CPU's writes to a texture's pages in software (not with `mprotect`), but it uploads the **whole** image when any part of it was written, and the
+  sub-region path of the idea (a dirty rectangle per image, unswizzling only x, y, w, h) means changing the texture cache's template code in many places with no console to try it on, so it is not built yet.
+- **What the list's three items come to:** (7) GPU offload / ACE: **does not apply** (GPU wait 0 ms; `VK_KHR_draw_indirect_count` and `VK_EXT_conditional_rendering` already hung this GPU; Eden has one graphics queue); (8) zero-copy:
+  **already how the driver does it where a copy can be avoided**: what is left is the Switch's block-linear layout being converted into one the GPU can sample, and the guest RAM is committed as touched, so it cannot be handed to the
+  GPU as it is; (9) AOT: **adapted** as the lazy code caches (Dynarmic's output is not position independent and a game's code exists decrypted only at run time, so there is no offline blob; a warm-up would only move the compile
+  time to the loading screen).
+- **Not run, and what to send back:** `boot.log` of Super Mario Odyssey for three minutes or more (the `JIT cache memory:` and `memory arenas:` lines and the free direct block over time: it fell 1200 MiB a minute before),
+  and of Super Mario Maker 2 in the classic theme with the textures blinking (`texture traffic, last 10 s:` and the line at the end). If the game dies at the start, the next start is safe mode and takes the caches whole.
+- **Still open from before:** `.nro` games do not boot (the lines `loader:` and `load failed` of a `boot.log` after trying one are what is needed), `.nsz`, Mario Odyssey's RAM changing while idle, SpongeBob's own error 2162-0001 (the game
+  stops itself; the cause is not known), and whether `cpu_affinity=auto` helps (compare it with `off`).
+
 ## [0.9.6] - The optimisation list, read against the code: core placement, the memory split written out, and what is already there
 
 **Nothing in this version has run on a console.** On a PC: the placement plan (which core each thread gets, for 4, 5, 6 and 7 allowed cores, gaps in the mask, an unknown mask), the memory table and the new option
