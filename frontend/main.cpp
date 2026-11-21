@@ -79,6 +79,7 @@
 #include "eden_settings.h"
 #include "firmware_zip.h"
 #include "memory_guard.h"
+#include "arena_place.h"
 #include "jit_cache.h"
 #include "texture_traffic.h"
 #include "jit_pack.h"
@@ -97,6 +98,7 @@
 namespace fs = std::filesystem;
 
 extern "C" void Ps4HeapCensus(); // heap_census.cpp
+extern "C" void Ps4HeapBigMaps(); // mmap_watch.cpp (0.9.7 fix): the last requests of 16 MiB or more musl made of the kernel
 
 namespace Vulkan {
 extern int ps4_bgra_mode;    // vk_texture_cache.cpp
@@ -658,7 +660,11 @@ unsigned g_jit_cache_mib = 0;
 unsigned g_jit_cache_used_mib = 0; // what ForStart made of it for this start (0 = Eden's 32)
 /// 0.9.7, settings.txt: jit_cache_commit=lazy|full - the code caches take their direct memory in 2 MiB steps as the code grows (Eden patch 0034), or whole at the start as before.
 bool g_jit_cache_lazy = true;
+/// 0.9.7 fix, settings.txt: arena_align=on|off - the driver's memory arena is placed inside one 4 GiB window (arena_place.h). ON by default and hidden in the
+/// menu (a mandatory option); a start after a death (safe mode) switches it off, and so does a line `arena_align=off`.
+bool g_arena_align = true;
 bool g_memory_roomy = false;       // the memory plan's tier is Roomy (ApplyMemoryPlan)
+int g_plan_arena_mib = 0;          // the driver arena the memory plan chose (settings.txt's env=ORBIS_ARENA_MIB may override it)
 // 0.8.0: when the picture freezes for a second or more, three screenshots are taken as it recovers (autoshot=off in
 // settings.txt stops it). At most three freezes per run, so a game that stutters all the time is not paused by it.
 // The public build (EDEN_PS4_PUBLIC=1, third zip of 0.9.5) takes screenshots out altogether: no L3 + TouchPad, no automatic ones, no shots/ folder.
@@ -695,6 +701,7 @@ void ApplyMemoryPlan() {
     const Ps4Memory::Tier detected = Ps4Memory::TierForBudget(budget_mib);
     const Ps4Memory::Plan plan = Ps4Memory::PlanFor(profile, detected);
     g_memory_roomy = plan.tier == Ps4Memory::Tier::Roomy;
+    g_plan_arena_mib = plan.arena_mib;
     setenv("ORBIS_ARENA_MIB", std::to_string(plan.arena_mib).c_str(), 1);
     Ps4Hook::Pending().shader_preload = plan.shader_preload;
     if (!plan.driver_cache) {
@@ -760,6 +767,8 @@ void ApplyMemoryPlan() {
 ///                               every block compiled again (a stall); boot.log counts how often that happened
 ///   jit_cache_commit=lazy|full  0.9.7: lazy (default): each core's code cache reserves its range and takes direct memory in 2 MiB steps as the code grows (auto
 ///                               then means a ceiling of 256 MiB on a roomy console, else 128); full: the whole cache is taken at the start, as until 0.9.6
+///   arena_align=on|off          0.9.7 fix: the driver's memory arena is placed inside one 4 GiB window, so every shader/descriptor allocation can be a 32-bit
+///                               one (default on; off in safe mode). boot.log says where the kernel would have put it and where it went
 ///   memory_action=warn|pause   when the memory watch is critical: pause the game and ask (default since 0.8.4) or only warn on screen
 ///   driver_cache=on|off         the driver's own pipeline cache file (default on; off saves memory and disk)
 ///   overlay=on|off              the video hook: HUD, pause menu, colour swap (default on)
@@ -889,6 +898,8 @@ void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
             // Applied before the core starts (ps4_jit_cache_mib is read when a core is made).
         } else if (key == "jit_cache_commit" && Ps4JitCache::ParseCommit(value, &g_jit_cache_lazy)) {
             // Likewise (ps4_jit_cache_lazy is read when a core's code cache is made).
+        } else if (key == "arena_align" && Ps4Jit::ParseSwitch(value, &g_arena_align)) {
+            // Armed just before the game is loaded (the driver's arena is made inside Load).
         } else if (key.size() == 12 && key.compare(0, 6, "player") == 0 && key[6] >= '1' && key[6] <= '4' && key.compare(7, 5, "_type") == 0 &&
                    (value == "auto" || value == "pro" || value == "dual" || value == "left" || value == "right" || value == "handheld")) {
             g_player_type[key[6] - '1'] = value == "auto" ? std::string() : value; // applied before the core starts
@@ -1217,6 +1228,10 @@ int main() {
         g_jit_page_reuse = false;
         g_jit_direct_table = false;
     }
+    if (g_safe_mode && g_arena_align) {
+        Ps4::Log("safe mode: arena_align is off for this start (the placement of the driver's arena is new in 0.9.7 fix and a start that died is not the one to try it on)");
+        g_arena_align = false;
+    }
     if (g_safe_mode && g_cpu_affinity) {
         Ps4::Log("safe mode: cpu_affinity is off for this start (thread placement is new in 0.9.6 and a start that died is not the one to try it on)");
     }
@@ -1251,6 +1266,12 @@ int main() {
         arenas.sysflex_budget_mib = Ps4::SystemFlexibleBudgetMiB();
         for (const std::string& line : Ps4Memory::DescribeArenaTable(arenas)) {
             Ps4::Log("%s", line.c_str());
+        }
+        if (g_plan_arena_mib > 0 && arenas.gpu_arena_mib > static_cast<std::uint64_t>(g_plan_arena_mib)) {
+            // 0.9.7 fix: the Mario Maker 2 test ran with env=ORBIS_ARENA_MIB=1536 in settings.txt and ran out of direct memory at 170 s.
+            Ps4::Log("memory: the driver arena is %llu MiB because settings.txt has env=ORBIS_ARENA_MIB; this console's profile gives %d MiB. The %llu MiB difference is taken from the C heap, the game's memory and the code caches (it is not a speed setting)",
+                     static_cast<unsigned long long>(arenas.gpu_arena_mib), g_plan_arena_mib,
+                     static_cast<unsigned long long>(arenas.gpu_arena_mib - static_cast<std::uint64_t>(g_plan_arena_mib)));
         }
     }
     if (g_players > 1) {
@@ -1342,7 +1363,13 @@ int main() {
         Ps4::Log("shader cache: the last start died while the cache loaded (attempt %d, title %s): this start builds with one thread",
                  marker.attempt, marker.title.empty() ? "unknown" : marker.title.c_str());
     }
+    Ps4ArenaPlace::Arm(g_arena_align); // the driver makes its arena inside Load (Vulkan device creation)
+    Ps4::Log("arena placement: %s", g_arena_align ? "on (arena_align=on): the driver's arena is put inside one 4 GiB window" : "off (arena_align=off or safe mode): the kernel puts the arena where it likes");
     const Core::SystemResultStatus loaded = system.Load(window, game, params);
+    Ps4ArenaPlace::Arm(false);
+    if (g_arena_align && !Ps4ArenaPlace::Reached()) {
+        Ps4::Log("arena placement: the driver's request for its arena never went through the placement (the arena was not made in Load, or the size did not match ORBIS_ARENA_MIB)");
+    }
     {
         unsigned asked = 0, capped = 0;
         Ps4::WorkerCapStats(&asked, &capped);
@@ -1833,6 +1860,7 @@ int main() {
             }
             if (++status_count % 3 == 1) {
                 Ps4HeapCensus();
+                Ps4HeapBigMaps();
                 Ps4::Log("%s", Ps4Hook::Describe().c_str());
             }
         }

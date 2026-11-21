@@ -69,6 +69,8 @@ int main() {
     Check(IsExperimental("auto_stub", "on") && !IsExperimental("auto_stub", "off"), "auto_stub");
     Check(IsExperimental("jit_page_reuse", "on") && !IsExperimental("jit_page_reuse", "off"), "jit_page_reuse (0.9.2): on is experimental");
     Check(IsExperimental("jit_direct_table", "on") && !IsExperimental("jit_direct_table", "off"), "jit_direct_table (0.9.3): on is experimental");
+    Check(IsExperimental("arena_align", "on") && !IsExperimental("arena_align", "off"),
+          "arena_align (0.9.7 fix): a line saying on is ignored in safe mode (main() switches the default off too)");
     Check(IsExperimental("jit_cache_mib", "64") && IsExperimental("jit_cache_mib", "256") && !IsExperimental("jit_cache_mib", "auto") && !IsExperimental("jit_cache_mib", "32"),
           "jit_cache_mib (0.9.4): a bigger cache is experimental (it takes direct memory up front), the default is not");
     Check(IsExperimental("jit_cache_commit", "lazy") && !IsExperimental("jit_cache_commit", "full"),

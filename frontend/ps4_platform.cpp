@@ -31,6 +31,8 @@
 #include "thread_placement.h"
 
 extern "C" {
+void Ps4HeapCensus();  // heap_census.cpp
+void Ps4HeapBigMaps(); // mmap_watch.cpp (0.9.7 fix)
 int sceKernelInstallExceptionHandler(int signal, void (*handler)(int, void*));
 int sceKernelRemoveExceptionHandler(int signal);
 int sceKernelRaiseException(pthread_t thread, int signal);
@@ -158,6 +160,13 @@ void OrbisLog(const char* fmt, va_list ap) {
 
 void OrbisFatal(const char* what) {
     Log("!! FATAL from the driver/overlay during %s: %s", g_phase.load(), what ? what : "(null)");
+    // 0.9.7 fix: who holds the C heap, and who asked for the big blocks, at the moment the process dies (the Mario Maker 2 test died of
+    // std::bad_alloc with nothing in boot.log that named the holder). Once; the census uses static tables and the log's own buffer.
+    static std::atomic<bool> described{false};
+    if (!described.exchange(true)) {
+        Ps4HeapCensus();
+        Ps4HeapBigMaps();
+    }
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }

@@ -204,6 +204,15 @@ check "the patches are numbered 0001 to 0035 without a gap, and README and ROADM
 check "0.9.7: the version, the changelog and the optimisation page agree" '
     grep -q "EDEN_PS4_VERSION \"0.9.7\"" frontend/frontend.cmake && grep -q "^## \[0.9.7\]" CHANGELOG.md && grep -q "v0.9.7" README.md &&
     grep -q "^## The second list (0.9.7)" docs/OPTIMIZATION.md && grep -q "THE KERNEL REFUSED A STEP" docs/OPTIMIZATION.md && grep -q "texture traffic" CHANGELOG.md'
+check "0.9.7 fix: the arena is placed inside one 4 GiB window (wrapped, switched, safe-mode off, tested, documented)" '
+    grep -q "wrap=sceKernelMapDirectMemory" frontend/frontend.cmake && grep -q "arena_place.cpp" frontend/frontend.cmake && grep -q "__wrap_sceKernelMapDirectMemory" frontend/arena_place.cpp &&
+    grep -q "Ps4ArenaPlace::Arm(g_arena_align)" frontend/main.cpp && grep -q "g_safe_mode && g_arena_align" frontend/main.cpp && grep -q "arena_align" frontend/safe_mode.h &&
+    grep -q "arena placement" tests/memory_guard_test.cpp && grep -q "arena_align" docs/SETTINGS.md && grep -q "^### 0.9.7 fix" CHANGELOG.md && grep -q "643 MiB" CHANGELOG.md'
+check "0.9.7 fix: the heap census sees 256 KiB, a wrapper of __mmap records the big requests, and both are printed when the process dies" '
+    grep -q "Threshold = 256 << 10" frontend/heap_census.cpp && grep -q "wrap=__mmap" frontend/frontend.cmake && grep -q "mmap_watch.cpp" frontend/frontend.cmake && grep -q "__wrap___mmap" frontend/mmap_watch.cpp &&
+    grep -q "Ps4HeapBigMaps" frontend/main.cpp && grep -q "Ps4HeapBigMaps" frontend/ps4_platform.cpp'
+check "0.9.7 fix: the new frontend files compile on a PC (syntax only; the SDK is not needed for them)" '
+    ${CXX:-g++} -std=c++20 -fsyntax-only -Wall -Wextra frontend/arena_place.cpp && ${CXX:-g++} -std=c++20 -fsyntax-only -Wall -Wextra frontend/mmap_watch.cpp && ${CXX:-g++} -std=c++20 -fsyntax-only -Wall -Wextra frontend/heap_census.cpp'
 check "main.cpp logs the code caches' memory and the texture traffic, and ends with the totals" '
     grep -q "Ps4JitCache::DescribeCommit" frontend/main.cpp && grep -q "Ps4TextureTraffic::Describe(texture_logged" frontend/main.cpp && grep -q "Ps4TextureTraffic::DescribeTotals" frontend/main.cpp &&
     grep -q "jit_cache_commit" frontend/main.cpp'

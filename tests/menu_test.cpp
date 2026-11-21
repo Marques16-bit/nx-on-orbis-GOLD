@@ -237,6 +237,9 @@ void TestVisibility() {
     const Option* swap = FindOption("colour_swap");
     Check(reuse && std::string(reuse->choices[size_t(reuse->default_index)].value) == "on", "jit_page_reuse is on by default");
     Check(direct && std::string(direct->choices[size_t(direct->default_index)].value) == "on", "jit_direct_table is on by default");
+    const Option* align = FindOption("arena_align");
+    Check(TierOf("arena_align") == Tier::Mandatory && align && std::string(align->choices[size_t(align->default_index)].value) == "on",
+          "arena_align (0.9.7 fix) is a mandatory option, on by default");
     Check(swap && std::string(swap->choices[size_t(swap->default_index)].value) == "on", "colour_swap is on by default");
     {
         SettingsFile off("jit_page_reuse=off\n");
@@ -262,6 +265,7 @@ void TestVisibility() {
         }
     }
     Check(!leak, "no mandatory or experimental option shows in the everyday tabs");
+    Check(!lists(r.ui, MenuUi::TabCpu, "arena_align"), "arena_align (mandatory) is not listed in the menu");
     Check(!lists(r.ui, MenuUi::TabCpu, "jit_page_reuse") && !lists(r.ui, MenuUi::TabCpu, "jit_direct_table") && lists(r.ui, MenuUi::TabCpu, "jit_cache_mib"),
           "the CPU tab has the JIT cache size but not the two mandatory JIT switches");
     Check(!lists(r.ui, MenuUi::TabVideo, "dma_accuracy") && !lists(r.ui, MenuUi::TabVideo, "dyna_state") && !lists(r.ui, MenuUi::TabVideo, "sync_memory") &&

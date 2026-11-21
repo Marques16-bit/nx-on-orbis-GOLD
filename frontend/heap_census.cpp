@@ -2,9 +2,13 @@
 // eden-ps4: who holds Eden's big heap allocations.
 //
 // The link wraps malloc/calloc/realloc/free/posix_memalign/aligned_alloc (-Wl,--wrap=...). Every
-// allocation of 1 MiB or more is recorded with the three return addresses above the allocator
-// (the first one inside Eden, past operator new and std:: containers), and Ps4HeapCensus() logs
-// the call sites holding the most live bytes. Small allocations pass straight through.
+// allocation of 256 KiB or more (0.9.7 fix: it was 1 MiB; musl serves anything over 224 KiB with a mapping of its own,
+// and in the Mario Maker 2 test the carve-outs held three times what this list named) is recorded with the
+// three return addresses above the allocator (the first one inside Eden, past operator new and std:: containers), and
+// Ps4HeapCensus() logs the call sites holding the most live bytes. Small allocations pass straight through.
+//
+// 0.9.7 fix: the requests of 16 MiB or more that musl makes of the kernel are recorded by frontend/mmap_watch.cpp (a wrapper of __mmap);
+// it is a file of its own because this one is also built by a host test that does not link the __mmap wrapper.
 //
 // v0.2: free() and realloc() used to take a global spin lock and scan the whole table on EVERY
 // call, from every thread, although nearly every pointer freed is a small one that was never
@@ -18,6 +22,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <sys/types.h>
+
 extern "C" {
 void* __real_malloc(size_t);
 void* __real_calloc(size_t, size_t);
@@ -27,14 +33,19 @@ int __real_posix_memalign(void**, size_t, size_t);
 void* __real_aligned_alloc(size_t, size_t);
 }
 
+namespace orbis {
+// orbis-compat's report of the carve-outs (orbis_mmap.h). Weak: a library that does not have it just leaves this out of the census.
+__attribute__((weak)) void mmapDirectReport(const char* where);
+}
+
 namespace Ps4 {
 void Log(const char* fmt, ...);
 }
 
 namespace {
 
-constexpr size_t Threshold = 1 << 20;
-constexpr int MaxLive = 8192;
+constexpr size_t Threshold = 256 << 10;
+constexpr int MaxLive = 16384;
 constexpr std::uint64_t ImageBase = 0x400000;
 
 struct Live {
@@ -195,10 +206,10 @@ void Ps4HeapCensus() {
             sites[s].count += 1;
         }
     }
-    Ps4::Log("heap census: %lu MiB live in allocations >= 1 MiB, %d sites (untracked overflow %lu MiB)",
+    Ps4::Log("heap census: %lu MiB live in allocations >= 256 KiB, %d sites (untracked overflow %lu MiB)",
              static_cast<unsigned long>(total >> 20), nsites,
              static_cast<unsigned long>(g_untracked.load() >> 20));
-    for (int shown = 0; shown < 12; ++shown) {
+    for (int shown = 0; shown < 16; ++shown) {
         int best = -1;
         for (int s = 0; s < nsites; ++s) {
             if (sites[s].bytes != 0 && (best < 0 || sites[s].bytes > sites[best].bytes)) {
@@ -208,12 +219,15 @@ void Ps4HeapCensus() {
         if (best < 0) {
             break;
         }
-        Ps4::Log("   %5lu MiB in %4d from eboot+0x%lx <- 0x%lx <- 0x%lx",
-                 static_cast<unsigned long>(sites[best].bytes >> 20), sites[best].count,
+        Ps4::Log("   %7.1f MiB in %4d from eboot+0x%lx <- 0x%lx <- 0x%lx",
+                 static_cast<double>(sites[best].bytes) / (1 << 20), sites[best].count,
                  static_cast<unsigned long>(sites[best].site[0] - ImageBase),
                  static_cast<unsigned long>(sites[best].site[1] - ImageBase),
                  static_cast<unsigned long>(sites[best].site[2] - ImageBase));
         sites[best].bytes = 0;
+    }
+    if (&orbis::mmapDirectReport != nullptr) {
+        orbis::mmapDirectReport("heap census"); // the carve-outs the C heap lives in: held, live, peak (orbis-compat)
     }
 }
 

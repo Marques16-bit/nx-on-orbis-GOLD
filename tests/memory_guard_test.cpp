@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "arena_place.h"
 #include "memory_guard.h"
 #include "thread_placement.h"
 
@@ -256,6 +257,111 @@ int main() {
             disjoint = disjoint && (six.GuestMask(i) & six.SecondaryMask()) == 0;
         }
         Check(disjoint, "placement: no core is given to two guest threads, and none to a guest thread and the rest");
+    }
+
+    {
+        // 0.9.7 fix: the driver's arena inside one 4 GiB window (arena_place.h), against a model of the kernel's first-fit address space.
+        namespace AP = Ps4ArenaPlace;
+        constexpr std::uint64_t MiB = 1ull << 20;
+        constexpr std::uint64_t GiB = 1ull << 30;
+        // The kernel: gives the lowest address >= `floor` that is aligned and not inside a taken range, and takes it.
+        struct Kernel {
+            std::vector<std::pair<std::uint64_t, std::uint64_t>> taken; // start, length
+            std::uint64_t floor = 0x200000000ull;
+            std::uint64_t Reserve(std::uint64_t len) {
+                std::uint64_t at = (floor + 2 * MiB - 1) / (2 * MiB) * (2 * MiB);
+                for (bool moved = true; moved;) {
+                    moved = false;
+                    for (const auto& [start, size] : taken) {
+                        if (at < start + size && start < at + len) {
+                            at = (start + size + 2 * MiB - 1) / (2 * MiB) * (2 * MiB);
+                            moved = true;
+                        }
+                    }
+                }
+                taken.emplace_back(at, len);
+                return at;
+            }
+        };
+
+        // The numbers of the Odyssey test (mesa.log): arena at 0x3d5c00000, 1536 MiB, RADV's window from 0x3d7c04000.
+        Check(AP::PrivateBytes == 0x3d7c04000ull - 0x3d5c00000ull, "arena placement: the private slice is the 0x2004000 the driver keeps (mesa.log of the Odyssey test)");
+        Check(AP::Usable32(0x3d5c00000ull, 1536 * MiB) == 0x400000000ull - 0x3d7c04000ull && AP::Usable32(0x3d5c00000ull, 1536 * MiB) / MiB == 643,
+              "arena placement: the Odyssey arena had 643 MiB that could serve 32-bit allocations, not 1503");
+        Check(!AP::Whole(0x3d5c00000ull, 1536 * MiB), "arena placement: ...so it is not whole");
+        Check(AP::Whole(0x40d204000ull - AP::PrivateBytes, 1536 * MiB) && AP::Whole(0x400000000ull, 1536 * MiB) && AP::Whole(0x435c00000ull, 1536 * MiB),
+              "arena placement: an arena from a window's start, or wholly inside one, is whole (the runs that passed)");
+        Check(AP::Whole(0x400000000ull - 1536 * MiB, 1536 * MiB), "arena placement: an arena that ends exactly on a boundary is whole");
+        Check(!AP::Whole(0x400000000ull - 1536 * MiB + 2 * MiB, 1536 * MiB), "arena placement: one 2 MiB step past the boundary is not");
+        Check(AP::Whole(0x3ffffc000ull, 1536 * MiB), "arena placement: the driver's window is what counts (address32_hi comes from it): an arena that starts just below a boundary but whose window starts above it is whole");
+        Check(AP::Usable32(0x1000, 0x1000) == 0 && !AP::Whole(0x1000, AP::PrivateBytes), "arena placement: an arena that cannot hold the private slice has nothing usable");
+
+        // The Odyssey run: everything before the arena took the space up to 0x3d5c00000.
+        {
+            Kernel kernel;
+            kernel.taken.emplace_back(0x200000000ull, 0x3d5c00000ull - 0x200000000ull);
+            const AP::Outcome out = AP::Search([&](std::uint64_t len) { return kernel.Reserve(len); }, 1536 * MiB);
+            Check(out.first == 0x3d5c00000ull && out.fillers == 1 && out.filler[0] == 0x3d5c00000ull && out.chosen == 0x435c00000ull && out.tries == 2 && !out.refused,
+                  "arena placement: Odyssey layout - the straddling offer is kept as a filler and the next one, 0x435c00000, is chosen");
+            Check(AP::Whole(out.chosen, 1536 * MiB) && out.chosen >> 32 == 4, "arena placement: ...and it lies in window 0x4");
+            const std::string line = AP::Describe(out, 1536 * MiB, out.chosen);
+            Check(line.find("0x3d5c00000") != std::string::npos && line.find("643 MiB of 1503 MiB") != std::string::npos && line.find("0x435c00000") != std::string::npos &&
+                      line.find("inside one window") != std::string::npos,
+                  "arena placement: the log line names the first offer, the 643 of 1503 MiB, the chosen address and the result");
+            Check(AP::Describe(out, 1536 * MiB, 0x3d5c00000ull).find("STILL across a boundary") != std::string::npos,
+                  "arena placement: a driver arena that still straddled is called so in the log");
+        }
+        // A good first offer: nothing to move, nothing kept.
+        {
+            Kernel kernel;
+            kernel.taken.emplace_back(0x200000000ull, 0x40d204000ull - AP::PrivateBytes - 0x200000000ull);
+            const AP::Outcome out = AP::Search([&](std::uint64_t len) { return kernel.Reserve(len); }, 1280 * MiB);
+            Check(out.chosen == out.first && out.fillers == 0 && out.tries == 1, "arena placement: a first offer inside one window is taken as it is");
+            Check(AP::Describe(out, 1280 * MiB, out.chosen).find("nothing to move") != std::string::npos, "arena placement: ...and the log says nothing was moved");
+        }
+        // Wherever the kernel starts, a few offers are enough for any arena the profiles give (a window repeats every 4 GiB).
+        {
+            bool all_placed = true;
+            unsigned worst = 0;
+            for (const std::uint64_t arena_mib : {1024ull, 1152ull, 1280ull, 1536ull, 2048ull}) {
+                for (std::uint64_t start = 0x200000000ull; start < 0x600000000ull; start += 64 * MiB) {
+                    Kernel kernel;
+                    kernel.floor = start;
+                    const AP::Outcome out = AP::Search([&](std::uint64_t len) { return kernel.Reserve(len); }, arena_mib * MiB);
+                    all_placed = all_placed && out.chosen != 0 && AP::Whole(out.chosen, arena_mib * MiB);
+                    worst = out.tries > worst ? out.tries : worst;
+                }
+            }
+            Check(all_placed, "arena placement: for 1024 to 2048 MiB arenas and every start in 16 GiB, a window-whole range is found");
+            Check(worst <= 4, "arena placement: ...in at most four reservations");
+        }
+        // The kernel refuses: the search stops, nothing is chosen, and the log says so.
+        {
+            unsigned asked = 0;
+            const AP::Outcome out = AP::Search([&](std::uint64_t) -> std::uint64_t { return ++asked == 1 ? 0x3d5c00000ull : 0; }, 1536 * MiB);
+            Check(out.refused && out.chosen == 0 && out.fillers == 1 && out.tries == 1 && asked == 2, "arena placement: a refused reservation ends the search with nothing chosen");
+            Check(AP::Describe(out, 1536 * MiB, 0).find("left where the kernel puts it") != std::string::npos, "arena placement: ...and the log says the arena is left alone");
+            const AP::Outcome none = AP::Search([](std::uint64_t) -> std::uint64_t { return 0; }, 1536 * MiB);
+            Check(none.first == 0 && none.chosen == 0 && AP::Describe(none, 1536 * MiB, 0).find("refused to reserve") != std::string::npos,
+                  "arena placement: no reservation at all is said as such");
+        }
+        // The search never asks more than MaxTries times, and never more than the caller allows.
+        {
+            unsigned asked = 0;
+            AP::Search([&](std::uint64_t) -> std::uint64_t { return 0x3d5c00000ull + (asked++) * 0x1000000ull; }, 1536 * MiB);
+            Check(asked == AP::MaxTries, "arena placement: at most MaxTries reservations (each only reserves address space)");
+            unsigned asked_two = 0;
+            AP::Search([&](std::uint64_t) -> std::uint64_t { return 0x3d5c00000ull + (asked_two++) * 0x1000000ull; }, 1536 * MiB, 2);
+            Check(asked_two == 2, "arena placement: and no more than the caller allows");
+        }
+        // Which call is the driver's request for its arena.
+        Check(AP::ArenaMiBFromEnv("1536") == 1536 && AP::ArenaMiBFromEnv(nullptr) == 0 && AP::ArenaMiBFromEnv("") == 0 && AP::ArenaMiBFromEnv("abc") == 0,
+              "arena placement: ORBIS_ARENA_MIB is read the way the driver reads it");
+        Check(AP::IsArenaRequest(1536, 1536 * MiB, 0, true), "arena placement: the arena request is the size the environment names, free address, no flags");
+        Check(!AP::IsArenaRequest(1536, 512 * MiB, 0, true) && !AP::IsArenaRequest(1536, 128 * MiB, 0, true), "arena placement: a carve-out of the C heap is not the arena");
+        Check(!AP::IsArenaRequest(1536, 1536 * MiB, 0x10, true) && !AP::IsArenaRequest(1536, 1536 * MiB, 0, false), "arena placement: a fixed or addressed mapping is not the arena");
+        Check(!AP::IsArenaRequest(0, 1536 * MiB, 0, true) && !AP::IsArenaRequest(128, 128 * MiB, 0, true), "arena placement: no environment, or a bisect-size arena: not placed");
+        (void)GiB;
     }
     std::printf(g_failures == 0 ? "memory guard test: PASSED\n" : "memory guard test: FAILED\n");
     return g_failures == 0 ? 0 : 1;

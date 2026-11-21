@@ -4,6 +4,40 @@ Format: newest first. Versions follow docs/ROADMAP.md. Release notes on GitHub a
 
 ## [0.9.7] - The JIT's memory in steps, the second optimisation list read against the code, and the texture counters
 
+### 0.9.7 fix (second zip of 0.9.7; the version number stays 0.9.7, the build id's time tells the two apart)
+
+**What the console test of 0.9.7 showed** (Nov 19; Super Mario Odyssey and Super Mario Maker 2, `boot.log`, `mesa.log`, `eden.log`): the lazy code caches work (Mario Maker 2 held 168 MiB at 165 s, no step refused) and both games ran at 47 to 56 FPS for about
+three minutes with the GPU never waited for. **Both then died, of two different things, and neither is the code caches.**
+
+- **Super Mario Odyssey, at about 160 s: the driver ran out of 32-bit address space, not of memory.** `mesa.log` ends with `orbis-drm: out of 32-bit VA for 16384 bytes` (Vulkan answers `VK_ERROR_OUT_OF_HOST_MEMORY`, the game stops). The driver's
+  arena was at `0x3d5c00000`, 1536 MiB, RADV's window from `0x3d7c04000` to `0x435c00000`, and **a 4 GiB boundary (`0x400000000`) runs through it**: the driver warns about it at the start (`the arena straddles a 4 GiB boundary`) and only the
+  part below the boundary, **643 MiB of 1503**, can serve the allocations that must have a 32-bit address (shader binaries, descriptor tables). Odyssey's shaders and descriptors outgrew that at 160 s. Where the kernel puts the arena follows
+  what was mapped before it, so it moves from start to start (the runs where it sat inside one window never showed this): that is why this game "sometimes ran longer".
+- **Super Mario Maker 2, at 171 s: the C heap asked for memory the console no longer had.** The log shows four carve-outs taken in 0.6 s (128, 128, 256 and 256 MiB), then a request for 512 MiB refused by the cap on the heap's direct memory
+  (1536 MiB), the fall-back to the flexible pool (165 MiB left) refused too, and `operator new(40 bytes)` returning null: `std::bad_alloc`. Direct memory had 38 MiB free. **What is known:** the doubling sizes (128, 128, 256, 256, 512) are what a
+  heap that grows by ever larger steps looks like, and the heap census (allocations of 1 MiB or more, 476 MiB at 145 s) holds only about a third of what the heap had, so the rest was in allocations that no line named. **What is not known:** who asked.
+  This run also had `env=ORBIS_ARENA_MIB=1536` in `settings.txt`; the profile for this console gives 1280, and the 256 MiB difference is taken from exactly this memory.
+
+- **The driver's arena is placed inside one 4 GiB window** (`frontend/arena_place.h/.cpp`; `settings.txt`: `arena_align=on|off`, hidden and mandatory, **on by default, off in safe mode**). The link now wraps `sceKernelMapDirectMemory`; when the
+  driver asks for its arena (the size `ORBIS_ARENA_MIB` names, address left to the kernel) the wrapper first asks the kernel for address space of the same size (reservations only, no memory is taken), and while the offered range straddles a
+  boundary it keeps that range reserved and asks again, so the kernel's first fit offers the next hole (at most six times). The first range that lies in one window is released and the driver's own request, **unchanged**, takes it; the others
+  are released after. With the Odyssey layout the second offer, `0x435c00000`, is inside window 0x4. When anything is odd (a reservation refused, no good range in six tries) the driver's call is made as if the wrapper were not there. `boot.log`
+  says `arena placement:` with the kernel's first offer, how many reservations it took, where the driver's arena really went and whether that is `inside one window` or `STILL across a boundary`. Nothing about how much memory the arena takes changes.
+- **Memory diagnostics for the next Mario Maker 2 run** (nothing changes in how memory is used): the heap census now counts allocations of **256 KiB** or more (musl serves anything over 224 KiB with a mapping of its own; it was 1 MiB), lists
+  16 sites in MiB with a decimal, and prints orbis-compat's carve-out report (held, live, peak) with it; **`heap big maps:`** lists the last requests of **16 MiB or more** that musl's malloc made of the kernel, with the return addresses above
+  them (the link wraps `__mmap` and only records; the request goes on unchanged); and both lines are printed **at the moment the process dies** (`!! FATAL ...`), which is when the 0.9.7 log had nothing. A line `memory: the driver arena is 1536 MiB
+  because settings.txt has env=ORBIS_ARENA_MIB; this console's profile gives 1280` appears when `settings.txt` raises the arena above the profile.
+- **Tests on a PC:** `tests/memory_guard_test.cpp` (104 checks: the Odyssey numbers, a model of the kernel's first-fit address space with the Odyssey layout, every arena from 1024 to 2048 MiB from every start across 16 GiB found a whole-window
+  range in at most four reservations, refusals, the limit of tries, which call is the arena request), `tests/menu_test.cpp` (397, normal and public build), `tests/safe_mode_test.cpp`. The two `--wrap` patterns (an import and a symbol defined by another
+  archive, referenced from a hidden-visibility object) were linked with both `ld` and `lld` on a PC and behave. **Not run, and compiled only in CI:** `arena_place.cpp` (the kernel calls), the changes in `main.cpp`, `ps4_platform.cpp` and `mmap_watch.cpp`. **Not known:** that the kernel's first-fit for `sceKernelReserveVirtualRange` is the same search `sceKernelMapDirectMemory` uses (the log line will say: it prints where the arena really went), and what asked for the big blocks in Mario Maker 2.
+- **Not changed, on purpose:** the C heap's cap and the size of its steps are inside `liborbis-compat.a` (compile-time constants), the code that was found to cause Mario Maker 2's death is not yet known, and no log of a `.nro` game or of SpongeBob
+  was in this batch, so nothing was changed for them (what is needed is below).
+- **What to send back:** `boot.log` (and `mesa.log`) of **Super Mario Odyssey** for three minutes or more (the `arena placement:` line and whether the game goes past 160 s); of **Super Mario Maker 2** from the title screen until it dies, **without** `env=ORBIS_ARENA_MIB`
+  in `settings.txt` (the lines `heap census:`, `heap big maps:` and the `mem mmap-direct` report at the end name who asked); a screenshot of what is wrong in Mario Maker 2 (the files in `shots/` named in the log: `shot_0074.bmp`) and what
+  looks wrong; and, for the `.nro` games and SpongeBob, the `boot.log` and `eden_*.log` of one start each (the lines `loader:` and `load failed`).
+
+### First zip of 0.9.7
+
 **Nothing in this version has run on a console.** On a PC: the new code-cache settings and log lines, the memory table and the texture counters are tested (46 checks: `tests/jit_cache_test.cpp`; `tests/memory_guard_test.cpp`: 78;
 `tests/menu_test.cpp`: 394, normal and public build; `tests/safe_mode_test.cpp`), and the two new Eden patches were applied on top of the others and syntax-checked on a PC (patch 0034: Dynarmic's `block_of_code.cpp`,
 `a64_interface.cpp` and `constant_pool.cpp` with `-D__ORBIS__`; patch 0035: `maxwell_dma.cpp`). **The Orbis code of patch 0034 (the kernel calls that take direct memory) and the changes in `main.cpp`, `ps4_platform.cpp` and

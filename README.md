@@ -76,6 +76,11 @@ Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim h
 
 ## What is new in 0.9.7: the JIT's memory in steps, and the second optimisation list
 
+**0.9.7 fix (second zip).** The console test of 0.9.7 showed what ended the two big games, and it was not the code caches. **Super Mario Odyssey** died of the driver running out of *32-bit address space* (`out of 32-bit VA`): the driver's
+memory arena sat across a 4 GiB boundary, so only 643 MiB of its 1503 could serve shader and descriptor allocations; where the kernel puts the arena changes at every start. The arena is now **placed inside one 4 GiB window**
+(`arena_align=on`, hidden, on by default, off in safe mode; `boot.log`: `arena placement:`). **Super Mario Maker 2** died of the C heap asking for 512 MiB with 38 MiB of direct memory left; who asked is not yet known, so this zip adds what will say it
+(`heap census:` down to 256 KiB, `heap big maps:` for requests of 16 MiB or more, both also printed when the process dies) and warns when `settings.txt` raises the arena above the console's profile. Nothing of this has run on a console. Details: [CHANGELOG](CHANGELOG.md).
+
 The Odyssey log of 0.9.5 showed what ends that game: the free direct memory fell about 1200 MiB a minute until 44 MiB were left, with 1 GiB of it taken at the start for four JIT code caches that were mostly empty. In 0.9.7 each cache
 **reserves** its range and takes memory **in 2 MiB steps as the code grows** (`jit_cache_commit=lazy`, the default; Eden patch 0034), so the memory goes to the game, and the ceiling can be larger (256 MiB per core on a roomy console), which
 empties the cache, a stall, far less often. A start after a crash takes it whole, as before. New `boot.log` lines: `JIT cache memory:` and `texture traffic:` (Eden patch 0035, counters only: how much texture data the CPU moves,

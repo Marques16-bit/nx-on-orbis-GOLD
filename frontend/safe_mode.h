@@ -108,7 +108,7 @@ inline bool IsExperimental(std::string_view key, std::string_view value) {
         return value != "auto" && value != "32"; // a bigger cache takes direct memory up front: not on a start after a death
     }
     if (key == "async_presentation" || key == "skip_cpu_invalidation" || key == "auto_stub" || key == "jit_page_reuse" ||
-        key == "jit_direct_table") {
+        key == "jit_direct_table" || key == "arena_align") {
         return value == "on";
     }
     if (key == "astc") {

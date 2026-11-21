@@ -1,7 +1,7 @@
 # eden-ps4: the PS4 frontend executable (included from inject.cmake after Eden's targets exist).
 set(_fe "${EDEN_PS4_FRONTEND_DIR}")
 add_executable(eden-ps4 "${_fe}/main.cpp" "${_fe}/ps4_platform.cpp" "${_fe}/ps4_platform.h"
-    "${_fe}/heap_census.cpp" "${_fe}/menu/rom_menu.cpp" "${_fe}/menu/rom_menu.h"
+    "${_fe}/heap_census.cpp" "${_fe}/arena_place.cpp" "${_fe}/mmap_watch.cpp" "${_fe}/arena_place.h" "${_fe}/menu/rom_menu.cpp" "${_fe}/menu/rom_menu.h"
     "${_fe}/menu/menu_ui.cpp" "${_fe}/menu/menu_ui.h" "${_fe}/menu/menu_canvas.cpp"
     "${_fe}/menu/menu_canvas.h" "${_fe}/menu/settings_model.cpp" "${_fe}/menu/settings_model.h"
     "${_fe}/firmware_zip.cpp" "${_fe}/firmware_zip.h" "${_fe}/video_hook.cpp" "${_fe}/video_hook.h"
@@ -68,9 +68,15 @@ if(EDEN_PS4_HUD_TEMPERATURE)
   target_compile_definitions(eden-ps4 PRIVATE EDEN_PS4_HUD_TEMPERATURE=1)
 endif()
 
+# 0.9.7 fix: the driver's request for its memory arena goes through __wrap_sceKernelMapDirectMemory (arena_place.cpp), which places the arena inside one
+# 4 GiB window (the Odyssey test died of an arena that straddled a boundary). Every other call is passed on unchanged.
+target_link_options(eden-ps4 PRIVATE -Wl,--wrap=sceKernelMapDirectMemory)
 # Heap census (heap_census.cpp): every allocation goes through the wrappers.
 target_link_options(eden-ps4 PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
     -Wl,--wrap=free -Wl,--wrap=posix_memalign -Wl,--wrap=aligned_alloc)
+# 0.9.7 fix: musl's malloc gets its memory through __mmap; the wrapper (mmap_watch.cpp) writes the requests of 16 MiB or more into a ring and passes
+# every call on unchanged. If this build's musl never calls __mmap by that name the ring stays empty and the census says so.
+target_link_options(eden-ps4 PRIVATE -Wl,--wrap=__mmap)
 
 if(COMMAND ps4_create_eboot)
     ps4_create_eboot(eden-ps4)

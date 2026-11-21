@@ -97,7 +97,7 @@ SDK. Measured on a PS4 Pro, firmware 12.02, GoldHEN. Several items apply to any 
 - `boot.log` written unbuffered from the first static constructor; crash handler with registers and
   a frame-pointer backtrace as `eboot+0x...` offsets; hang watchdog that dumps every thread's stack
   (signals raised with `sceKernelRaiseException`); a sampling profiler (per-thread busy share, JIT
-  share and hottest code buckets every 30 s); heap census of allocations of 1 MiB or more.
+  share and hottest code buckets every 30 s); heap census of allocations of 256 KiB or more (1 MiB until the 0.9.7 fix).
 - Startup checks: TLS, mutexes, `std::find` over 4-byte types, boost `flat_map`.
 
 ## The overlay and the memory watch (0.7.6; not yet seen on a console)
@@ -384,6 +384,23 @@ Giving a chunk back is `sceKernelMunmap` plus a new reservation of the address.
 - **What was checked, and what was not.** On a PC: patches 0034 and 0035 apply in order; the files they change compile with `-fsyntax-only` (0034 with `-D__ORBIS__`, 0035 for `maxwell_dma.cpp`; `texture_cache.h` could not be compiled on a PC because
   the Vulkan headers are not available there, its change is a block of plain counter increments); the frontend's logic is tested. **Not checked:** that the kernel accepts a direct-memory step of 2 MiB aligned to 2 MiB (the 16 KiB
   fallback exists for that), that mapping over the reserved range with `MapFixed` keeps the executable flag, that Dynarmic's flush-when-full works when `orbis_limit` is hit, and the whole of it on a console.
+
+### 0.9.7 fix: the arena's placement and the heap's instruments
+
+- **The failure.** `mesa.log` of the Odyssey run: `arena 1536 MiB, RADV's window 0x3d7c04000..0x435c00000`, then `the arena straddles a 4 GiB boundary - only the part in window 0x3 can serve RADEON_FLAG_32BIT allocations` and, at 160 s,
+  `out of 32-bit VA for 16384 bytes`. In `ac_orbis_drm.c` `address32_hi = orbis_va_base >> 32` (RADV's window start, the arena plus the private slice of `0x2004000` bytes: 16 KiB of labels and a ring of fence command buffers), and a request for a 32-bit
+  VA range is limited to `min(end of that 4 GiB window, orbis_va_end)`. So the usable part is `Usable32(base, len)` in `frontend/arena_place.h`: here `0x400000000 - 0x3d7c04000` = 643 MiB.
+- **The placement** (`arena_place.cpp`). `-Wl,--wrap=sceKernelMapDirectMemory`; `__wrap_sceKernelMapDirectMemory` acts once per start, when armed by `main()` just before `system.Load` (the driver makes its arena inside the Vulkan device creation) and when
+  `IsArenaRequest(ORBIS_ARENA_MIB, len, flags, *addr == nullptr)` holds. It calls `Search`, which reserves `len` bytes of address space with `sceKernelReserveVirtualRange(&at = nullptr, len, 0, align)` until the range is `Whole` (RADV's window inside
+  one 4 GiB window) or six tries are used; a straddling range stays reserved so that the kernel's first fit offers a later hole next time. The good range is released with `sceKernelMunmap` right before `__real_sceKernelMapDirectMemory` is called with the driver's
+  own arguments, and the fillers right after (or before, when nothing better was found, so the call is then the plain one). `Describe` makes the `arena placement:` line. The decision is pure and tested against a model of a first-fit
+  address space (`tests/memory_guard_test.cpp`). `arena_align=off`, safe mode, a refused reservation or no whole range in six tries leave the call as the driver made it.
+- **Assumption, not verified:** that the search of `sceKernelReserveVirtualRange` with no address (which `ps4_platform.cpp` and Eden patch 0002 already use for the guest address space and the code caches) is the one `sceKernelMapDirectMemory` uses with no
+  address; the carve-outs of the C heap land at increasing addresses right after the arena in the logs (`0x435c00000`, `0x43dc00000`, ...), which is what a shared first fit does. If it is not, the line says `STILL across a boundary` and nothing is worse than before.
+- **The heap.** `heap_census.cpp`: the threshold of the census is 256 KiB (`Threshold`), the table 16384 entries; `Ps4HeapCensus()` ends with `orbis::mmapDirectReport("heap census")` (weak). `mmap_watch.cpp` (its own file: the census's host test does not link it): `-Wl,--wrap=__mmap` and `__wrap___mmap`: requests of 16 MiB or
+  more are recorded in a ring of 32 (`g_big`, size and four return addresses from the frame pointers) with no log call inside (the call may be inside malloc, holding its lock), and `Ps4HeapBigMaps()` prints the last 12. `OrbisFatal` (`ps4_platform.cpp`)
+  calls both once. What the Mario Maker 2 log gives: four carve-outs of 128, 128, 256 and 256 MiB in 0.6 s, a refused 512 MiB, the cap `DirectCap` = 12 x 128 MiB of `orbis_mmap.cpp` (compile-time, inside the prebuilt `liborbis-compat.a`), the flexible
+  pool with 165 MiB left, direct memory with 38 MiB left.
 
 ### 0.9.6: thread placement, the memory table, the CPU line
 
