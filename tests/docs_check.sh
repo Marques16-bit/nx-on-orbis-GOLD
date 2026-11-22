@@ -323,6 +323,39 @@ else
     bad "tests/jit_pack_test.sh fails"; printf '%s\n' "$out" | tail -n 8 | sed 's/^/        /'
 fi
 
+echo "== 0.9.7 fix 2: function names, safe mode, the TESTS tab"
+check "CHANGELOG has the 0.9.7 fix 2 section, above the 0.9.7 fix one, and says nothing in it ran on a console" '
+    a="$(grep -n "^### 0.9.7 fix 2" CHANGELOG.md | head -1 | cut -d: -f1)"; b="$(grep -n "^### 0.9.7 fix (" CHANGELOG.md | head -1 | cut -d: -f1)"
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && [ "$(sed -n "${a},${b}p" CHANGELOG.md | grep -c "Nothing in this zip has run on a console")" -ge 1 ]'
+check "the symbol table is built into the package (package-eden.sh) and listed in the files of the package" '
+    grep -q "make-symbols.py" package-eden.sh && grep -q "assets/misc/symbols.txt\"" package-eden.sh && [ -f tools/make-symbols.py ]'
+check "symbols.cpp and symbols.h are part of the executable" 'grep -q "symbols.cpp" frontend/frontend.cmake && grep -q "symbols.h" frontend/frontend.cmake'
+check "every dump that prints eboot+0x offsets also asks for names (thread stacks, crash, profile, census, big maps)" '
+    grep -q "Ps4Sym::Legend(why)" frontend/ps4_platform.cpp && grep -q "Ps4Sym::Legend(\"the crash\")" frontend/ps4_platform.cpp &&
+    grep -q "Ps4Sym::Legend(\"the profile\")" frontend/ps4_platform.cpp && grep -q "Ps4SymLegend(\"the heap census\")" frontend/heap_census.cpp &&
+    grep -q "Ps4SymLegend(\"the big heap requests\")" frontend/mmap_watch.cpp'
+check "the census and the big-map list reach the symbol reader through weak declarations (heap_census_test links the census alone)" '
+    grep -q "weak)) void Ps4SymNote" frontend/heap_census.cpp && grep -q "weak)) void Ps4SymLegend" frontend/heap_census.cpp && grep -q "weak)) void Ps4SymNote" frontend/mmap_watch.cpp'
+check "the reader checks that the table belongs to this build before it prints a name" 'grep -q "Ps4SymAnchor" frontend/symbols.cpp && grep -q "does NOT belong to this build" frontend/symbols.cpp'
+check "the names logged for the TABLE are what the pages tell you to look for (symbols for ..., symbols: ... is not in this build)" '
+    grep -q "symbols for %s" frontend/symbols.cpp && grep -q "is not in this build" frontend/symbols.cpp && grep -q "symbols for" CHANGELOG.md && grep -q "is not in this build" CHANGELOG.md'
+check "make-symbols.py turns nm output into the table the reader wants (cut parameters, kept operator(), skipped data symbols, exit 0 on nothing)" '
+    out="$(printf "0000000000401000 0000000000000040 T ns::f<int>(int, char) const\n0000000000401040 0000000000000010 t Foo::operator()(int)\n0000000000402000 0000000000000008 D a_variable\n" | python3 -I tools/make-symbols.py)" &&
+    printf "%s\n" "$out" | grep -q "^# 2 functions" && printf "%s\n" "$out" | grep -qx "1000 40 ns::f<int>" && printf "%s\n" "$out" | grep -qx "1040 10 Foo::operator()" && ! printf "%s\n" "$out" | grep -q a_variable &&
+    printf "" | python3 -I tools/make-symbols.py | grep -q "^# no symbols"'
+check "a crash and a fatal error write the safe-mode marker FIRST, before logging" '
+    awk "/^void OrbisFatal/{f=1} f&&/WriteCrashMarker\(\);/{print \"ok\"; exit} f&&/Log\(/{exit}" frontend/ps4_platform.cpp | grep -q ok &&
+    awk "/^void CrashHandler/{f=1} f&&/WriteCrashMarker\(\);/{print \"ok\"; exit} f&&/Log\(/{exit}" frontend/ps4_platform.cpp | grep -q ok'
+check "main.cpp names the marker for the crash handler and writes the alive line, and safe_mode.h has the 60 s rule" '
+    grep -q "SetCrashMarker(Ps4Safe::CrashMarkerPath" frontend/main.cpp && grep -q "Ps4Safe::MarkAlive" frontend/main.cpp && grep -q "StayedAliveSeconds = 60" frontend/safe_mode.h'
+check "safe_mode is a TESTS-tab option, auto by default, global only, and the public build ignores it" '
+    settings_key safe_mode && settings_default safe_mode auto && grep "^| \`safe_mode\` |" docs/SETTINGS.md | grep -q "TESTS tab" && grep "^| \`safe_mode\` |" docs/SETTINGS.md | grep -q "global only" &&
+    grep -q "kPublicBuild && LoadSettingsFile().Get(\"safe_mode\")" frontend/main.cpp'
+check "the preset More FPS (test) no longer sets the two options that never ran on a console (CHANGELOG 0.9.7 fix 2)" '
+    row="$(grep "^| More FPS (test) |" docs/SETTINGS.md)" && [ -n "$row" ] && ! printf "%s\n" "$row" | grep -q "async_presentation=on\|skip_cpu_invalidation=on" && printf "%s\n" "$row" | grep -q "jit_cache_mib=128"'
+check "the symbol checks run in a test the CI workflow already builds (a new test file is not run there)" '
+    grep -q "symbols_checks.h" tests/safe_mode_test.cpp && grep -q "tests/safe_mode_test.cpp" .github/workflows/check-patches.yml'
+
 echo "== the lazy-memory test"
 if out="$(bash tests/lazy_memory_test.sh 2>&1)"; then
     n="$(printf '%s\n' "$out" | grep -c '^  ok')"

@@ -44,13 +44,13 @@ const std::vector<Option>& Catalog() {
          "Compiles shaders in the background: fewer stutters, but Eden SKIPS draws whose shader is not ready yet, so layers or effects vanish for a moment (seen in Super Mario Maker 2). Off is Eden's own default: the game stalls a little the first time and the picture is complete.",
          {{"on", "Ligado", "On"}, {"off", "Desligado (padrão)", "Off (default)"}}, 1},
         {"astc", Group::Video, "Texturas ASTC", "ASTC textures",
-         "CPU é o modo mais estável no PS4. GPU e CPU assíncrona são experimentais.",
-         "CPU is the most stable mode on the PS4. GPU and async CPU are experimental.",
-         {{"cpu", "CPU (estável)", "CPU (stable)"}, {"gpu", "GPU", "GPU"}, {"async", "CPU assíncrona", "Async CPU"}}, 0},
+         "CPU é o único modo que funcionou no PS4. GPU (shaders de computação do Eden) já fez o console PERDER A GPU duas vezes (0.4): não use. CPU assíncrona nunca foi testada num console.",
+         "CPU is the only mode that has worked on the PS4. GPU (Eden's compute shaders) has already made the console LOSE THE GPU twice (0.4): do not use it. Async CPU has never been tried on a console.",
+         {{"cpu", "CPU (estável)", "CPU (stable)"}, {"gpu", "GPU (perde a GPU: não use)", "GPU (loses the GPU: do not use)"}, {"async", "CPU assíncrona (não testada)", "Async CPU (untested)"}}, 0},
         // 0.8.3: Eden's own recompression (its settings.h: astc_recompression), applied only if this Eden has it.
         {"astc_recompress", Group::Video, "Compressão das texturas ASTC", "ASTC texture compression",
-         "O PS4 não lê ASTC: as texturas são decodificadas e guardadas como RGBA8 (4 bytes por pixel). BC3 guarda 1 byte por pixel (1/4 da memória de textura) e BC1 meio byte (1/8, mas o alfa vira tudo-ou-nada). Quem faz a compressão é a CPU, uma vez por textura enviada, e perde um pouco de qualidade (degradês). Experimental: nunca foi tentado num console.",
-         "The PS4 cannot read ASTC: the textures are decoded and kept as RGBA8 (4 bytes a pixel). BC3 keeps 1 byte a pixel (1/4 of the texture memory) and BC1 half a byte (1/8, but alpha becomes all-or-nothing). The CPU does the compression, once per uploaded texture, and loses a little quality (gradients). Experimental: never tried on a console.",
+         "O PS4 não lê ASTC: as texturas são decodificadas e guardadas como RGBA8 (4 bytes por pixel). BC3 guarda 1 byte por pixel (1/4 da memória de textura) e BC1 meio byte (1/8, mas o alfa vira tudo-ou-nada). Quem faz a compressão é a CPU, uma vez por textura enviada, e perde um pouco de qualidade (degradês). Já foi usada num console (0.8.3: Super Mario Maker 2 com BC3 e com BC1, e Super Mario Odyssey com BC1) e os jogos rodaram; a queda do Odyssey nessa rodada foi falta de memória, não a compressão. Nunca foi comparada com a opção desligada: quanto poupa de memória e quanto custa de FPS e de imagem ainda não foi medido. BC3 é o mais seguro dos dois.",
+         "The PS4 cannot read ASTC: the textures are decoded and kept as RGBA8 (4 bytes a pixel). BC3 keeps 1 byte a pixel (1/4 of the texture memory) and BC1 half a byte (1/8, but alpha becomes all-or-nothing). The CPU does the compression, once per uploaded texture, and loses a little quality (gradients). It has been used on a console (0.8.3: Super Mario Maker 2 with BC3 and with BC1, and Super Mario Odyssey with BC1) and the games ran; Odyssey's death in that run was the memory running out, not the compression. It was never compared with the option off: what it saves in memory and what it costs in FPS and picture is not measured yet. BC3 is the safer of the two.",
          {{"off", "Sem compressão (RGBA8)", "None (RGBA8)"}, {"bc3", "BC3 (1/4 da memória)", "BC3 (1/4 of the memory)"}, {"bc1", "BC1 (1/8 da memória)", "BC1 (1/8 of the memory)"}}, 0},
         {"shader_cache", Group::Video, "Cache de shaders no disco", "Shader cache on disk",
          "Guarda os shaders compilados para as próximas partidas. Desligue só se suspeitar de um cache corrompido.",
@@ -284,6 +284,11 @@ const std::vector<Option>& Catalog() {
          "The console region the game sees. Use your game's own if it complains about region or opens with the wrong language or content.",
          {{"japan", "Japão", "Japan"}, {"usa", "EUA", "USA"}, {"europe", "Europa", "Europe"}, {"australia", "Austrália", "Australia"},
           {"china", "China", "China"}, {"korea", "Coreia", "Korea"}, {"taiwan", "Taiwan", "Taiwan"}}, 1},
+        // 0.9.7 fix 2: for whoever tests options on purpose (TESTS tab only). The safe mode itself is old (0.8.2); this is the way to turn it off.
+        {"safe_mode", Group::System, "Modo seguro", "Safe mode",
+         "Depois que uma partida CAI (erro ou fechamento logo depois de abrir), a partida seguinte desse mesmo jogo ignora as opções experimentais do settings.txt e usa um cache de JIT pequeno: é o modo seguro. Uma partida que ficou viva mais de 1 minuto sem erro (tela preta que você encerrou) não conta como queda. \"Desligado\" aplica TUDO do settings.txt mesmo depois de uma queda: serve para testar uma opção de propósito, sem que o app a desligue sozinho. O boot.log diz se o modo seguro foi usado. Padrão: Automático.",
+         "After a start that DIES (an error, or closing right after opening), the next start of that same game ignores the experimental lines of settings.txt and uses a small JIT cache: that is safe mode. A start that stayed alive for more than 1 minute with no error (a black screen you ended) does not count as a death. \"Off\" applies EVERYTHING in settings.txt even after a death: it is for testing an option on purpose, without the app switching it off by itself. boot.log says whether safe mode was used. Default: Automatic.",
+         {{"auto", "Automático (padrão)", "Automatic (default)"}, {"off", "Desligado (só para testes)", "Off (for testing only)"}}, 0},
         // 0.9.1. Eden already has one input per player slot (port 0-3); this decides how many of them get a DualShock.
         {"players", Group::Controls, "Controles (jogadores)", "Controllers (players)",
          "Quantos controles o jogo recebe, de 1 a 4. O controle do jogador 1 é o de sempre. Os jogadores 2 a 4 são os outros usuários logados no console: ligue o segundo DualShock, aperte o botão PS e entre como convidado; o app procura a cada 2 segundos e acende a luz do controle (vermelho, verde, rosa). Com 1 (padrão) nada muda. O menu do jogo (L3 + R3) continua só do controle 1. Vale na próxima partida. Ligação do lado do Eden ainda não testada no console.",
@@ -322,7 +327,7 @@ Tier TierOf(std::string_view key) {
     };
     // Experimental: only in the test builds.
     static constexpr std::string_view experimental[] = {
-        "cpu_clock", "cpu_ticks", "astc", "astc_recompress", "async_presentation", "skip_cpu_invalidation", "auto_stub", "profile", "jit_cache_commit",
+        "cpu_clock", "cpu_ticks", "astc", "astc_recompress", "async_presentation", "skip_cpu_invalidation", "auto_stub", "profile", "jit_cache_commit", "safe_mode",
     };
     for (const std::string_view k : mandatory) {
         if (k == key) {
@@ -338,7 +343,7 @@ Tier TierOf(std::string_view key) {
 }
 
 bool GlobalOnly(std::string_view key) {
-    static constexpr std::string_view global[] = {"language", "menu_theme", "menu_audio", "menu_volume", "covers", "show_advanced", "memory_profile"};
+    static constexpr std::string_view global[] = {"language", "menu_theme", "menu_audio", "menu_volume", "covers", "show_advanced", "memory_profile", "safe_mode"};
     for (const std::string_view k : global) {
         if (k == key) {
             return true;
@@ -399,10 +404,10 @@ const std::vector<Preset>& Presets() {
         // 0.8.2. Neither of these has been run on a console: they are lists of options picked for what each one should
         // do (see the descriptions), to be compared with Default one game at a time.
         {"Mais FPS (teste)", "More FPS (test)",
-         "Para jogos presos na CPU (o caso do Super Mario Maker 2): resolução 0,75x, GPU de precisão baixa, sem flush reativo nem memória sincronizada, ignora invalidações internas da CPU, mostra os quadros por uma thread separada e usa um cache do JIT de 128 MiB por núcleo (até 512 MiB de memória direta nos 4 núcleos, tomados conforme o código cresce; o reaproveitamento de busca de página e a tabela direta do JIT já vêm ligados desde a 0.9.5). Sem filtros extras. Não promete mais FPS: GPU leve ajuda pouco quando a CPU é o limite. Se o jogo travar ao abrir, o modo seguro desliga o que é experimental na partida seguinte.",
-         "For CPU-bound games (Super Mario Maker 2's case): 0.75x resolution, low GPU accuracy, no reactive flushing or synchronised memory, skips inner CPU invalidations, shows frames from a separate thread and uses a 128 MiB JIT cache per core (up to 512 MiB of direct memory over the 4 cores, taken as the code grows; the JIT's page lookup reuse and direct table have been on by default since 0.9.5). No extra filters. It does not promise more FPS: a light GPU helps little when the CPU is the limit. If the game hangs while opening, safe mode turns the experimental parts off for the next start.",
-         {{"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"sync_memory", "off"}, {"skip_cpu_invalidation", "on"},
-          {"async_presentation", "on"}, {"anti_aliasing", "none"}, {"anisotropy", "default"}, {"scaling_filter", "bilinear"}, {"astc", "cpu"},
+         "Para jogos presos na CPU (o caso do Super Mario Maker 2): resolução 0,75x, GPU de precisão baixa, sem flush reativo nem memória sincronizada e um cache do JIT de 128 MiB por núcleo (até 512 MiB de memória direta nos 4 núcleos, tomados conforme o código cresce; o reaproveitamento de busca de página e a tabela direta do JIT já vêm ligados desde a 0.9.5). Sem filtros extras. Desde a 0.9.7 fix 2 NÃO liga mais \"Ignorar invalidação interna da CPU\" nem \"Apresentação assíncrona\": nenhuma das duas rodou num console e as duas avisam que podem travar; continuam nas opções da aba TESTS para quem quiser testá-las sozinhas. Não promete mais FPS: GPU leve ajuda pouco quando a CPU é o limite.",
+         "For CPU-bound games (Super Mario Maker 2's case): 0.75x resolution, low GPU accuracy, no reactive flushing or synchronised memory and a 128 MiB JIT cache per core (up to 512 MiB of direct memory over the 4 cores, taken as the code grows; the JIT's page lookup reuse and direct table have been on by default since 0.9.5). No extra filters. Since 0.9.7 fix 2 it NO LONGER turns on \"Skip inner CPU invalidation\" or \"Asynchronous presentation\": neither has run on a console and both warn that they may hang; they stay in the TESTS tab for anyone who wants to try them alone. It does not promise more FPS: a light GPU helps little when the CPU is the limit.",
+         {{"resolution", "0.75"}, {"gpu_accuracy", "low"}, {"reactive_flushing", "off"}, {"sync_memory", "off"},
+          {"anti_aliasing", "none"}, {"anisotropy", "default"}, {"scaling_filter", "bilinear"}, {"astc", "cpu"},
           {"jit_cache_mib", "128"}}},
         {"RAM mínima (teste)", "Minimum RAM (test)",
          "O mais econômico que não deixa o jogo feio demais: resolução 0,5x (as imagens da GPU, que ficam fora da arena, ocupam um quarto), texturas ASTC guardadas em BC3 (1/4 da memória), arena de vídeo de 1152 MiB, VRAM conservadora, cache de shaders carregado até ~8 MiB (o que passar é guardado, não apagado), sem cache do driver, perfil de memória apertado, pausa do jogo quando a memória ficar crítica e menu de jogos só com miniaturas, e a RAM do jogo usa até 2048 MiB da memória flexível do sistema (o que o pool tiver, menos 128 MiB; ideia do Eden4). A imagem fica bem mais mole.",

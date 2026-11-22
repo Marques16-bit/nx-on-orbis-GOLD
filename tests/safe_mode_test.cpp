@@ -6,6 +6,7 @@
 #include <string>
 
 #include "safe_mode.h"
+#include "symbols_checks.h" // 0.9.7 fix 2: the checks of frontend/symbols.h run here too: this is the host test the CI workflow already builds
 
 namespace {
 
@@ -92,6 +93,81 @@ int main() {
               !IsExperimental("covers", "off") && !IsExperimental("vsync", "immediate"),
           "options that only change quality, speed or what is shown are not experimental");
     Check(Ps4Safe::OpenedAfterFlips >= 60, "the game must have drawn at least a second of pictures");
+
+    // --- 0.9.7 fix 2: a death is a crash (marker) or a start that ended quickly; a hang that was ended by hand after a minute is not.
+    {
+        const std::string marker = Ps4Safe::CrashMarkerPath(path);
+        Ps4Safe::MarkOpened(path);
+        std::remove(marker.c_str());
+        Check(Ps4Safe::CrashMarkerPath(path) == path + ".crash", "the crash marker lies next to the start file");
+
+        Ps4Safe::MarkStart(path, "Odyssey");
+        Check(Ps4Safe::ReadRecord(path).alive_seconds == 0 && Ps4Safe::PreviousStartDied(path, "Odyssey"), "a fresh start file says alive=0: if it is all there is, that start died");
+        Check(Ps4Safe::MarkAlive(path, 20) && Ps4Safe::ReadRecord(path).alive_seconds == 20 && Ps4Safe::ReadRecord(path).game == "Odyssey" &&
+                  Ps4Safe::ReadRecord(path).deaths == 1,
+              "MarkAlive rewrites the third line and keeps the game and the count");
+        Check(Ps4Safe::PreviousStartDied(path, "Odyssey"), "alive for 20 s and gone: a death (a quick end), the retry gets safe mode");
+        Check(Ps4Safe::MarkAlive(path, Ps4Safe::StayedAliveSeconds - 1) && Ps4Safe::PreviousStartDied(path, "Odyssey"), "one second short of the limit is still a death");
+        Check(Ps4Safe::MarkAlive(path, Ps4Safe::StayedAliveSeconds) && !Ps4Safe::PreviousStartDied(path, "Odyssey") &&
+                  !Ps4Safe::PreviousStartDiedOtherGame(path, "Zelda") && Ps4Safe::PreviousStartWasHang(path),
+              "alive for the whole limit without a crash marker (a black screen ended by hand): NOT a death, no safe mode for any game, and boot.log can say why");
+        // the .nro / SpongeBob case: that hang, then the same game again, again and again: never safe mode, the count does not grow
+        for (int i = 0; i < 3; ++i) {
+            Ps4Safe::MarkStart(path, "SpongeBob");
+            Ps4Safe::MarkAlive(path, 300);
+            Check(!Ps4Safe::PreviousStartDied(path, "SpongeBob") && Ps4Safe::ReadRecord(path).deaths == 1, "three hangs in a row: still no safe mode, the count stays at 1");
+        }
+        // a crash marker beats a long life: the start crashed after 5 minutes of black screen
+        {
+            std::FILE* f = std::fopen(marker.c_str(), "wb");
+            if (f != nullptr) {
+                std::fputs("crash\n", f);
+                std::fclose(f);
+            }
+        }
+        Check(Ps4Safe::ReadRecord(path).crashed && Ps4Safe::PreviousStartDied(path, "SpongeBob") && !Ps4Safe::PreviousStartWasHang(path),
+              "a crash marker makes it a death whatever the time alive");
+        {
+            // the marker of a start is created EMPTY and a crash writes into it: an empty one means no crash
+            std::FILE* f = std::fopen(marker.c_str(), "wb");
+            if (f != nullptr) {
+                std::fclose(f);
+            }
+        }
+        Check(!Ps4Safe::ReadRecord(path).crashed && !Ps4Safe::PreviousStartDied(path, "SpongeBob") && Ps4Safe::PreviousStartWasHang(path),
+              "an EMPTY marker (created at the start, nothing written) is not a crash");
+        {
+            std::FILE* f = std::fopen(marker.c_str(), "wb");
+            if (f != nullptr) {
+                std::fputs("crash\n", f);
+                std::fclose(f);
+            }
+        }
+        Ps4Safe::MarkStart(path, "SpongeBob");
+        Check(!Ps4Safe::ReadRecord(path).crashed && Ps4Safe::ReadRecord(path).deaths == 2, "the next start clears the marker and counts the death");
+        Ps4Safe::MarkAlive(path, 500);
+        Check(!Ps4Safe::PreviousStartDied(path, "SpongeBob"), "and a long hang after that is not one");
+        // a crash after the game drew: the file is gone, an orphan marker means nothing
+        Ps4Safe::MarkOpened(path);
+        {
+            std::FILE* f = std::fopen(marker.c_str(), "wb");
+            if (f != nullptr) {
+                std::fputs("crash\n", f);
+                std::fclose(f);
+            }
+        }
+        Check(!Ps4Safe::ReadRecord(path).present && !Ps4Safe::PreviousStartDied(path, "SpongeBob"), "a marker with no start file (a crash after the game drew) is not a death");
+        Ps4Safe::MarkStart(path, "Zelda");
+        Check(!Ps4Safe::ReadRecord(path).crashed, "MarkStart removes an old marker");
+        Check(!Ps4Safe::MarkAlive("no_such_dir/safe_start.txt", 5) && !Ps4Safe::MarkAlive("no_such_file_for_alive.txt", 5), "MarkAlive with no file does nothing and says so");
+        Ps4Safe::MarkOpened(path);
+        Check(!Ps4Safe::ReadRecord(path).present && !Ps4Safe::PreviousStartWasHang(path), "opened: nothing is left, not even a 'hang'");
+        Check(!Ps4Safe::IsExperimental("safe_mode", "off") && !Ps4Safe::IsExperimental("safe_mode", "auto"), "safe_mode itself is not an experimental line");
+        std::remove(marker.c_str());
+    }
+
+    // --- the checks of frontend/symbols.h
+    SymbolsChecks::Run(&Check);
 
     std::remove(path.c_str());
     std::printf(g_failures == 0 ? "safe mode test: PASSED\n" : "safe mode test: FAILED\n");

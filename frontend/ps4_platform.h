@@ -30,6 +30,9 @@ void Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 /// Lazy-memory fault handler + crash report for every other fault, and the orbis-compat log
 /// (RADV, the overlay) into boot.log.
 void InstallCrashReporting();
+/// 0.9.7 fix 2: creates `path` empty and keeps it open; a crash (or a fatal error of the driver) writes a line into it before anything else is logged, and safe mode reads
+/// that (safe_mode.h). Null or empty: none.
+void SetCrashMarker(const char* path);
 /// Names the current phase for crash and hang reports.
 void SetPhase(const char* phase);
 /// The watchdog: if the frame counter stops for `seconds` while a game runs, the main thread's

@@ -14,6 +14,12 @@
 
 #include <sys/types.h>
 
+extern "C" {
+// 0.9.7 fix 2 (symbols.cpp): names for the "eboot+0x..." offsets printed below.
+__attribute__((weak)) void Ps4SymNote(unsigned long off);
+__attribute__((weak)) void Ps4SymLegend(const char* why);
+}
+
 extern "C" void* __real___mmap(void* addr, size_t len, int prot, int flags, int fd, off_t off);
 
 namespace Ps4 {
@@ -90,6 +96,16 @@ void Ps4HeapBigMaps() {
         Ps4::Log("   %6lu MiB  eboot+0x%lx <- 0x%lx <- 0x%lx <- 0x%lx", static_cast<unsigned long>(m.len >> 20),
                  static_cast<unsigned long>(m.site[0] - ImageBase), static_cast<unsigned long>(m.site[1] - ImageBase),
                  static_cast<unsigned long>(m.site[2] - ImageBase), static_cast<unsigned long>(m.site[3] - ImageBase));
+        if (&Ps4SymNote != nullptr) {
+            for (int k = 0; k < 4; ++k) {
+                if (m.site[k] >= ImageBase) {
+                    Ps4SymNote(static_cast<unsigned long>(m.site[k] - ImageBase));
+                }
+            }
+        }
+    }
+    if (&Ps4SymLegend != nullptr) {
+        Ps4SymLegend("the big heap requests");
     }
 }
 

@@ -15,11 +15,19 @@
 // 11:41) turned safe mode on for the NEXT start, nine hours later and another game (Mario vs. Donkey Kong), which then ran without the JIT options,
 // the 256 MiB JIT cache and the CPU clock, so a test of those options measured nothing. Safe mode now applies when the start that died was
 // of the SAME game (the retry of a crash), or when two starts in a row died whatever the games (so a wrong option that kills every game is still caught).
+//
+// 0.9.7 fix 2: "died" is no longer "the file was left behind". The 0.9.7 logs of the .nro and SpongeBob tests were both in safe mode, because the start before
+// each one was a black screen that the user ended by hand after a while: the experimental options of settings.txt (the very ones being tested) were ignored and the
+// JIT cache was cut to 32 MiB, so the test measured nothing. Now the file also holds how long the start stayed alive (written every few seconds by main.cpp), and a
+// crash or fatal error writes into a marker file next to it (ps4_platform.cpp, one write() first thing). A start counts as a death when its marker
+// is there, or when it ended within StayedAliveSeconds of starting without having drawn (a silent kill, or an exit by hand right away). A start that stayed alive a
+// minute or more without a crash marker (a hang that was ended by hand) does not. And the TESTS tab has `safe_mode=off` for whoever is testing options on purpose.
 
 #pragma once
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -28,12 +36,34 @@ namespace Ps4Safe {
 /// How many flips (pictures shown) count as "the game opened".
 constexpr unsigned long long OpenedAfterFlips = 120;
 
-/// What safe_start.txt says: the game of the last start that did not get as far as drawing, and how many starts in a row did not.
+/// A start that was still running this many seconds after it began, and did not leave a crash marker, was ended by hand (a hang): not a death.
+constexpr unsigned StayedAliveSeconds = 60;
+
+/// What safe_start.txt says: the game of the last start that did not get as far as drawing, how many starts in a row did not, how long the last one stayed alive
+/// (the third line, "alive=N"; a file from before 0.9.7 fix 2 has none: 0), and whether a crash marker lies next to it.
 struct Record {
     bool present = false;
     std::string game;
     unsigned deaths = 0;
+    unsigned alive_seconds = 0;
+    bool crashed = false;
 };
+
+/// The file a crash writes into (ps4_platform.cpp: SetCrashMarker creates it empty, WriteCrashMarker fills it): the start file's own path with ".crash" added.
+inline std::string CrashMarkerPath(const std::string& path) {
+    return path + ".crash";
+}
+
+/// The marker is created empty when a game starts and written to by a crash: a file that has something in it.
+inline bool FileHasContent(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (f == nullptr) {
+        return false;
+    }
+    const bool content = std::fgetc(f) != EOF;
+    std::fclose(f);
+    return content;
+}
 
 inline Record ReadRecord(const std::string& path) {
     Record r;
@@ -52,42 +82,89 @@ inline Record ReadRecord(const std::string& path) {
     if (std::fgets(count, sizeof count, f) != nullptr) {
         r.deaths = static_cast<unsigned>(std::strtoul(count, nullptr, 10));
     }
+    char alive[48] = {};
+    if (std::fgets(alive, sizeof alive, f) != nullptr && std::strncmp(alive, "alive=", 6) == 0) {
+        r.alive_seconds = static_cast<unsigned>(std::strtoul(alive + 6, nullptr, 10));
+    }
     std::fclose(f);
     r.present = true;
+    r.crashed = FileHasContent(CrashMarkerPath(path));
     if (r.deaths == 0) {
         r.deaths = 1; // a file from before 0.9.4 fix 2 has no count: one start died
     }
     return r;
 }
 
-/// True when the previous start left its file behind (it did not get as far as drawing) AND this start is its retry (the same game) or the
-/// second start in a row that follows a death (whatever the game).
+/// A start that did not draw and did not leave cleanly counts as a death when it crashed (the marker), or when it was over within StayedAliveSeconds.
+inline bool Died(const Record& r) {
+    return r.present && (r.crashed || r.alive_seconds < StayedAliveSeconds);
+}
+
+/// True when the previous start died (Died) AND this start is its retry (the same game) or the second start in a row that follows a death (whatever the game).
 inline bool PreviousStartDied(const std::string& path, const std::string& game) {
     const Record r = ReadRecord(path);
-    return r.present && (r.game == game || r.deaths >= 2);
+    return Died(r) && (r.game == game || r.deaths >= 2);
 }
 
 /// True when the previous start died but safe mode does not apply to this one: another game, and the first death.
 inline bool PreviousStartDiedOtherGame(const std::string& path, const std::string& game) {
     const Record r = ReadRecord(path);
-    return r.present && r.game != game && r.deaths < 2;
+    return Died(r) && r.game != game && r.deaths < 2;
 }
 
-/// Written when a game starts. `note` is the game; the second line counts the starts in a row that have not drawn yet (this one included).
+/// True when the previous start did not draw and did not leave cleanly, but it is not counted as a death: it stayed alive StayedAliveSeconds or more with no crash
+/// marker (a hang that was ended by hand). main.cpp says so in boot.log.
+inline bool PreviousStartWasHang(const std::string& path) {
+    const Record r = ReadRecord(path);
+    return r.present && !Died(r);
+}
+
+/// Written when a game starts. `note` is the game; the second line counts the starts in a row that have not drawn yet and died (this one included), the third says how
+/// long this start has been alive (0 now; MarkAlive updates it). A previous start that is not counted as a death does not add to the count.
 inline bool MarkStart(const std::string& path, const std::string& note) {
     const Record before = ReadRecord(path);
+    std::remove(CrashMarkerPath(path).c_str()); // a marker of an earlier start must not be taken for this one's
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (f == nullptr) {
         return false;
     }
-    std::fprintf(f, "%s\n%u\n", note.c_str(), before.present ? before.deaths + 1 : 1u);
+    std::fprintf(f, "%s\n%u\nalive=0\n", note.c_str(), Died(before) ? before.deaths + 1 : 1u);
     std::fclose(f);
     return true;
 }
 
-/// Removed once the game has opened (or left cleanly).
+/// Called every few seconds by a start that has not drawn yet: rewrites the third line. False when there is no file (nothing to update).
+inline bool MarkAlive(const std::string& path, unsigned seconds) {
+    std::FILE* in = std::fopen(path.c_str(), "rb");
+    if (in == nullptr) {
+        return false;
+    }
+    char game[1024] = {};
+    char count[32] = {};
+    const bool have_game = std::fgets(game, sizeof game, in) != nullptr;
+    const bool have_count = std::fgets(count, sizeof count, in) != nullptr;
+    std::fclose(in);
+    if (!have_game) {
+        return false;
+    }
+    std::string head = game;
+    while (!head.empty() && (head.back() == '\n' || head.back() == '\r')) {
+        head.pop_back();
+    }
+    const unsigned deaths = have_count ? static_cast<unsigned>(std::strtoul(count, nullptr, 10)) : 1u;
+    std::FILE* out = std::fopen(path.c_str(), "wb");
+    if (out == nullptr) {
+        return false;
+    }
+    std::fprintf(out, "%s\n%u\nalive=%u\n", head.c_str(), deaths == 0 ? 1u : deaths, seconds);
+    std::fclose(out);
+    return true;
+}
+
+/// Removed once the game has opened (or left cleanly), with its crash marker.
 inline void MarkOpened(const std::string& path) {
     std::remove(path.c_str());
+    std::remove(CrashMarkerPath(path).c_str());
 }
 
 /// The lines safe mode ignores: the ones that can crash a start or hang it, not the ones that only change

@@ -673,6 +673,7 @@ bool g_autoshot = !kPublicBuild;
 // 0.8.2: the last start died before the game drew anything, so the experimental lines of settings.txt are ignored for this
 // one start (safe_mode.h). Set in main() before the memory plan and settings.txt are read.
 bool g_safe_mode = false;
+std::uint64_t safe_started_us = 0; // when MarkStart was written (process time), for the "alive=" line the start file gets every 2 s until the game has drawn
 std::string SafeStartFile() {
     return (fs::path{Ps4::DataDir} / "safe_start.txt").string();
 }
@@ -785,6 +786,7 @@ void ApplyMemoryPlan() {
 ///   0.8.2 (eden_settings.h, each only if this Eden has the setting): cpu_clock=normal|boost|overclock,
 ///   cpu_ticks=off|1000|4000|16000|21000, async_presentation=on|off
 ///   language=pt|en              the menu's language (read by the menu only)
+///   safe_mode=auto|off          0.9.7 fix 2 (test builds only): off applies every line of settings.txt even after a start that died (the TESTS tab)
 ///   env=NAME=VALUE              environment for the PS4 driver (e.g. env=RADV_DEBUG=info,nohiz)
 /// Reads `key=value` lines from `in` and applies them. `origin` is the name the log gives them ("settings.txt", or the game's own file under
 /// per-game/); `per_game` skips the options that only the global settings.txt may set (Menu::GlobalOnly).
@@ -878,6 +880,8 @@ void ApplySettingsLines(std::istream& in, const char* origin, bool per_game) {
             Ps4Hook::Pending().flip_stamp = value == "on";
         } else if (key == "memory_profile" && (value == "auto" || value == "roomy" || value == "standard" || value == "tight" || value == "strict")) {
             // Already applied by ApplyMemoryPlan(), before this file's other lines.
+        } else if (key == "safe_mode" && (value == "auto" || value == "off")) {
+            // 0.9.7 fix 2: read before this file's lines, when the game's start is judged (the lines just above main()'s MarkStart).
         } else if (key == "autoshot" && (value == "on" || value == "off")) {
             g_autoshot = value == "on" && !kPublicBuild;
         } else if (key == "sysflex_mib" && Ps4Memory::ParseSystemFlexibleCap(value, &g_sysflex_cap_mib)) {
@@ -1197,16 +1201,30 @@ int main() {
     // 0.8.2: safe mode. If the previous start never got as far as drawing, its experimental options stay off for this one.
     // 0.9.4 fix 2: only when the start that died was this same game, or the second death in a row (safe_mode.h): a crash of one game no longer takes the
     // options away from the next, other game (the 0.9.4 test of Mario vs. Donkey Kong ran without any of them because SpongeBob had crashed before it).
-    g_safe_mode = Ps4Safe::PreviousStartDied(SafeStartFile(), game);
-    if (g_safe_mode) {
+    // 0.9.7 fix 2: `safe_mode=off` (TESTS tab, settings.txt only) is for whoever is testing options on purpose; `auto` is the default and what the public build has.
+    const bool safe_mode_off = !kPublicBuild && LoadSettingsFile().Get("safe_mode") == "off"; // the public build keeps safe mode whatever settings.txt says
+    g_safe_mode = !safe_mode_off && Ps4Safe::PreviousStartDied(SafeStartFile(), game);
+    if (safe_mode_off) {
+        if (Ps4Safe::PreviousStartDied(SafeStartFile(), game)) {
+            Ps4::Log("safe mode: OFF (safe_mode=off in settings.txt); the last start died, but every option of settings.txt applies to this one");
+        } else {
+            Ps4::Log("safe mode: OFF (safe_mode=off in settings.txt)");
+        }
+    } else if (g_safe_mode) {
         const Ps4Safe::Record last = Ps4Safe::ReadRecord(SafeStartFile());
         Ps4::Log("safe mode: the last start (%s) ended before the game drew anything (%u start(s) in a row); experimental lines of settings.txt are ignored for this start (settings.txt is not changed)",
                  last.game.c_str(), last.deaths);
     } else if (Ps4Safe::PreviousStartDiedOtherGame(SafeStartFile(), game)) {
         Ps4::Log("safe mode: not used - the last start (%s) ended before the game drew anything, but that was another game; if this one dies too, the next start is in safe mode",
                  Ps4Safe::ReadRecord(SafeStartFile()).game.c_str());
+    } else if (Ps4Safe::PreviousStartWasHang(SafeStartFile())) {
+        const Ps4Safe::Record last = Ps4Safe::ReadRecord(SafeStartFile());
+        Ps4::Log("safe mode: not used - the last start (%s) stayed alive %u s without drawing and left no crash marker (a hang ended by hand), which is not counted as a death", last.game.c_str(),
+                 last.alive_seconds);
     }
     Ps4Safe::MarkStart(SafeStartFile(), game);
+    Ps4::SetCrashMarker(Ps4Safe::CrashMarkerPath(SafeStartFile()).c_str()); // a crash or fatal error from here on writes it first (ps4_platform.cpp)
+    safe_started_us = Ps4::NowUs();
     ApplyPs4Settings();
     ApplyMemoryPlan();
     if (kPublicBuild) {
@@ -1871,6 +1889,10 @@ int main() {
         if (Ps4::NowUs() - last_timeline > 2000000) {
             last_timeline = Ps4::NowUs();
             const Ps4Hook::Timeline tl = Ps4Hook::TakeTimeline();
+            if (!safe_start_cleared) {
+                // 0.9.7 fix 2: how long this start has been alive, for the next start to tell a crash from a hang that was ended by hand (safe_mode.h)
+                Ps4Safe::MarkAlive(SafeStartFile(), static_cast<unsigned>((Ps4::NowUs() - safe_started_us) / 1000000));
+            }
             if (!safe_start_cleared && tl.flips_total >= Ps4Safe::OpenedAfterFlips) {
                 safe_start_cleared = true;
                 Ps4Safe::MarkOpened(SafeStartFile()); // the game drew: this start is not a crash

@@ -28,6 +28,7 @@
 #include "common/orbis_lazy_memory.h"
 #include "memory_guard.h"
 #include "ps4_platform.h"
+#include "symbols.h"
 #include "thread_placement.h"
 
 extern "C" {
@@ -158,7 +159,24 @@ void OrbisLog(const char* fmt, va_list ap) {
     Log("  | %s", buffer);
 }
 
+// 0.9.7 fix 2: the crash marker (safe_mode.h). The file is created EMPTY when the game starts (SetCrashMarker: an ordinary fopen, the way safe_start.txt is written, and the
+// FILE is kept open); a crash or a fatal error writes one line into it FIRST, with a single write() on the descriptor that is already open (no allocation, no stdio, no
+// lock, no open flags to get right in a handler). The next start reads "empty" as no crash and "not empty" as a crash, so it can tell a start that crashed from one that was
+// merely ended by hand. Without it the app could only guess (a hang that the user ended after a minute of black screen looked like a crash and put the next start in safe
+// mode, which switched the options of the TESTS tab off).
+std::atomic<int> g_crash_marker_fd{-1};
+
+void WriteCrashMarker() {
+    const int fd = g_crash_marker_fd.load(std::memory_order_acquire);
+    if (fd >= 0) {
+        static const char text[] = "crash\n";
+        const ssize_t written = write(fd, text, sizeof(text) - 1);
+        (void)written;
+    }
+}
+
 void OrbisFatal(const char* what) {
+    WriteCrashMarker();
     Log("!! FATAL from the driver/overlay during %s: %s", g_phase.load(), what ? what : "(null)");
     // 0.9.7 fix: who holds the C heap, and who asked for the big blocks, at the moment the process dies (the Mario Maker 2 test died of
     // std::bad_alloc with nothing in boot.log that named the holder). Once; the census uses static tables and the log's own buffer.
@@ -174,6 +192,7 @@ void OrbisFatal(const char* what) {
 
 // Faults that are not a first touch of lazily committed memory.
 void CrashHandler(int signal, void* ucontext) {
+    WriteCrashMarker();
     const void* mc = static_cast<const unsigned char*>(ucontext) + Mc;
     const std::uint64_t rip = Read64(mc, McRip);
     const std::uint64_t rsp = Read64(mc, McRsp);
@@ -181,6 +200,9 @@ void CrashHandler(int signal, void* ucontext) {
     Log("!! CRASH signal %d during %s: rip=0x%lx (eboot+0x%lx) fault address=0x%lx rsp=0x%lx", signal,
         g_phase.load(), static_cast<unsigned long>(rip), static_cast<unsigned long>(rip - ImageBase),
         static_cast<unsigned long>(Read64(mc, McAddr)), static_cast<unsigned long>(rsp));
+    if (rip >= ImageBase) {
+        Ps4Sym::Note(static_cast<unsigned long>(rip - ImageBase)); // 0.9.7 fix 2: the legend at the end names it
+    }
     // Only read scalars from the kernel-provided context; never follow register/handle pointers.
     if (Read64(mc, McCs) == 0x43 && Read64(mc, McSs) == 0x3b) {
         Log("!! registers: rax=0x%lx rbx=0x%lx rcx=0x%lx rdx=0x%lx",
@@ -234,6 +256,7 @@ void CrashHandler(int signal, void* ucontext) {
         // A call through a null (or tiny) function pointer: the caller's return address is on top.
         const std::uint64_t ret = *reinterpret_cast<const std::uint64_t*>(rsp);
         Log("   called from eboot+0x%lx (null function pointer)", static_cast<unsigned long>(ret - ImageBase));
+        Ps4Sym::Note(static_cast<unsigned long>(ret - ImageBase));
     }
     // Frame-pointer walk, bounded to the stack above rsp (the build keeps frame pointers).
     for (int depth = 0; depth < 32; ++depth) {
@@ -242,6 +265,7 @@ void CrashHandler(int signal, void* ucontext) {
         }
         const std::uint64_t ret = reinterpret_cast<const std::uint64_t*>(rbp)[1];
         Log("   #%02d eboot+0x%lx", depth, static_cast<unsigned long>(ret - ImageBase));
+        Ps4Sym::Note(static_cast<unsigned long>(ret - ImageBase));
         const std::uint64_t next = reinterpret_cast<const std::uint64_t*>(rbp)[0];
         if (next <= rbp) {
             break;
@@ -258,6 +282,8 @@ void CrashHandler(int signal, void* ucontext) {
     sceKernelRemoveExceptionHandler(10);
     sceKernelRemoveExceptionHandler(4);
     sceKernelRemoveExceptionHandler(8);
+    // 0.9.7 fix 2: the names of the offsets above. After the handlers are gone on purpose: whatever this does wrong, the process ends as it would have, with the log complete.
+    Ps4Sym::Legend("the crash");
 }
 
 // ---- named threads, for stack dumps when frames stop ----------------------------------------
@@ -347,6 +373,9 @@ void DumpHandler(int, void* ucontext) {
     char line[900];
     int n = std::snprintf(line, sizeof(line), "   [%s] eboot+0x%lx", NameOf(pthread_self()),
                           static_cast<unsigned long>(rip - ImageBase));
+    if (rip >= ImageBase && rip <= ImageBase + 0x10000000ull) {
+        Ps4Sym::Note(static_cast<unsigned long>(rip - ImageBase)); // 0.9.7 fix 2 (a try-lock: safe from here)
+    }
     for (int depth = 0; depth < 20 && n < static_cast<int>(sizeof(line)) - 24; ++depth) {
         if (rbp < rsp || rbp - rsp > 8 * 1024 * 1024 || (rbp & 7) != 0) {
             break;
@@ -354,6 +383,9 @@ void DumpHandler(int, void* ucontext) {
         const std::uint64_t ret = reinterpret_cast<const std::uint64_t*>(rbp)[1];
         n += std::snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " <- 0x%lx",
                            static_cast<unsigned long>(ret - ImageBase));
+        if (ret >= ImageBase && ret <= ImageBase + 0x10000000ull) {
+            Ps4Sym::Note(static_cast<unsigned long>(ret - ImageBase));
+        }
         const std::uint64_t next = reinterpret_cast<const std::uint64_t*>(rbp)[0];
         if (next <= rbp) {
             break;
@@ -375,6 +407,8 @@ void DumpAllThreads(const char* why) {
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
     }
     g_dump_active.store(false, std::memory_order_release);
+    // 0.9.7 fix 2: what the offsets above are (from assets/misc/symbols.txt, made at build time from the ELF).
+    Ps4Sym::Legend(why);
 }
 
 void Watchdog() {
@@ -492,6 +526,9 @@ void ProfileReport() {
             len += std::snprintf(line + len, sizeof(line) - static_cast<size_t>(len), " 0x%lx=%u%%",
                                  static_cast<unsigned long>(t.keys[best]),
                                  t.counts[best] * 100 / busy);
+            if (t.counts[best] * 100 / busy >= 3) {
+                Ps4Sym::NoteBucket(static_cast<unsigned long>(t.keys[best]), 64); // 0.9.7 fix 2: named in the legend after the report
+            }
             t.counts[best] = 0;
             if (len > static_cast<int>(sizeof(line)) - 40) {
                 break;
@@ -502,6 +539,7 @@ void ProfileReport() {
         std::memset(t.counts, 0, sizeof(t.counts));
         t.samples = t.waiting = t.jit = 0;
     }
+    Ps4Sym::Legend("the profile");
 }
 
 std::atomic<bool> g_profiling{true};
@@ -937,6 +975,17 @@ void InstallCrashReporting() {
     sceKernelInstallExceptionHandler(SigDump, DumpHandler);
     sceKernelInstallExceptionHandler(4, CrashHandler);
     sceKernelInstallExceptionHandler(8, CrashHandler);
+}
+
+void SetCrashMarker(const char* path) {
+    g_crash_marker_fd.store(-1, std::memory_order_release);
+    if (path == nullptr || path[0] == 0) {
+        return;
+    }
+    std::FILE* marker = std::fopen(path, "wb"); // empty; kept open for the rest of the run on purpose (the handler writes to it)
+    if (marker != nullptr) {
+        g_crash_marker_fd.store(fileno(marker), std::memory_order_release);
+    }
 }
 
 void SetPhase(const char* phase) {

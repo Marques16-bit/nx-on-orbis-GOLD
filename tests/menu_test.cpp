@@ -790,16 +790,18 @@ void TestNavigation() {
                   r.saved.find("ORBIS_VRAM_GARLIC") == std::string::npos,
               "profile Exact graphics (test): accuracy options written, the arena back to default");
         r.Tap(Pad::Right);
-        Check(SettingsFile(r.saved).MatchPreset() == 6 && r.saved.find("skip_cpu_invalidation=on") != std::string::npos &&
-                  r.saved.find("async_presentation=on") != std::string::npos && r.saved.find("resolution=0.75") != std::string::npos &&
+        Check(SettingsFile(r.saved).MatchPreset() == 6 && r.saved.find("jit_cache_mib=128") != std::string::npos &&
+                  r.saved.find("resolution=0.75") != std::string::npos &&
                   r.saved.find("dma_accuracy") == std::string::npos && r.saved.find("sync_memory") == std::string::npos,
-              "profile More FPS (test): CPU-saving options written, the accuracy ones of the previous profile gone");
+              "profile More FPS (test): 0.75x resolution and the 128 MiB JIT cache written, the accuracy ones of the previous profile gone");
+        Check(r.saved.find("skip_cpu_invalidation") == std::string::npos && r.saved.find("async_presentation") == std::string::npos,
+              "profile More FPS (test) (0.9.7 fix 2): does not switch on the two options that never ran on a console (inner CPU invalidation, asynchronous presentation)");
         r.Tap(Pad::Right);
         Check(SettingsFile(r.saved).MatchPreset() == 7 && r.saved.find("resolution=0.5") != std::string::npos &&
                   r.saved.find("shader_preload=256") != std::string::npos && r.saved.find("covers=thumbs") != std::string::npos &&
                   r.saved.find("astc_recompress=bc3") != std::string::npos &&
-                  r.saved.find("memory_profile=tight") != std::string::npos && r.saved.find("skip_cpu_invalidation") == std::string::npos &&
-                  r.saved.find("async_presentation") == std::string::npos,
+                  r.saved.find("memory_profile=tight") != std::string::npos && r.saved.find("jit_cache_mib") == std::string::npos &&
+                  r.saved.find("gpu_accuracy") == std::string::npos,
               "profile Minimum RAM (test): small resolution, small shader preload, thumbnails only, tight profile; the FPS profile's options gone");
         r.Tap(Pad::Right);
         Check(r.saved.find("gpu_accuracy") == std::string::npos && r.saved.find("covers") == std::string::npos &&

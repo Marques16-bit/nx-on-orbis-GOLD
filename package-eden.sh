@@ -66,7 +66,23 @@ if [ -s "$ROOT/jit-pack-report.txt" ]; then
 else
     echo "no report: this build did not go through the CI's pack step" > "$ST/assets/misc/jit-pack-report.txt"
 fi
-FILES="$FILES assets/misc/hbmenu.nro assets/misc/hbmenu-LICENSE.txt assets/misc/jit-pack-report.txt"
+# 0.9.7 fix 2: the table of function names of THIS elf (frontend/symbols.cpp reads it and puts names under the "eboot+0x..." offsets of boot.log: a stall, a
+# crash, the profile, the heap census). Made from the same ELF that is packaged just above, so the offsets cannot belong to another build; the app checks that
+# once more at run time (Ps4SymAnchor). It is a diagnostic: nothing here may stop the build, a missing tool just leaves a file that says why.
+SYM="$ST/assets/misc/symbols.txt"
+NM_TOOL=""
+for cand in "${NXO_LLVM_BIN:-/usr/lib/llvm-18/bin}/llvm-nm" "$(command -v llvm-nm 2>/dev/null || true)" "$(command -v nm 2>/dev/null || true)"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then NM_TOOL="$cand"; break; fi
+done
+if [ -n "$NM_TOOL" ] && [ -f "$ROOT/tools/make-symbols.py" ]; then
+    { "$NM_TOOL" --demangle --defined-only --print-size --numeric-sort "$(winpath "$ELF")" 2>/dev/null \
+        | "$PY" "$ROOT/tools/make-symbols.py" --base 0x400000 > "$SYM"; } || true
+fi
+if [ ! -s "$SYM" ]; then
+    echo "# no symbols: no nm tool found, or tools/make-symbols.py is missing; offsets in boot.log stay numbers" > "$SYM"
+fi
+echo "symbols: $(head -n 1 "$SYM") ($(wc -c < "$SYM") bytes, nm: ${NM_TOOL:-none})"
+FILES="$FILES assets/misc/hbmenu.nro assets/misc/hbmenu-LICENSE.txt assets/misc/jit-pack-report.txt assets/misc/symbols.txt"
 (
     cd "$ST"
     SFO=sce_sys/param.sfo

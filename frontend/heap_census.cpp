@@ -33,6 +33,12 @@ int __real_posix_memalign(void**, size_t, size_t);
 void* __real_aligned_alloc(size_t, size_t);
 }
 
+extern "C" {
+// 0.9.7 fix 2 (symbols.cpp): names for the "eboot+0x..." offsets this census prints. Weak, like the one below: the host test links this file alone.
+__attribute__((weak)) void Ps4SymNote(unsigned long off);
+__attribute__((weak)) void Ps4SymLegend(const char* why);
+}
+
 namespace orbis {
 // orbis-compat's report of the carve-outs (orbis_mmap.h). Weak: a library that does not have it just leaves this out of the census.
 __attribute__((weak)) void mmapDirectReport(const char* where);
@@ -224,7 +230,17 @@ void Ps4HeapCensus() {
                  static_cast<unsigned long>(sites[best].site[0] - ImageBase),
                  static_cast<unsigned long>(sites[best].site[1] - ImageBase),
                  static_cast<unsigned long>(sites[best].site[2] - ImageBase));
+        if (&Ps4SymNote != nullptr) {
+            for (int k = 0; k < 3; ++k) {
+                if (sites[best].site[k] >= ImageBase) {
+                    Ps4SymNote(static_cast<unsigned long>(sites[best].site[k] - ImageBase));
+                }
+            }
+        }
         sites[best].bytes = 0;
+    }
+    if (&Ps4SymLegend != nullptr) {
+        Ps4SymLegend("the heap census");
     }
     if (&orbis::mmapDirectReport != nullptr) {
         orbis::mmapDirectReport("heap census"); // the carve-outs the C heap lives in: held, live, peak (orbis-compat)

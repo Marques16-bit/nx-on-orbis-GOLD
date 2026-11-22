@@ -1,7 +1,7 @@
 # eden-ps4: the PS4 frontend executable (included from inject.cmake after Eden's targets exist).
 set(_fe "${EDEN_PS4_FRONTEND_DIR}")
 add_executable(eden-ps4 "${_fe}/main.cpp" "${_fe}/ps4_platform.cpp" "${_fe}/ps4_platform.h"
-    "${_fe}/heap_census.cpp" "${_fe}/arena_place.cpp" "${_fe}/mmap_watch.cpp" "${_fe}/arena_place.h" "${_fe}/menu/rom_menu.cpp" "${_fe}/menu/rom_menu.h"
+    "${_fe}/heap_census.cpp" "${_fe}/arena_place.cpp" "${_fe}/mmap_watch.cpp" "${_fe}/arena_place.h" "${_fe}/symbols.cpp" "${_fe}/symbols.h" "${_fe}/menu/rom_menu.cpp" "${_fe}/menu/rom_menu.h"
     "${_fe}/menu/menu_ui.cpp" "${_fe}/menu/menu_ui.h" "${_fe}/menu/menu_canvas.cpp"
     "${_fe}/menu/menu_canvas.h" "${_fe}/menu/settings_model.cpp" "${_fe}/menu/settings_model.h"
     "${_fe}/firmware_zip.cpp" "${_fe}/firmware_zip.h" "${_fe}/video_hook.cpp" "${_fe}/video_hook.h"
