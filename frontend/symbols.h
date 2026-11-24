@@ -6,9 +6,12 @@
 // itself puts the names under each dump. This file is the pure part (a line parser and a one-pass resolver), so a PC can test it; symbols.cpp reads the file on the
 // console and writes to boot.log.
 //
-// File format, one function per line, sorted by offset ascending (offset = address - 0x400000, the same number the log prints):
-//   <hex offset> <hex size> <name>
-// A line that starts with '#' is a comment (the first one is shown in boot.log: how many entries, which build).
+// File format, one function per line, sorted by address ascending (the ELF's own address, which is what `nm` prints):
+//   <hex address> <hex size> <name>
+// A line that starts with '#' is a comment. The first one is shown in boot.log (how many entries) and says where the build's own Ps4SymAnchor function is in the table's
+// address space ("anchor=0x60ab0"); the app compares that with where the function really is in the running image and moves every lookup by the difference. 0.9.7 fix 2 assumed
+// that the log's "eboot+0x..." is the ELF address minus 0x400000, and it is not: the app is linked as a PIE at base 0 and the console loads it at 0x400000, so the log's
+// offset IS the ELF address; the table came out shifted by 0x400000 and the app (rightly) refused it. The anchor makes the app independent of that assumption.
 
 #pragma once
 
@@ -21,7 +24,7 @@ namespace Ps4Sym {
 /// The address the console loads eboot.bin at; the logs print "eboot+0x..." = address - ImageBase (ps4_platform.cpp uses the same number).
 constexpr unsigned long ImageBase = 0x400000;
 /// How many distinct offsets one dump can ask names for; more are counted and left out.
-constexpr int MaxNotes = 512;
+constexpr int MaxNotes = 512; // (the anchors come on top of these: two more entries)
 constexpr std::size_t NameChars = 100;
 /// A symbol that has no size in the table (assembler stubs) is taken to cover this much.
 constexpr unsigned long UnsizedReach = 0x100;
@@ -82,6 +85,55 @@ inline bool ParseLine(const char* s, std::size_t n, unsigned long& off, unsigned
     return true;
 }
 
+/// The table's first line: "# ... anchor=0x<hex> ...". True and the number when it is there (only the first line is looked at).
+inline bool ParseAnchorHeader(const char* data, std::size_t n, unsigned long& addr) {
+    std::size_t end = 0;
+    while (end < n && data[end] != '\n') {
+        ++end;
+    }
+    static const char key[] = "anchor=0x";
+    const std::size_t key_len = sizeof(key) - 1;
+    if (end <= key_len || data[0] != '#') {
+        return false;
+    }
+    for (std::size_t i = 0; i + key_len < end; ++i) {
+        if (std::memcmp(data + i, key, key_len) != 0) {
+            continue;
+        }
+        std::size_t j = i + key_len;
+        std::size_t digits = 0;
+        unsigned long value = 0;
+        while (j < end && HexDigit(data[j]) >= 0) {
+            if (digits >= 16) {
+                return false;
+            }
+            value = value * 16 + static_cast<unsigned long>(HexDigit(data[j]));
+            ++j;
+            ++digits;
+        }
+        if (digits == 0) {
+            return false;
+        }
+        addr = value;
+        return true;
+    }
+    return false;
+}
+
+/// A thread whose frame-pointer chain is broken (the JIT calling back into the app does not keep rbp as a frame pointer: CPUCore_0 of the .nro stall showed one frame and
+/// nothing above it) still has return addresses on its stack. Looks at `count` words from `words` (the caller keeps that inside the page the stack pointer is in, which is
+/// certainly mapped) and copies up to `max` values in [lo, hi) to `out`, in the order found (nearest the stack pointer first). They are candidates, not frames: a number that
+/// happens to look like an address in the image is taken too, which is why the dump names them from the table and says "scan".
+inline int ScanForCode(const unsigned long* words, std::size_t count, unsigned long lo, unsigned long hi, unsigned long* out, int max) {
+    int found = 0;
+    for (std::size_t i = 0; i < count && found < max; ++i) {
+        if (words[i] >= lo && words[i] < hi) {
+            out[found++] = words[i];
+        }
+    }
+    return found;
+}
+
 /// Sorts by `off` (insertion sort: at most MaxNotes entries) and merges equal ones. Returns the new count.
 inline int SortUnique(Entry* e, int n) {
     for (int i = 1; i < n; ++i) {
@@ -107,6 +159,14 @@ inline int SortUnique(Entry* e, int n) {
         e[out++] = e[i];
     }
     return out;
+}
+
+/// Moves every lookup key by `delta` (wrapping, so a "negative" difference works) and sorts again; the printed offsets (`shown`) stay as they were.
+inline int Shift(Entry* e, int n, unsigned long delta) {
+    for (int i = 0; i < n; ++i) {
+        e[i].off += delta;
+    }
+    return SortUnique(e, n);
 }
 
 /// Feed the table's lines in file order (ascending); the entries given (sorted, unique) get the function that contains their offset.

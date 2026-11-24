@@ -76,7 +76,7 @@ for cand in "${NXO_LLVM_BIN:-/usr/lib/llvm-18/bin}/llvm-nm" "$(command -v llvm-n
 done
 if [ -n "$NM_TOOL" ] && [ -f "$ROOT/tools/make-symbols.py" ]; then
     { "$NM_TOOL" --demangle --defined-only --print-size --numeric-sort "$(winpath "$ELF")" 2>/dev/null \
-        | "$PY" "$ROOT/tools/make-symbols.py" --base 0x400000 > "$SYM"; } || true
+        | "$PY" "$ROOT/tools/make-symbols.py" --base 0x0 > "$SYM"; } || true
 fi
 if [ ! -s "$SYM" ]; then
     echo "# no symbols: no nm tool found, or tools/make-symbols.py is missing; offsets in boot.log stay numbers" > "$SYM"

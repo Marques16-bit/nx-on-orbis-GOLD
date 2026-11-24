@@ -20,8 +20,11 @@
 // each one was a black screen that the user ended by hand after a while: the experimental options of settings.txt (the very ones being tested) were ignored and the
 // JIT cache was cut to 32 MiB, so the test measured nothing. Now the file also holds how long the start stayed alive (written every few seconds by main.cpp), and a
 // crash or fatal error writes into a marker file next to it (ps4_platform.cpp, one write() first thing). A start counts as a death when its marker
-// is there, or when it ended within StayedAliveSeconds of starting without having drawn (a silent kill, or an exit by hand right away). A start that stayed alive a
-// minute or more without a crash marker (a hang that was ended by hand) does not. And the TESTS tab has `safe_mode=off` for whoever is testing options on purpose.
+// is there, or when it ended within StayedAliveSeconds of starting without having drawn (a silent kill, or an exit by hand right away). A start that stayed alive
+// StayedAliveSeconds (20 since 0.9.7 fix 3; it was 60) or more without a crash marker (a hang that was ended by hand) does not. The log of the .nro black screen of Nov 22
+// was in safe mode again ("the last start (SpongeBob) ended before the game drew anything (3 start(s) in a row)"): a black screen ended by hand sooner than the limit
+// still counts as a death, and 60 s is a long time to look at a black screen. 20 s is enough for the menu to have run its heartbeat several times and short enough that a
+// quick close is still told from a hang. A real crash is not decided by this number at all: it leaves the marker. And the TESTS tab has `safe_mode=off` for whoever is testing options on purpose.
 
 #pragma once
 
@@ -37,7 +40,7 @@ namespace Ps4Safe {
 constexpr unsigned long long OpenedAfterFlips = 120;
 
 /// A start that was still running this many seconds after it began, and did not leave a crash marker, was ended by hand (a hang): not a death.
-constexpr unsigned StayedAliveSeconds = 60;
+constexpr unsigned StayedAliveSeconds = 20;
 
 /// What safe_start.txt says: the game of the last start that did not get as far as drawing, how many starts in a row did not, how long the last one stayed alive
 /// (the third line, "alive=N"; a file from before 0.9.7 fix 2 has none: 0), and whether a crash marker lies next to it.

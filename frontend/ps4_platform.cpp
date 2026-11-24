@@ -376,6 +376,7 @@ void DumpHandler(int, void* ucontext) {
     if (rip >= ImageBase && rip <= ImageBase + 0x10000000ull) {
         Ps4Sym::Note(static_cast<unsigned long>(rip - ImageBase)); // 0.9.7 fix 2 (a try-lock: safe from here)
     }
+    int chain_frames = 0;
     for (int depth = 0; depth < 20 && n < static_cast<int>(sizeof(line)) - 24; ++depth) {
         if (rbp < rsp || rbp - rsp > 8 * 1024 * 1024 || (rbp & 7) != 0) {
             break;
@@ -383,6 +384,7 @@ void DumpHandler(int, void* ucontext) {
         const std::uint64_t ret = reinterpret_cast<const std::uint64_t*>(rbp)[1];
         n += std::snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " <- 0x%lx",
                            static_cast<unsigned long>(ret - ImageBase));
+        ++chain_frames;
         if (ret >= ImageBase && ret <= ImageBase + 0x10000000ull) {
             Ps4Sym::Note(static_cast<unsigned long>(ret - ImageBase));
         }
@@ -391,6 +393,21 @@ void DumpHandler(int, void* ucontext) {
             break;
         }
         rbp = next;
+    }
+    if (chain_frames == 0 && (rsp & 7) == 0 && rsp > 0x10000) {
+        // 0.9.7 fix 3: no frame-pointer chain (the JIT calling back into the app does not keep one: CPUCore_0 of the .nro stall printed a single frame). The return addresses are
+        // still on the stack: the words from rsp to the end of rsp's page (certainly mapped) are scanned for values inside the image and printed after "scan:".
+        const std::uint64_t page_end = (rsp | 0xfffull) + 1;
+        const std::size_t words = static_cast<std::size_t>(std::min<std::uint64_t>((page_end - rsp) / 8, 512));
+        unsigned long candidates[12];
+        const int found = Ps4Sym::ScanForCode(reinterpret_cast<const unsigned long*>(rsp), words, ImageBase, ImageBase + 0x10000000ul, candidates, 12);
+        if (found > 0) {
+            n += std::snprintf(line + n, sizeof(line) - static_cast<size_t>(n), "  | scan:");
+        }
+        for (int i = 0; i < found && n < static_cast<int>(sizeof(line)) - 24; ++i) {
+            n += std::snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " 0x%lx", candidates[i] - static_cast<unsigned long>(ImageBase));
+            Ps4Sym::Note(candidates[i] - static_cast<unsigned long>(ImageBase));
+        }
     }
     Log("%s", line);
 }
@@ -409,6 +426,57 @@ void DumpAllThreads(const char* why) {
     g_dump_active.store(false, std::memory_order_release);
     // 0.9.7 fix 2: what the offsets above are (from assets/misc/symbols.txt, made at build time from the ELF).
     Ps4Sym::Legend(why);
+}
+
+/// 0.9.7 fix 3: the last lines of Eden's own log, at a stall. The .nro and SpongeBob stalls were reported with boot.log alone and the cause (a service call that fails over and
+/// over, an unmapped access, a kernel error) is a line of eden_log.txt that nobody had open at the time. Read with open/lseek/read (the log is being written; this only reads),
+/// from a static buffer, on the watchdog thread only.
+void LogEdenTail(const char* why) {
+    static char buffer[8192];
+    const std::string path = std::string(DataDir) + "/log/eden_log.txt";
+    const int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        Log("   eden_log.txt: cannot be read (%s)", why);
+        return;
+    }
+    const off_t size = lseek(fd, 0, SEEK_END);
+    const off_t from = size > static_cast<off_t>(sizeof(buffer) - 1) ? size - static_cast<off_t>(sizeof(buffer) - 1) : 0;
+    ssize_t got = 0;
+    if (size > 0 && lseek(fd, from, SEEK_SET) == from) {
+        got = read(fd, buffer, sizeof(buffer) - 1);
+    }
+    close(fd);
+    if (got <= 0) {
+        Log("   eden_log.txt: empty (%s)", why);
+        return;
+    }
+    buffer[got] = 0;
+    char* text = buffer;
+    if (from > 0) { // the first line is cut in the middle
+        char* newline = std::strchr(text, '\n');
+        text = newline != nullptr ? newline + 1 : text;
+    }
+    // Cut the text into lines in place, keep where each starts, and print the LAST ones (the buffer holds about 80 lines; the end of the log is what matters).
+    static char* starts[512];
+    int count = 0;
+    for (char* line = text; *line != 0 && count < 512;) {
+        char* end = std::strchr(line, '\n');
+        if (end != nullptr) {
+            *end = 0;
+        }
+        if (line[0] != 0) {
+            starts[count++] = line;
+        }
+        if (end == nullptr) {
+            break;
+        }
+        line = end + 1;
+    }
+    const int first_shown = count > 40 ? count - 40 : 0;
+    Log("   eden_log.txt: %lld bytes; its last %d lines (%s):", static_cast<long long>(size), count - first_shown, why);
+    for (int i = first_shown; i < count; ++i) {
+        Log("   | %.300s", starts[i]);
+    }
 }
 
 void Watchdog() {
@@ -443,9 +511,11 @@ void Watchdog() {
                 g_phase.load(), static_cast<unsigned long>(stats.committed_bytes >> 20),
                 static_cast<unsigned long>(stats.commit_failures));
             DumpAllThreads("first");
+            LogEdenTail("first");
             reported = true;
         } else if (reported && !second && still > std::uint64_t(limit + 30) * 1000000) {
             DumpAllThreads("30 s later");
+            LogEdenTail("30 s later");
             second = true;
         }
     }

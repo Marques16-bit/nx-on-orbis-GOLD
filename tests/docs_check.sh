@@ -341,13 +341,13 @@ check "the names logged for the TABLE are what the pages tell you to look for (s
     grep -q "symbols for %s" frontend/symbols.cpp && grep -q "is not in this build" frontend/symbols.cpp && grep -q "symbols for" CHANGELOG.md && grep -q "is not in this build" CHANGELOG.md'
 check "make-symbols.py turns nm output into the table the reader wants (cut parameters, kept operator(), skipped data symbols, exit 0 on nothing)" '
     out="$(printf "0000000000401000 0000000000000040 T ns::f<int>(int, char) const\n0000000000401040 0000000000000010 t Foo::operator()(int)\n0000000000402000 0000000000000008 D a_variable\n" | python3 -I tools/make-symbols.py)" &&
-    printf "%s\n" "$out" | grep -q "^# 2 functions" && printf "%s\n" "$out" | grep -qx "1000 40 ns::f<int>" && printf "%s\n" "$out" | grep -qx "1040 10 Foo::operator()" && ! printf "%s\n" "$out" | grep -q a_variable &&
+    printf "%s\n" "$out" | grep -q "^# 2 functions" && printf "%s\n" "$out" | grep -qx "401000 40 ns::f<int>" && printf "%s\n" "$out" | grep -qx "401040 10 Foo::operator()" && ! printf "%s\n" "$out" | grep -q a_variable &&
     printf "" | python3 -I tools/make-symbols.py | grep -q "^# no symbols"'
 check "a crash and a fatal error write the safe-mode marker FIRST, before logging" '
     awk "/^void OrbisFatal/{f=1} f&&/WriteCrashMarker\(\);/{print \"ok\"; exit} f&&/Log\(/{exit}" frontend/ps4_platform.cpp | grep -q ok &&
     awk "/^void CrashHandler/{f=1} f&&/WriteCrashMarker\(\);/{print \"ok\"; exit} f&&/Log\(/{exit}" frontend/ps4_platform.cpp | grep -q ok'
-check "main.cpp names the marker for the crash handler and writes the alive line, and safe_mode.h has the 60 s rule" '
-    grep -q "SetCrashMarker(Ps4Safe::CrashMarkerPath" frontend/main.cpp && grep -q "Ps4Safe::MarkAlive" frontend/main.cpp && grep -q "StayedAliveSeconds = 60" frontend/safe_mode.h'
+check "main.cpp names the marker for the crash handler and writes the alive line, and safe_mode.h has the 20 s rule" '
+    grep -q "SetCrashMarker(Ps4Safe::CrashMarkerPath" frontend/main.cpp && grep -q "Ps4Safe::MarkAlive" frontend/main.cpp && grep -q "StayedAliveSeconds = 20" frontend/safe_mode.h'
 check "safe_mode is a TESTS-tab option, auto by default, global only, and the public build ignores it" '
     settings_key safe_mode && settings_default safe_mode auto && grep "^| \`safe_mode\` |" docs/SETTINGS.md | grep -q "TESTS tab" && grep "^| \`safe_mode\` |" docs/SETTINGS.md | grep -q "global only" &&
     grep -q "kPublicBuild && LoadSettingsFile().Get(\"safe_mode\")" frontend/main.cpp'
@@ -355,6 +355,24 @@ check "the preset More FPS (test) no longer sets the two options that never ran 
     row="$(grep "^| More FPS (test) |" docs/SETTINGS.md)" && [ -n "$row" ] && ! printf "%s\n" "$row" | grep -q "async_presentation=on\|skip_cpu_invalidation=on" && printf "%s\n" "$row" | grep -q "jit_cache_mib=128"'
 check "the symbol checks run in a test the CI workflow already builds (a new test file is not run there)" '
     grep -q "symbols_checks.h" tests/safe_mode_test.cpp && grep -q "tests/safe_mode_test.cpp" .github/workflows/check-patches.yml'
+
+echo "== 0.9.7 fix 3: the table's base and anchors, the Eden log tail, the stack scan, 20 s"
+check "CHANGELOG has the 0.9.7 fix 3 section above fix 2, says nothing in it ran on a console and that the black screen is not fixed" '
+    a="$(grep -n "^### 0.9.7 fix 3" CHANGELOG.md | head -1 | cut -d: -f1)"; b="$(grep -n "^### 0.9.7 fix 2" CHANGELOG.md | head -1 | cut -d: -f1)"
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && sed -n "${a},${b}p" CHANGELOG.md > /tmp/nxo_fix3_section.$$ &&
+    grep -q "Nothing in this zip has run on a console" /tmp/nxo_fix3_section.$$ && grep -q "it does not fix the" /tmp/nxo_fix3_section.$$; r=$?; rm -f /tmp/nxo_fix3_section.$$; [ $r -eq 0 ]'
+check "the table is made with base 0 and the header carries the anchor (package-eden.sh, make-symbols.py)" '
+    grep -q -- "--base 0x0" package-eden.sh && ! grep -q -- "--base 0x400000" package-eden.sh &&
+    printf "0000000000060ab0 0000000000000020 T Ps4SymAnchor\n0000000000070000 0000000000000100 T Other::f\n" | python3 -I tools/make-symbols.py | head -1 | grep -q "anchor=0x60ab0"'
+check "make-symbols.py with --base 0x400000 still works and keeps the anchors when it leaves small functions out" '
+    printf "0000000000460ab0 0000000000000020 T Ps4SymAnchor\n0000000000470000 0000000000000100 T Other::f\n" | python3 -I tools/make-symbols.py --base 0x400000 | head -1 | grep -q "anchor=0x60ab0" &&
+    { printf "0000000000060ab0 0000000000000020 T Ps4SymAnchor\n"; i=0; while [ $i -lt 400 ]; do printf "%016x 0000000000000040 T fn_%d\n" $((0x100000 + i * 64)) $i; i=$((i + 1)); done; } | python3 -I tools/make-symbols.py --max-bytes 3000 | grep -q "^60ab0 20 Ps4SymAnchor$"'
+check "the app has both anchors, in two object files, and the reader reads the anchor header and shifts" '
+    grep -q "int Ps4SymAnchor(int" frontend/symbols.cpp && grep -q "int Ps4SymAnchor2(int" frontend/main.cpp && grep -q "ParseAnchorHeader" frontend/symbols.cpp && grep -q "Shift(g_notes" frontend/symbols.cpp'
+check "the stall dump of the watchdog adds the Eden log tail after both stack dumps, and the thread dump scans the stack when it has no frame chain" '
+    [ "$(grep -c "LogEdenTail(\"" frontend/ps4_platform.cpp)" -ge 2 ] && grep -q "ScanForCode" frontend/ps4_platform.cpp && grep -q "chain_frames == 0" frontend/ps4_platform.cpp'
+check "the symbol checks cover the anchor header, the shift and the stack scan" '
+    grep -q "ParseAnchorHeader" tests/symbols_checks.h && grep -q "Shift(" tests/symbols_checks.h && grep -q "ScanForCode" tests/symbols_checks.h'
 
 echo "== the lazy-memory test"
 if out="$(bash tests/lazy_memory_test.sh 2>&1)"; then

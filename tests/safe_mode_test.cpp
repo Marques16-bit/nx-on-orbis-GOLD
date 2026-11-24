@@ -103,10 +103,10 @@ int main() {
 
         Ps4Safe::MarkStart(path, "Odyssey");
         Check(Ps4Safe::ReadRecord(path).alive_seconds == 0 && Ps4Safe::PreviousStartDied(path, "Odyssey"), "a fresh start file says alive=0: if it is all there is, that start died");
-        Check(Ps4Safe::MarkAlive(path, 20) && Ps4Safe::ReadRecord(path).alive_seconds == 20 && Ps4Safe::ReadRecord(path).game == "Odyssey" &&
+        Check(Ps4Safe::MarkAlive(path, 5) && Ps4Safe::ReadRecord(path).alive_seconds == 5 && Ps4Safe::ReadRecord(path).game == "Odyssey" &&
                   Ps4Safe::ReadRecord(path).deaths == 1,
               "MarkAlive rewrites the third line and keeps the game and the count");
-        Check(Ps4Safe::PreviousStartDied(path, "Odyssey"), "alive for 20 s and gone: a death (a quick end), the retry gets safe mode");
+        Check(Ps4Safe::PreviousStartDied(path, "Odyssey"), "alive for 5 s and gone: a death (a quick end), the retry gets safe mode");
         Check(Ps4Safe::MarkAlive(path, Ps4Safe::StayedAliveSeconds - 1) && Ps4Safe::PreviousStartDied(path, "Odyssey"), "one second short of the limit is still a death");
         Check(Ps4Safe::MarkAlive(path, Ps4Safe::StayedAliveSeconds) && !Ps4Safe::PreviousStartDied(path, "Odyssey") &&
                   !Ps4Safe::PreviousStartDiedOtherGame(path, "Zelda") && Ps4Safe::PreviousStartWasHang(path),

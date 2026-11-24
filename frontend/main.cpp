@@ -107,6 +107,14 @@ extern int ps4_rg_mode;      // vk_texture_cache.cpp
 extern int ps4_a2b10_mode;   // vk_texture_cache.cpp
 }
 
+// 0.9.7 fix 3: the second anchor of the symbol table's check (frontend/symbols.cpp). A function of another object file than Ps4SymAnchor: the distance between the two is the
+// build's own, so a table that is not this build's cannot get both right.
+extern "C" __attribute__((noinline, used)) int Ps4SymAnchor2(int x) {
+    static volatile int sink = 0;
+    sink = sink + x;
+    return sink;
+}
+
 namespace {
 
 constexpr u32 OutputWidth = 1920;

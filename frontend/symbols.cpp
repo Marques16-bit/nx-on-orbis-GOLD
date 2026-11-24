@@ -16,13 +16,17 @@
 #include "ps4_platform.h"
 #include "symbols.h"
 
-// The app's check that the table belongs to this build: Legend() looks up this function's own offset and wants this name back. (If ImageBase were wrong, or the table came
-// from another build, every name in the log would be wrong without anyone noticing.) Not inlined, not merged, never optimised away.
+// The app's check that the table belongs to this build. Two functions that are only there to be found (Ps4SymAnchor here, Ps4SymAnchor2 in main.cpp, another object file):
+// the table's first line says where Ps4SymAnchor is in the table's address space, the app moves every lookup by the difference from where it really is, and then BOTH
+// have to come back by name from the table; the distance between two functions of different object files is the build's own, so a table of another build fails there.
+// (0.9.7 fix 2 had the single check and the wrong base: it refused the table, which is what it is for. If it had printed names, they would have been wrong.)
+// Not inlined, not merged, never optimised away.
 extern "C" __attribute__((noinline, used)) int Ps4SymAnchor(int x) {
     static volatile int sink = 0;
     sink = sink + x;
     return sink;
 }
+extern "C" int Ps4SymAnchor2(int x); // main.cpp
 
 namespace {
 
@@ -31,12 +35,13 @@ constexpr int MaxDone = 1024;
 constexpr int MaxPrinted = 200;
 
 std::atomic_flag g_lock = ATOMIC_FLAG_INIT;
-Ps4Sym::Entry g_notes[Ps4Sym::MaxNotes + 1]; // +1: the anchor always has room
+Ps4Sym::Entry g_notes[Ps4Sym::MaxNotes + 2]; // +2: the two anchors always have room
 int g_count = 0;
 int g_lost = 0;
 unsigned long g_done[MaxDone]; // offsets already described in this boot.log: a later dump does not repeat them
 int g_done_count = 0;
 bool g_no_table_said = false;
+int g_refused_said = 0;
 char g_chunk[16384];
 
 struct TryLock {
@@ -105,12 +110,15 @@ void Legend(const char* why) {
         return;
     }
     const unsigned long anchor_off = reinterpret_cast<unsigned long>(&Ps4SymAnchor) - ImageBase;
-    Entry& anchor = g_notes[g_count];
-    anchor = Entry{};
-    anchor.off = anchor_off;
-    anchor.shown = anchor_off;
-    anchor.anchor = true;
-    const int total = SortUnique(g_notes, g_count + 1);
+    const unsigned long anchor2_off = reinterpret_cast<unsigned long>(&Ps4SymAnchor2) - ImageBase;
+    for (int k = 0; k < 2; ++k) {
+        Entry& anchor = g_notes[g_count + k];
+        anchor = Entry{};
+        anchor.off = k == 0 ? anchor_off : anchor2_off;
+        anchor.shown = anchor.off;
+        anchor.anchor = true;
+    }
+    int total = SortUnique(g_notes, g_count + 2);
     const int lost = g_lost;
     g_count = 0; // whatever happens below, this round of notes is spent
     g_lost = 0;
@@ -124,34 +132,54 @@ void Legend(const char* why) {
         }
         return;
     }
+    // The first read holds the header line: where the table puts Ps4SymAnchor. The difference to where it really is moves every lookup.
+    const ssize_t first = read(fd, g_chunk, sizeof(g_chunk));
+    unsigned long table_anchor = 0;
+    const bool has_anchor = first > 0 && ParseAnchorHeader(g_chunk, static_cast<std::size_t>(first), table_anchor);
+    const unsigned long shift = has_anchor ? table_anchor - anchor_off : 0;
+    if (shift != 0) {
+        total = Shift(g_notes, total, shift);
+    }
     Resolver resolver{g_notes, total};
     LineSplitter<Resolver> lines{resolver};
-    for (;;) {
-        const ssize_t got = read(fd, g_chunk, sizeof(g_chunk));
-        if (got <= 0) {
-            break;
+    if (first > 0) {
+        lines.Push(g_chunk, static_cast<std::size_t>(first));
+        for (;;) {
+            const ssize_t got = read(fd, g_chunk, sizeof(g_chunk));
+            if (got <= 0) {
+                break;
+            }
+            lines.Push(g_chunk, static_cast<std::size_t>(got));
         }
-        lines.Push(g_chunk, static_cast<std::size_t>(got));
     }
     lines.Flush();
     resolver.Finish();
     close(fd);
 
-    bool anchor_ok = false;
-    const char* anchor_got = "(nothing)";
+    bool anchors_ok = true;
+    const char* anchor_got[2] = {"(nothing)", "(nothing)"};
+    int seen = 0;
     for (int i = 0; i < total; ++i) {
         if (g_notes[i].anchor) {
-            anchor_got = g_notes[i].found ? g_notes[i].name : "(nothing)";
-            anchor_ok = g_notes[i].found && std::strncmp(g_notes[i].name, "Ps4SymAnchor", 12) == 0;
+            const char* got = g_notes[i].found ? g_notes[i].name : "(nothing)";
+            anchor_got[g_notes[i].shown == anchor_off ? 0 : 1] = got; // in the order the message names them, not in address order
+            ++seen;
+            anchors_ok = anchors_ok && g_notes[i].found && std::strncmp(got, "Ps4SymAnchor", 12) == 0;
         }
     }
+    anchors_ok = anchors_ok && seen == 2;
     if (resolver.Lines() == 0) {
         Ps4::Log("symbols: %s has no usable line (%s)", TablePath, lines.FirstComment()[0] ? lines.FirstComment() : "no header");
         return;
     }
-    if (!anchor_ok) {
-        Ps4::Log("symbols: the table does NOT belong to this build: the function at eboot+0x%lx is '%s' in it, not Ps4SymAnchor; names left out (%s)", anchor_off,
-                 anchor_got, lines.FirstComment());
+    if (!anchors_ok) {
+        // Said at most 3 times in a boot.log: the same words under every dump are noise. The numbers are what the next fix needs.
+        if (g_refused_said < 3) {
+            ++g_refused_said;
+            Ps4::Log("symbols: the table does NOT belong to this build; names left out. This build's Ps4SymAnchor is at eboot+0x%lx and Ps4SymAnchor2 at eboot+0x%lx; the "
+                     "table's first line %s anchor=0x%lx, so every lookup was moved by 0x%lx; the table has '%s' and '%s' at those two places (%s)",
+                     anchor_off, anchor2_off, has_anchor ? "says" : "does not say (read as 0)", table_anchor, shift, anchor_got[0], anchor_got[1], lines.FirstComment());
+        }
         return;
     }
     const char* header = lines.FirstComment();

@@ -165,6 +165,73 @@ inline void Run(CheckFn check) {
         auto q = Resolve("1000 100 Big::function\n", {Want(0x1000 + 32, 0x1000)}, 64);
         check(q.size() == 1 && q[0].found && q[0].shown == 0x1000 && std::strcmp(q[0].name, "Big::function") == 0, "symbols: a 64-byte bucket gets the function at its middle");
     }
+    // --- ParseAnchorHeader: where the table says the build's Ps4SymAnchor is (0.9.7 fix 3)
+    {
+        unsigned long a = 0;
+        const std::string h1 = "# 123 functions, offsets are ELF addresses minus 0x0, anchor=0x60ab0\n1000 40 f\n";
+        check(ParseAnchorHeader(h1.data(), h1.size(), a) && a == 0x60ab0, "symbols: the anchor is read from the first line");
+        const std::string h2 = "# 9 functions, offsets are ELF addresses minus 0x0, anchor=0x60AB0, the table was over 10 bytes";
+        check(ParseAnchorHeader(h2.data(), h2.size(), a) && a == 0x60ab0, "symbols: capital digits, and text after the number, and no line end");
+        const std::string h3 = "# 9 functions, offsets are ELF addresses minus 0x400000\n1000 40 anchor=0x77 is a function name\n";
+        a = 1;
+        check(!ParseAnchorHeader(h3.data(), h3.size(), a) && a == 1, "symbols: an anchor on the second line is not looked at");
+        const std::string h4 = "1000 40 f\n# anchor=0x77\n";
+        check(!ParseAnchorHeader(h4.data(), h4.size(), a), "symbols: a first line that is not a comment gives no anchor");
+        const std::string h5 = "# 9 functions, anchor=0x\n";
+        const std::string h6 = "# 9 functions, anchor=0x11111111111111111\n";
+        const std::string h7 = "# anchor=0x\n";
+        check(!ParseAnchorHeader(h5.data(), h5.size(), a) && !ParseAnchorHeader(h6.data(), h6.size(), a) && !ParseAnchorHeader(h7.data(), h7.size(), a) &&
+                  !ParseAnchorHeader("", 0, a) && !ParseAnchorHeader("#", 1, a),
+              "symbols: no digits, 17 digits, an empty chunk: no anchor");
+        const std::string h8 = "# an old table, offsets relative to 0x400000\n";
+        check(!ParseAnchorHeader(h8.data(), h8.size(), a), "symbols: a table without an anchor (made by 0.9.7 fix 2) gives none");
+    }
+    // --- Shift: the console prints the address minus 0x400000, the table may be in another address space; the difference moves every lookup
+    {
+        // A table whose addresses are the ELF's own (base 0), and a log whose offsets are 0x400000 higher than that (what a --base 0x400000 mistake looks like from the app).
+        const std::string t = "# 3 functions, anchor=0x60ab0\n60ab0 20 Ps4SymAnchor\n70000 100 Other::f\n80000 10 Ps4SymAnchor2\n";
+        std::vector<Entry> w{Want(0x60ab0 + 0x400000, 0, true), Want(0x70040 + 0x400000), Want(0x80000 + 0x400000, 0, true), Want(0x70040)};
+        int n = SortUnique(w.data(), static_cast<int>(w.size()));
+        n = Shift(w.data(), n, static_cast<unsigned long>(0) - 0x400000ul);
+        check(n == 4, "symbols: a shift keeps every entry");
+        Resolver rr{w.data(), n};
+        LineSplitter<Resolver> sp{rr};
+        sp.Push(t.data(), t.size());
+        sp.Flush();
+        rr.Finish();
+        // after the shift the offsets are table addresses; what is printed (shown) is still what the log had
+        const Entry* a1 = Find(w, 0x60ab0);
+        const Entry* f1 = Find(w, 0x70040);
+        const Entry* a2 = Find(w, 0x80000);
+        check(a1 != nullptr && a1->found && a1->anchor && std::strcmp(a1->name, "Ps4SymAnchor") == 0 && a1->shown == 0x60ab0 + 0x400000,
+              "symbols: after a negative shift the anchor is found by name and still printed as the log had it");
+        check(f1 != nullptr && f1->found && std::strcmp(f1->name, "Other::f") == 0, "symbols: a function is found at its shifted offset");
+        check(a2 != nullptr && a2->found && a2->anchor && std::strcmp(a2->name, "Ps4SymAnchor2") == 0, "symbols: the second anchor too");
+        // Shift by 0 is a no-op; a positive one works the other way.
+        std::vector<Entry> z{Want(5), Want(9)};
+        check(Shift(z.data(), 2, 0) == 2 && z[0].off == 5 && z[1].off == 9, "symbols: a shift of 0 changes nothing");
+        std::vector<Entry> y{Want(0x10), Want(0x20)};
+        check(Shift(y.data(), 2, 0x400000) == 2 && y[0].off == 0x400010 && y[0].shown == 0x10 && y[1].off == 0x400020, "symbols: a positive shift moves the key and not the printed number");
+        // A table of ANOTHER build: the anchors are not where they should be (the distance between them is different), so they do not both come back by name.
+        const std::string other = "# 3 functions, anchor=0x60ab0\n60ab0 20 Ps4SymAnchor\n60ad0 100 Unrelated::g\n80000 10 Elsewhere\n";
+        std::vector<Entry> w2{Want(0x60ab0, 0, true), Want(0x80000, 0, true)};
+        auto q = Resolve(other, w2, 4096);
+        const Entry* b2 = Find(q, 0x80000);
+        check(b2 != nullptr && b2->found && std::strncmp(b2->name, "Ps4SymAnchor", 12) != 0,
+              "symbols: with the second anchor naming something else, the check (name starts with Ps4SymAnchor) fails");
+    }
+    // --- ScanForCode: candidates for return addresses on a stack whose frame-pointer chain is broken
+    {
+        const unsigned long stack[] = {0, 0x7ffc02bac, 0x4a3000, 5, 0x400000, 0x10400000, 0x1a8c779 + 0x400000, 0x3fffff, 0x500e8a, 0xdeadbeef, 0x700000};
+        unsigned long out[4] = {};
+        const int n = ScanForCode(stack, sizeof(stack) / sizeof(stack[0]), 0x400000, 0x10400000, out, 4);
+        check(n == 4 && out[0] == 0x4a3000 && out[1] == 0x400000 && out[2] == 0x1a8c779 + 0x400000 && out[3] == 0x500e8a,
+              "symbols: the stack scan keeps what lies in the image, in the order found, and stops at the limit (the end of the range is out)");
+        unsigned long all[16] = {};
+        check(ScanForCode(stack, sizeof(stack) / sizeof(stack[0]), 0x400000, 0x10400000, all, 16) == 5 && ScanForCode(stack, 0, 0, ~0ul, all, 16) == 0 &&
+                  ScanForCode(stack, 3, 0x400000, 0x10400000, all, 0) == 0,
+              "symbols: the stack scan finds the five in the whole stack, nothing in an empty one, nothing when no room is given");
+    }
     // --- a big table with the maximum number of wanted offsets
     {
         std::string big = "# big\n";
