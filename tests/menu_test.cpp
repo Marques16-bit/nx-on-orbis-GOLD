@@ -968,6 +968,63 @@ void TestDrawing(const char* render_dir) {
             }
         }
     }
+    // 0.9.8: the new layout. A column of tabs at the left (the current one lit), a panel with the rows, a scroll bar when the rows do not fit.
+    {
+        Rig r("mode=docked\n");
+        const std::vector<int> tabs = r.ui.Tabs();
+        const auto draw_tab = [&](int tab) {
+            r.ui.SetTab(tab);
+            Frame f;
+            Canvas c = f.Canvas_();
+            r.ui.Draw(c);
+            return f;
+        };
+        std::vector<Frame> frames;
+        for (int tab : tabs) {
+            frames.push_back(draw_tab(tab));
+        }
+        const auto item_pixel = [&](const Frame& f, size_t k) { return f.pixels[size_t(164 + 10 + int(k) * 66 + 30) * 1920 + 140]; }; // inside the item, left of the icon
+        bool one_lit = tabs.size() >= 2;
+        for (size_t t = 0; t < tabs.size() && one_lit; ++t) {
+            for (size_t u = 0; u < tabs.size(); ++u) {
+                if (u == t) {
+                    continue;
+                }
+                one_lit = one_lit && item_pixel(frames[t], t) != item_pixel(frames[u], t); // lit when current ...
+                for (size_t v = u + 1; v < tabs.size(); ++v) {
+                    if (v != t) {
+                        one_lit = one_lit && item_pixel(frames[u], t) == item_pixel(frames[v], t); // ... and the same whichever other tab is current
+                    }
+                }
+            }
+        }
+        Check(one_lit, "the column of tabs lights the current tab, and only that one");
+        // the scroll bar: the VIDEO tab has more rows than fit (its thumb is at the top, in the accent colour); the CONTROLS tab (4 cards) has none
+        const auto bar_pixel = [&](const Frame& f) { return f.pixels[size_t(228 + 6) * 1920 + 1788 + 3]; };
+        size_t video = 0, controls = 0;
+        for (size_t k = 0; k < tabs.size(); ++k) {
+            video = tabs[k] == MenuUi::TabVideo ? k : video;
+            controls = tabs[k] == MenuUi::TabControls ? k : controls;
+        }
+        Check(bar_pixel(frames[video]) == Color::Accent, "a tab with more rows than fit shows a scroll bar (thumb at the top)");
+        Check(bar_pixel(frames[controls]) != Color::Accent, "a tab whose rows all fit shows none");
+        // the player cards: whatever the language, the text stays inside its own card (nothing drawn in the gaps between them)
+        Frame pt = draw_tab(MenuUi::TabControls);
+        Rig en("language=en\nmode=docked\n");
+        en.ui.SetTab(MenuUi::TabControls);
+        Frame english;
+        Canvas ec = english.Canvas_();
+        en.ui.Draw(ec);
+        bool gaps_clean = true;
+        for (int gap_x : {760, 1103, 1446}) { // the 20 px between the four cards: x = 434 + n * 343 + 323
+            for (int y = 300; y < 800; y += 3) {
+                for (int dx = 0; dx < 14; dx += 5) {
+                    gaps_clean = gaps_clean && pt.pixels[size_t(y) * 1920 + size_t(gap_x + dx)] == english.pixels[size_t(y) * 1920 + size_t(gap_x + dx)];
+                }
+            }
+        }
+        Check(gaps_clean, "controls tab: the text of a card never reaches into the gap beside it, in either language");
+    }
     // 0.7.10 themes: the colour is a setting, changes at once, survives "restore defaults", and every theme draws.
     {
         const Option* theme = FindOption("menu_theme");

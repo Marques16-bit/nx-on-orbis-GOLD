@@ -6,6 +6,7 @@
 #include <string>
 
 #include "safe_mode.h"
+#include "cpu_clock_checks.h" // 0.9.7 fix 4: the checks of frontend/cpu_clock.h, same reason
 #include "symbols_checks.h" // 0.9.7 fix 2: the checks of frontend/symbols.h run here too: this is the host test the CI workflow already builds
 
 namespace {
@@ -168,6 +169,9 @@ int main() {
 
     // --- the checks of frontend/symbols.h
     SymbolsChecks::Run(&Check);
+
+    // --- the checks of frontend/cpu_clock.h
+    CpuClockChecks::Run(&Check);
 
     std::remove(path.c_str());
     std::printf(g_failures == 0 ? "safe mode test: PASSED\n" : "safe mode test: FAILED\n");

@@ -26,6 +26,7 @@
 #include <orbis_log.h>
 
 #include "common/orbis_lazy_memory.h"
+#include "cpu_clock.h"
 #include "memory_guard.h"
 #include "ps4_platform.h"
 #include "symbols.h"
@@ -891,7 +892,22 @@ void ProfileWindow(bool report) {
     g_profile_command.store(report ? 2 : 1, std::memory_order_release);
 }
 
+// 0.9.7 fix 4: how fast the CPU's time-stamp counter ticks (cpu_clock.h says why). Three spins of 20 ms, the middle value is the answer and the three are in the line,
+// so a disturbed one is visible. 60 ms of the start; the answer is only a log line.
+static void LogCpuClock() {
+    double mhz[3] = {0, 0, 0};
+    for (double& m : mhz) {
+        m = Ps4Clock::MeasureMHz([] { return NowUs(); }, [] { return Ps4Clock::Tsc(); }, 20000);
+    }
+    if (mhz[0] > mhz[1]) { std::swap(mhz[0], mhz[1]); }
+    if (mhz[1] > mhz[2]) { std::swap(mhz[1], mhz[2]); }
+    if (mhz[0] > mhz[1]) { std::swap(mhz[0], mhz[1]); }
+    Log("cpu clock: the time-stamp counter ticks at %.0f MHz (three readings of 20 ms: %.0f, %.0f, %.0f); %s", mhz[1], mhz[0], mhz[1], mhz[2],
+        Ps4Clock::Describe(Ps4Clock::Classify(mhz[1])));
+}
+
 void LogCpuFeatures() {
+    LogCpuClock();
     unsigned a = 0, b = 0, c = 0, d = 0;
     if (__get_cpuid(1, &a, &b, &c, &d) == 0) {
         Log("cpu features: cpuid is not available");

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // eden-ps4: the menu shown before the emulator starts: the game list and the settings, in tabs.
 //
+// 0.9.8: new layout. The tabs are a column on the left (L1/R1 walk it), the rows of the current tab are in one see-through panel next to it,
+// with a scroll bar; the help box and the footer keep their places, so every row/card geometry below is only an offset of the old one.
+//
 // This part knows nothing about the console: it takes the pad's buttons and draws on a Canvas, so
 // it is tested on a PC (tests/menu_test.cpp), including screenshots of every tab. The console side
 // (video-out, the pad) is rom_menu.cpp.

@@ -47,7 +47,7 @@ Installing a newer package over it keeps everything in `/data/edenps4/`.
 
 ### The menu
 
-L1/R1 switch tabs: **Games**, **Video**, **CPU and memory**, **Advanced**, **System**, **Log**. In the
+The tabs are a column on the left (0.9.7 fix 4) and L1/R1 walk it: **Games**, **Controls**, **Video**, **CPU and memory**, **HUD**, **System**, **Log**, **Tests** (the last two are not in the public build). In the
 settings tabs Up/Down choose an option, Left/Right (or Cross) change its value, Triangle restores
 its default, Circle goes back to the games. OPTIONS plays the last game highlighted, from any tab.
 A value shown in teal with a dot is not the default. Changes are saved at once in `settings.txt` and

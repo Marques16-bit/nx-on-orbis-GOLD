@@ -374,6 +374,28 @@ check "the stall dump of the watchdog adds the Eden log tail after both stack du
 check "the symbol checks cover the anchor header, the shift and the stack scan" '
     grep -q "ParseAnchorHeader" tests/symbols_checks.h && grep -q "Shift(" tests/symbols_checks.h && grep -q "ScanForCode" tests/symbols_checks.h'
 
+echo "== 0.9.7 fix 4: the new menu, the CPU clock line, what the other ports teach"
+check "CHANGELOG has the 0.9.7 fix 4 section above fix 3, says nothing in it ran on a console and that the black screen is not fixed, and names the clock line and the analysis" '
+    a="$(grep -n "^### 0.9.7 fix 4" CHANGELOG.md | head -1 | cut -d: -f1)"; b="$(grep -n "^### 0.9.7 fix 3" CHANGELOG.md | head -1 | cut -d: -f1)"
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && sed -n "${a},${b}p" CHANGELOG.md > /tmp/nxo_fix4_section.$$ &&
+    grep -q "Nothing in this zip has run on a console" /tmp/nxo_fix4_section.$$ && grep -q "it does not fix the" /tmp/nxo_fix4_section.$$ &&
+    grep -q "cpu clock:" /tmp/nxo_fix4_section.$$ && grep -q "docs/OTHER-PORTS.md" /tmp/nxo_fix4_section.$$; r=$?; rm -f /tmp/nxo_fix4_section.$$; [ $r -eq 0 ]'
+check "docs/OTHER-PORTS.md says it is reading and not running, names the predication hang, the geometry-shader ring and the measured large pages, and says what could not be checked" '
+    grep -q "Nothing here was run" docs/OTHER-PORTS.md && grep -q "SET_PREDICATION" docs/OTHER-PORTS.md && grep -q "ES→GS ring" docs/OTHER-PORTS.md &&
+    grep -q "146 ns" docs/OTHER-PORTS.md && grep -q "188 ns" docs/OTHER-PORTS.md && grep -q "not known" docs/OTHER-PORTS.md && grep -q "could \*\*not\*\* be checked" docs/OTHER-PORTS.md'
+check "README, ROADMAP, TECHNICAL and INSTALL carry the 0.9.7 fix 4" '
+    grep -q "0.9.7 fix 4" README.md && grep -q "0.9.7 fix 4" docs/ROADMAP.md && grep -q "0.9.7 fix 4" docs/TECHNICAL.md && grep -q "0.9.7 fix 4" docs/INSTALL.md &&
+    grep -q "OTHER-PORTS.md" README.md'
+check "the menu has the column of tabs, the panel, one selection drawing and one scroll bar (and no more arrow marks for scrolling)" '
+    grep -q "constexpr int SideW" frontend/menu/menu_ui.cpp && grep -q "void DrawPanel" frontend/menu/menu_ui.cpp && grep -q "void DrawSelection" frontend/menu/menu_ui.cpp &&
+    grep -q "void DrawScrollbar" frontend/menu/menu_ui.cpp && ! grep -q "\"▲\"" frontend/menu/menu_ui.cpp && ! grep -q "\"▼\"" frontend/menu/menu_ui.cpp'
+check "the menu test checks the new layout (the lit tab, the scroll bar, the card gaps)" '
+    grep -q "the column of tabs lights the current tab" tests/menu_test.cpp && grep -q "a tab with more rows than fit shows a scroll bar" tests/menu_test.cpp &&
+    grep -q "never reaches into the gap beside it" tests/menu_test.cpp'
+check "the CPU clock line is wired (header, the call in the platform file, the checks in a test the CI workflow already builds)" '
+    grep -q "cpu_clock.h" frontend/ps4_platform.cpp && grep -q "LogCpuClock();" frontend/ps4_platform.cpp && grep -q "cpu clock: the time-stamp counter" frontend/ps4_platform.cpp &&
+    grep -q "cpu_clock_checks.h" tests/safe_mode_test.cpp && grep -q "CpuClockChecks::Run" tests/safe_mode_test.cpp && grep -q "tests/safe_mode_test.cpp" .github/workflows/check-patches.yml'
+
 echo "== the lazy-memory test"
 if out="$(bash tests/lazy_memory_test.sh 2>&1)"; then
     n="$(printf '%s\n' "$out" | grep -c '^  ok')"
