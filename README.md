@@ -3,7 +3,7 @@
 An experimental port of the **Eden** Nintendo Switch emulator (a yuzu fork) to a jailbroken
 **PS4 Pro** (OpenOrbis toolchain, Mesa RADV Vulkan driver for the PS4 GPU).
 
-> **Status: experimental, under development (v0.9.7).** It boots, has its own menu, and runs real games, but
+> **Status: experimental, under development (v0.9.8).** It boots, has its own menu, and runs real games, but
 > slowly: the emulated CPU is the limit, not the GPU. Some games run, some close when the console runs out of
 > memory. It is not a way to play Switch games on a PS4 yet. Everything below says what was **measured on a console**
 > and what was only written and tested on a PC.
@@ -21,7 +21,7 @@ A **0.9.5** (segundo zip: **R2 num jogo abre as opções só daquele jogo**, sal
 | | |
 |---|---|
 | Console | PS4 Pro, firmware 12.02, GoldHEN (the only console it was tested on) |
-| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 35 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
+| Base | Eden `5f142c79` (the commit the PS5 port ProsperoEden pins) + 39 patches in `patches/eden/` (and, since 0.9.2, an optional JIT pack in `patches/eden-jit/`) |
 | Renderer | Vulkan only (`-DENABLE_OPENGL=OFF`), on Mesa RADV "PlayStation 4 Liverpool" (Vulkan 1.3) |
 | Toolchain | OpenOrbis 0.5.4 + [orbis-sdk-v1](https://github.com/orbis-ports/orbis-porting-kit/releases/tag/orbis-sdk-v1) (orbis-compat, Mesa RADV for "Liverpool" GFX7), LLVM 18, libc++ 18 built for the PS4 |
 | Build | GitHub Actions builds the `.pkg` and the ELF from a tag ([docs/BUILDING.md](docs/BUILDING.md)); [Releases](../../releases) |
@@ -73,6 +73,12 @@ The speeds above come from console logs of 0.7.9 to 0.9.0. The 0.8.5 and 0.9.0 l
 Mario Maker 2 were read; there is no log of 0.9.1 yet, so what it changes is **not confirmed**: [CHANGELOG.md](CHANGELOG.md) says so
 entry by entry. Mario Maker 2's 0.9.0 log shows the same CPU-bound behaviour as before.
 Tested hardware is one PS4 Pro (firmware 12.02, GoldHEN); a base PS4 or a Slim has never been tried.
+
+## What is new in 0.9.8: ASTC textures in slabs, and what the PS5 emulators teach
+
+**Nothing here has run on a console, and it promises no more FPS.** The big memory request of Mario Maker 2's log (96 MiB, the size of a 2048x2048 texture with 6 layers in RGBA8; that it was that texture is an inference) came from Eden converting a whole ASTC level to RGBA8 before compressing it. **Patch 0036** does it in slabs of at most 8 MiB: the same bytes (proved on a PC against Eden's own decoder and compressors: 430 images), a much smaller peak. Patches **0037** (a vertex stream with frequency 0), **0038** (the allocator asks again outside the memory budget) and **0039** (three edge cases that wrap into huge draws) are small and defensive: no game is known to hit them. **[docs/PS5-PORTS.md](docs/PS5-PORTS.md)** answers "what can we reuse from SwitchPS5, ProsperoEden-Encore and EglantinePS5": little, and why (most of it is PS5-native; Eglantine's texture store is an offline PC tool for one title; moving to Eden's current master breaks 28 of our 39 patches). Details: [CHANGELOG](CHANGELOG.md).
+
+**Em português:** a 0.9.8 converte as texturas ASTC para BC1/BC3 em fatias de até 8 MiB, em vez de um bloco com o nível inteiro (o pico de memória cai; o resultado é o mesmo, conferido num PC), e traz três correções pequenas no renderizador. **Nada rodou num console e não promete mais FPS.** O que dá para aproveitar dos emuladores de PS5 está em `docs/PS5-PORTS.md`.
 
 ## What is new in 0.9.7: the JIT's memory in steps, and the second optimisation list
 
@@ -206,6 +212,8 @@ the repository is applied.
 
 - [docs/SETTINGS.md](docs/SETTINGS.md): every option and quick profile (generated).
 - [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md): the 0.9.6 and 0.9.7 optimisation lists, item by item: what was done, what is already there, what does not apply.
+- [docs/OTHER-PORTS.md](docs/OTHER-PORTS.md): what DolphinPS4 and ps4-switch-emu teach (GPU hangs, large pages, the Pro).
+- [docs/PS5-PORTS.md](docs/PS5-PORTS.md): what SwitchPS5, ProsperoEden-Encore and EglantinePS5 teach, what 0.9.8 took from them and what it did not, and the Eden commits since the pin.
 - [docs/EDEN4.md](docs/EDEN4.md): what Eden4 has, what this project took from it, and what it did not and why.
 - [docs/STATUS.md](docs/STATUS.md): the closed v0.1.0 experiment: expectations, the 29 console tests, profiling.
 - [docs/TECHNICAL.md](docs/TECHNICAL.md): platform findings (the SDK's 16-bit `wmemchr`, the package layout that grants 4.4 GiB, the

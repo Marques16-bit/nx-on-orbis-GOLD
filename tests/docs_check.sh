@@ -20,7 +20,7 @@ fail=0
 checks=0
 ok() { checks=$((checks + 1)); printf '  ok    %s\n' "$1"; }
 bad() { checks=$((checks + 1)); fail=$((fail + 1)); printf '  FAIL  %s\n' "$1"; }
-check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+check() { if (eval "$2"); then ok "$1"; else bad "$1"; fi; }  # a subshell: an "exit 1" inside a check fails that check, not the whole script
 
 echo "== version and counts"
 VERSION="$(sed -n 's/^set(EDEN_PS4_VERSION "\([^"]*\)".*/\1/p' frontend/frontend.cmake)"
@@ -199,10 +199,11 @@ check "patch 0035 is a git patch that touches the DMA engine and the texture cac
     [ "$(grep "^diff --git" patches/eden/0035-*.patch | wc -l | tr -d " ")" = 2 ] && grep "^diff --git" patches/eden/0035-*.patch | grep -q "maxwell_dma.cpp" && grep "^diff --git" patches/eden/0035-*.patch | grep -q "texture_cache.h" &&
     for sym in ps4_tex_uploads ps4_tex_upload_bytes ps4_tex_upload_largest ps4_dma_cpu_swizzles ps4_dma_cpu_swizzle_bytes ps4_dma_cpu_unswizzles ps4_dma_cpu_unswizzle_bytes ps4_dma_cpu_bl_copies ps4_dma_cpu_bl_copy_bytes; do
         grep -q "weak)) [a-z ]* $sym" frontend/texture_traffic.h && grep -q "extern unsigned long long $sym" patches/eden/0035-*.patch || exit 1; done'
-check "the patches are numbered 0001 to 0035 without a gap, and README and ROADMAP say 35" '
-    [ "$(ls patches/eden/*.patch | wc -l | tr -d " ")" = 35 ] && [ -f patches/eden/0035-*.patch ] && grep -q "+ 35 patches in .patches/eden/." README.md && grep -q "patches/eden/. (35)" docs/ROADMAP.md'
-check "0.9.7: the version, the changelog and the optimisation page agree" '
-    grep -q "EDEN_PS4_VERSION \"0.9.7\"" frontend/frontend.cmake && grep -q "^## \[0.9.7\]" CHANGELOG.md && grep -q "v0.9.7" README.md &&
+check "the patches are numbered 0001 to 0039 without a gap, and README and ROADMAP say 39" '
+    [ "$(ls patches/eden/*.patch | wc -l | tr -d " ")" = 39 ] && for n in $(seq -f "%04g" 1 39); do [ -f patches/eden/$n-*.patch ] || exit 1; done &&
+    grep -q "+ 39 patches in .patches/eden/." README.md && grep -q "patches/eden/. (39)" docs/ROADMAP.md'
+check "0.9.7: the changelog and the optimisation page have it (the version is 0.9.8 since the 0.9.8 zip)" '
+    grep -q "^## \[0.9.7\]" CHANGELOG.md && grep -q "What is new in 0.9.7" README.md &&
     grep -q "^## The second list (0.9.7)" docs/OPTIMIZATION.md && grep -q "THE KERNEL REFUSED A STEP" docs/OPTIMIZATION.md && grep -q "texture traffic" CHANGELOG.md'
 check "0.9.7 fix: the arena is placed inside one 4 GiB window (wrapped, switched, safe-mode off, tested, documented)" '
     grep -q "wrap=sceKernelMapDirectMemory" frontend/frontend.cmake && grep -q "arena_place.cpp" frontend/frontend.cmake && grep -q "__wrap_sceKernelMapDirectMemory" frontend/arena_place.cpp &&
@@ -395,6 +396,29 @@ check "the menu test checks the new layout (the lit tab, the scroll bar, the car
 check "the CPU clock line is wired (header, the call in the platform file, the checks in a test the CI workflow already builds)" '
     grep -q "cpu_clock.h" frontend/ps4_platform.cpp && grep -q "LogCpuClock();" frontend/ps4_platform.cpp && grep -q "cpu clock: the time-stamp counter" frontend/ps4_platform.cpp &&
     grep -q "cpu_clock_checks.h" tests/safe_mode_test.cpp && grep -q "CpuClockChecks::Run" tests/safe_mode_test.cpp && grep -q "tests/safe_mode_test.cpp" .github/workflows/check-patches.yml'
+
+echo "== 0.9.8: ASTC in slabs, three renderer patches, the PS5 emulators"
+check "the version is 0.9.8 and CHANGELOG, README, ROADMAP, TECHNICAL and PS5-PORTS carry it" '
+    grep -q "EDEN_PS4_VERSION \"0.9.8\"" frontend/frontend.cmake && grep -q "^## \[0.9.8\]" CHANGELOG.md && grep -q "^## What is new in 0.9.8" README.md &&
+    grep -q "^| \*\*0.9.8\*\* |" docs/ROADMAP.md && grep -q "^### 0.9.8" docs/TECHNICAL.md && [ -f docs/PS5-PORTS.md ] && grep -q "PS5-PORTS.md" README.md'
+check "the 0.9.8 CHANGELOG entry says that nothing ran on a console and that no FPS is promised" '
+    a="$(grep -n "^## \[0.9.8\]" CHANGELOG.md | head -1 | cut -d: -f1)"; b="$(grep -n "^## \[0.9.7\]" CHANGELOG.md | head -1 | cut -d: -f1)"
+    sed -n "${a},${b}p" CHANGELOG.md | grep -q "Nothing in this zip has run on a console, and it promises no more FPS"'
+check "patch 0036 is a git patch that changes ConvertImage only and carries a header that is the master copy (patches/eden-src/astc_recompress.h)" '
+    [ "$(grep "^diff --git" patches/eden/0036-*.patch | wc -l | tr -d " ")" = 2 ] && grep "^diff --git" patches/eden/0036-*.patch | grep -q "texture_cache/util.cpp" &&
+    grep "^diff --git" patches/eden/0036-*.patch | grep -q "textures/astc_recompress.h" && grep -q "AstcSlabs::Recompress" patches/eden/0036-*.patch && grep -q "DefaultSlabBytes" patches/eden-src/astc_recompress.h'
+check "the slab checks run inside a test the CI workflow already builds, and the real-Eden-code test has its script" '
+    grep -q "astc_recompress_checks.h" tests/safe_mode_test.cpp && grep -q "AstcRecompressChecks::Run" tests/safe_mode_test.cpp && grep -q "tests/safe_mode_test.cpp" .github/workflows/check-patches.yml &&
+    [ -x tests/astc_recompress_real_test.sh ] && grep -q "astc_recompress_real_test.sh" tests/astc_recompress_real_test.cpp'
+check "patches 0037, 0038 and 0039 are git patches of the Vulkan renderer (one or two files each) and say what is not known" '
+    [ "$(grep "^diff --git" patches/eden/0037-*.patch | wc -l | tr -d " ")" = 1 ] && grep -q "vk_rasterizer.cpp" patches/eden/0037-*.patch && grep -q "not known whether" patches/eden/0037-*.patch &&
+    [ "$(grep "^diff --git" patches/eden/0038-*.patch | wc -l | tr -d " ")" = 1 ] && grep -q "vulkan_memory_allocator.cpp" patches/eden/0038-*.patch && grep -q "is not known" patches/eden/0038-*.patch &&
+    [ "$(grep "^diff --git" patches/eden/0039-*.patch | wc -l | tr -d " ")" = 2 ] && grep -q "vk_buffer_cache.cpp" patches/eden/0039-*.patch && grep -q "None is known to be reached" patches/eden/0039-*.patch'
+check "the option text of the ASTC compression says slabs and that it never ran on a console (menu and SETTINGS.md)" '
+    grep -q "fatias de até 8 MiB" frontend/menu/settings_model.cpp && grep -q "slabs of up to 8 MiB" frontend/menu/settings_model.cpp && grep -q "slabs of up to 8 MiB" docs/SETTINGS.md'
+check "PS5-PORTS.md names the three emulators, says nothing was measured, calls the texture store an offline PC tool and counts the pin move" '
+    grep -q "SwitchPS5" docs/PS5-PORTS.md && grep -q "ProsperoEden-Encore" docs/PS5-PORTS.md && grep -q "EglantinePS5" docs/PS5-PORTS.md && grep -q "Nothing here was measured" docs/PS5-PORTS.md &&
+    grep -q "offline PC tool" docs/PS5-PORTS.md && grep -q "11 applied, 28 did not" docs/PS5-PORTS.md'
 
 echo "== the lazy-memory test"
 if out="$(bash tests/lazy_memory_test.sh 2>&1)"; then

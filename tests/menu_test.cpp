@@ -968,7 +968,7 @@ void TestDrawing(const char* render_dir) {
             }
         }
     }
-    // 0.9.8: the new layout. A column of tabs at the left (the current one lit), a panel with the rows, a scroll bar when the rows do not fit.
+    // 0.9.7 fix 4: the new layout. A column of tabs at the left (the current one lit), a panel with the rows, a scroll bar when the rows do not fit.
     {
         Rig r("mode=docked\n");
         const std::vector<int> tabs = r.ui.Tabs();

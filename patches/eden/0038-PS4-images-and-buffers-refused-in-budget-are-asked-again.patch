@@ -1,0 +1,110 @@
+From 5f04bbc4719bdeb12a58f800d06fcaa02f1f70ea Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 21:40:00 -0300
+Subject: [PATCH] PS4: images and buffers refused inside the memory budget are
+ asked for again outside it
+
+0.9.8. MemoryAllocator::CreateImage, both CreateBuffer and CreateBufferWithAlignment asked VMA for memory WITHIN_BUDGET and took a refusal
+(VK_ERROR_OUT_OF_DEVICE_MEMORY) as final, which ends in vk::Check throwing; Commit() has always asked again without the budget (and then without
+the device-local preference). They now do the first half of what Commit() does: one more ask without the budget, for that result only. When the
+driver really has no memory the second ask fails the same way and nothing is different; when its budget was tighter than its memory, the image or buffer
+is made instead of the process being brought down.
+
+The PS5 port of Eden (SwitchPS5) found exactly this on its driver, which counted every allocation twice in the budget. Whether the budget that this port's
+driver reports is exact is not known; the first, second, fourth, eighth ... retry is written to the log, so a log shows it.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PwQLQy9xSN2RjJRnq5bYjb
+---
+ .../vulkan_common/vulkan_memory_allocator.cpp | 47 +++++++++++++++++--
+ 1 file changed, 43 insertions(+), 4 deletions(-)
+
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+index f472154..23434e2 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <bit>
+ #include <limits>
+ #include <optional>
+@@ -205,6 +206,22 @@ MemoryAllocator::MemoryAllocator(const Device &device_)
+ 
+ MemoryAllocator::~MemoryAllocator() = default;
+ 
++namespace {
++// 0.9.8: CreateImage and CreateBuffer asked the allocator for memory *within the budget* the driver reports and took a refusal as final,
++// while Commit() has always asked again without the budget. A driver whose budget is lower than what it can really give (the PS5 port
++// of Eden found a driver that counts each allocation twice) then fails an image or a buffer that would have fitted. They now ask
++// again outside the budget, as Commit() does, and say so (1st, 2nd, 4th, 8th ... time) so that a log shows whether the budget of
++// a driver is too tight. When the driver really has no memory the second ask fails the same way as the first one did.
++void NoteBudgetRetry(const char* what, VkDeviceSize size) {
++    static std::atomic<u32> count{0};
++    const u32 n = ++count;
++    if ((n & (n - 1)) == 0) {
++        LOG_WARNING(Render_Vulkan, "GPU memory: {} ({} bytes, 0 = not known) was refused inside the memory budget; asked again outside it (time {})",
++                    what, size, n);
++    }
++}
++} // namespace
++
+ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci) const
+ {
+     const VmaAllocationCreateInfo alloc_ci = {
+@@ -221,7 +238,14 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci) const
+     VkImage handle{};
+     VmaAllocation allocation{};
+     VmaAllocationInfo alloc_info{};
+-    vk::Check(vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
++    VkResult res = vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
++    if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
++        NoteBudgetRetry("an image", 0);
++        VmaAllocationCreateInfo relaxed = alloc_ci;
++        relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
++        res = vmaCreateImage(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
++    }
++    vk::Check(res);
+ 
+     // Log GPU memory allocation for images
+     if (GPU::Logging::IsActive() &&
+@@ -258,7 +282,14 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
+     VmaAllocation allocation{};
+     VkMemoryPropertyFlags property_flags{};
+ 
+-    vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
++    VkResult res = vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
++    if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
++        NoteBudgetRetry("a buffer", ci.size);
++        VmaAllocationCreateInfo relaxed = alloc_ci;
++        relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
++        res = vmaCreateBuffer(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
++    }
++    vk::Check(res);
+     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
+ 
+     // Log GPU memory allocation for buffers
+@@ -314,8 +345,16 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
+     VmaAllocation allocation{};
+     VkMemoryPropertyFlags property_flags{};
+ 
+-    vk::Check(vmaCreateBufferWithAlignment(allocator, &ci, &alloc_ci, min_alignment, &handle,
+-                                           &allocation, &alloc_info));
++    VkResult res = vmaCreateBufferWithAlignment(allocator, &ci, &alloc_ci, min_alignment, &handle,
++                                                &allocation, &alloc_info);
++    if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
++        NoteBudgetRetry("an aligned buffer", ci.size);
++        VmaAllocationCreateInfo relaxed = alloc_ci;
++        relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
++        res = vmaCreateBufferWithAlignment(allocator, &ci, &relaxed, min_alignment, &handle,
++                                           &allocation, &alloc_info);
++    }
++    vk::Check(res);
+     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
+ 
+     u8 *data = reinterpret_cast<u8 *>(alloc_info.pMappedData);
+-- 
+2.43.0
+

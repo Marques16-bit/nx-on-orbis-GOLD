@@ -22,7 +22,7 @@ constexpr int RowHeight = 56;
 constexpr int VisibleRows = 11;
 constexpr int HelpTop = 868;
 constexpr int FooterTop = 992;
-// 0.9.8: the layout. A column with the tabs on the left, one panel with the rows next to it; the help box and the footer keep their places.
+// 0.9.7 fix 4: the layout. A column with the tabs on the left, one panel with the rows next to it; the help box and the footer keep their places.
 constexpr int SideTop = 164;
 constexpr int SideW = 270;
 constexpr int PanelX = Margin + SideW + 30;
@@ -203,19 +203,19 @@ constexpr std::uint32_t WithAlpha(std::uint32_t color, std::uint32_t alpha) {
     return (alpha << 24) | (color & 0x00FFFFFFu);
 }
 
-/// 0.9.8: the mark of the selected row: an outline in the accent colour round a gradient fill.
+/// 0.9.7 fix 4: the mark of the selected row: an outline in the accent colour round a gradient fill.
 void DrawSelection(Canvas& c, int x, int y, int w) {
     c.RoundRect(x, y - 4, w, RowHeight - 4, 12, Color::Accent);
     c.RoundRectGradient(x + 2, y - 2, w - 4, RowHeight - 8, 10, Lighten(Color::Selected, 0.14f), Color::Selected);
 }
 
-/// 0.9.8: the panel behind the rows.
+/// 0.9.7 fix 4: the panel behind the rows.
 void DrawPanel(Canvas& c) {
     DrawShadow(c, PanelX, PanelTop, PanelW, PanelBottom - PanelTop, 18);
     c.RoundRect(PanelX, PanelTop, PanelW, PanelBottom - PanelTop, 18, WithAlpha(Color::Panel, 0xBC));
 }
 
-/// 0.9.8: a thin scroll bar at the right edge of the panel (or at `x`): where the visible rows are among all of them. Nothing when everything fits.
+/// 0.9.7 fix 4: a thin scroll bar at the right edge of the panel (or at `x`): where the visible rows are among all of them. Nothing when everything fits.
 void DrawScrollbar(Canvas& c, int x, int first, int visible, int count) {
     if (count <= visible) {
         return;
@@ -903,7 +903,7 @@ void MenuUi::DrawTabs(Canvas& c) const {
     const char* names_pt[TabCount] = {"JOGOS", "CONTROLES", "VÍDEO", "CPU/RAM", "HUD", "SISTEMA", "LOG", "TESTES"};
     const char* names_en[TabCount] = {"GAMES", "CONTROLS", "VIDEO", "CPU/RAM", "HUD", "SYSTEM", "LOG", "TESTS"};
     const Icon icons[TabCount] = {Icon::Play, Icon::Gamepad, Icon::Monitor, Icon::Chip, Icon::Gauge, Icon::Gear, Icon::Document, Icon::Sliders};
-    // 0.9.8: the tabs are a column on the left. L1 and R1 walk it (the D-pad's left and right change values, as before).
+    // 0.9.7 fix 4: the tabs are a column on the left. L1 and R1 walk it (the D-pad's left and right change values, as before).
     constexpr int ItemH = 60, ItemGap = 6, Inset = 10;
     const int count = int(tabs_.size());
     const int height = count * (ItemH + ItemGap) + 2 * Inset - ItemGap;

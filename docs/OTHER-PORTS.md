@@ -34,7 +34,7 @@ ps4-switch-emu's README says Eden does not accept AI-assisted contributions: **n
 
 What could be checked: the release notes on `git.eden-emu.dev/eden-emu/eden/releases` (newest found: **v0.2.1, 2026-06-01**). v0.2.0 (2026-05-13) lists: dispatcher, decoder and IR-constructor changes that cut JIT latency; a simplified texture-cache GC; static storage for vertex buffers; **SPIRV-Opt removed** (faster shader compilation); v0.2.0-rc2: JIT and memory performance; rc1: JIT caching and page performance; v0.1.0: far less memory synchronisation and DMA overhead (largest in DMA-heavy games), faster shader compilation on low-end systems, GPU texture unswizzling options.
 What could **not** be checked: the commits after this project's pin (`5f142c79`, the commit ProsperoEden uses): the commit pages are closed to automated reading (`robots`), the GitHub mirror gave an error, and the pin's date could not be read. So **which of the above is already in the pin is not known**, except that the pinned tree has no SPIRV-Tools optimiser call in `shader_recompiler` or `video_core` (searched), so that one is not a thing to port.
-Moving the pin is not part of this zip: 35 patches sit on it, most of them in memory and the JIT, which is where upstream changed the most; a new pin is a version of its own (rebase, a CI build, a console run).
+*(0.9.8 could read the commits after all: see `docs/PS5-PORTS.md` section 3. The paragraph above is what 0.9.7 fix 4 could check.)* Moving the pin is not part of this zip: 39 patches sit on it, most of them in memory and the JIT, which is where upstream changed the most; a new pin is a version of its own (rebase, a CI build, a console run).
 
 ## 4. Where this leaves the "console crashes" list
 

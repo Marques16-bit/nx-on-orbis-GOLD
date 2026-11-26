@@ -1,0 +1,191 @@
+From f0ebaf67b806eac5c0274d56611dc74d9f517365 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 21:00:00 -0300
+Subject: [PATCH] PS4: recompress ASTC in slabs, not in one block of the whole
+ level
+
+0.9.8. With astc_recompress = bc1 or bc3, ConvertImage decoded a whole level to RGBA8 (every layer of an array, every slice of a 3D image) in
+one heap block, then compressed that block. For a 2048 x 2048 image of 6 layers that block is 96 MiB; for 121 layers of the same size it is
+more than 800 MiB. The log of Super Mario Maker 2 of 19/11 (astc_recompress = bc1) has "largest single request 100663296 bytes" = 2048 * 2048 * 4 * 6,
+a freeze of 5.7 s and the heap growing by 650 MiB in 0.4 s just before std::bad_alloc; the C heap on this port does not give carved-out memory back,
+so a peak stays. (That the 96 MiB request is this block is an inference from its size: that log has no symbols for the caller.)
+
+ASTC::Decompress and BCN::CompressBC1/3 both loop over slices that do not depend on each other, so the level is now decoded and compressed a slab at
+a time: a few whole slices (up to 8 MiB of RGBA8), or, when one slice alone is bigger, bands of rows that start on a multiple of both the ASTC block
+height and 4 (the BC block height). Every block sees the texels it saw before: the output is the same bytes (checked on a PC against this Eden's own
+astc.cpp, bcn.cpp and stb_dxt.cpp on 430 images, every block size, BC1 and BC3, sizes that are multiples of nothing; three planted bugs were caught).
+
+The logic is in a header of its own (video_core/textures/astc_recompress.h, master copy in patches/eden-src/ of the port) so that it can be
+tested without building Eden. No change when astc_recompress is off (the decode then goes straight to the staging buffer).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PwQLQy9xSN2RjJRnq5bYjb
+---
+ src/video_core/texture_cache/util.cpp     |  30 +++---
+ src/video_core/textures/astc_recompress.h | 106 ++++++++++++++++++++++
+ 2 files changed, 122 insertions(+), 14 deletions(-)
+ create mode 100644 src/video_core/textures/astc_recompress.h
+
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+index e55d075..30d7520 100644
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -34,6 +34,7 @@
+ #include "video_core/texture_cache/samples_helper.h"
+ #include "video_core/texture_cache/util.h"
+ #include "video_core/textures/astc.h"
++#include "video_core/textures/astc_recompress.h"
+ #include "video_core/textures/bcn.h"
+ #include "video_core/textures/decoders.h"
+ 
+@@ -960,20 +961,21 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
+                                       : Tegra::Texture::BCN::CompressBC3;
+             const auto bpp_div = recompression_setting == Settings::AstcRecompression::Bc1 ? 2 : 1;
+ 
+-            const u32 plane_dim = copy.image_extent.width * copy.image_extent.height;
+-            const u32 level_size = plane_dim * copy.image_extent.depth *
+-                                   copy.image_subresource.num_layers *
+-                                   BytesPerBlock(PixelFormat::A8B8G8R8_UNORM);
+-            decode_scratch.resize_destructive(level_size);
+-
+-            Tegra::Texture::ASTC::Decompress(
+-                input_offset, copy.image_extent.width, copy.image_extent.height,
+-                copy.image_subresource.num_layers * copy.image_extent.depth, tile_size.width,
+-                tile_size.height, decode_scratch);
+-
+-            compress(decode_scratch, copy.image_extent.width, copy.image_extent.height,
+-                     copy.image_subresource.num_layers * copy.image_extent.depth,
+-                     output.subspan(output_offset));
++            // 0.9.8: decoded and compressed a slab at a time (a few layers, or a band of rows of one big layer), not the whole level
++            // at once: the RGBA8 copy of the whole level was a heap block of 96 MiB for a 2048 x 2048 image of 6 layers.
++            const u32 slices = copy.image_subresource.num_layers * copy.image_extent.depth;
++            const auto plan = Tegra::Texture::AstcSlabs::MakePlan(copy.image_extent.width, copy.image_extent.height, slices,
++                                                                  tile_size.height);
++            decode_scratch.resize_destructive(plan.scratch_bytes);
++
++            Tegra::Texture::AstcSlabs::Recompress(
++                input_offset, copy.image_extent.width, copy.image_extent.height, slices, tile_size.width,
++                tile_size.height, recompression_setting == Settings::AstcRecompression::Bc1 ? 8 : 16, plan,
++                std::span<u8>{decode_scratch.data(), plan.scratch_bytes}, output.subspan(output_offset),
++                [&](std::span<const u8> in, u32 width, u32 height, u32 count, std::span<u8> out) {
++                    Tegra::Texture::ASTC::Decompress(in, width, height, count, tile_size.width, tile_size.height, out);
++                },
++                compress);
+ 
+             const u32 aligned_plane_dim = Common::AlignUp(copy.image_extent.width, 4) *
+                                           Common::AlignUp(copy.image_extent.height, 4);
+diff --git a/src/video_core/textures/astc_recompress.h b/src/video_core/textures/astc_recompress.h
+new file mode 100644
+index 0000000..2538080
+--- /dev/null
++++ b/src/video_core/textures/astc_recompress.h
+@@ -0,0 +1,106 @@
++// SPDX-FileCopyrightText: 2026 nx-on-orbis contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++//
++// ASTC -> BC1/BC3 in slabs (nx-on-orbis 0.9.8, patch 0036).
++//
++// Eden recompresses an ASTC texture level in two steps: decode all of it to RGBA8, then compress that to BC1 or BC3. The RGBA8
++// copy of the *whole* level (every layer of an array, every slice of a 3D image) was one heap block: 96 MiB for a 2048x2048 image
++// of 6 layers, 800 MiB for one of 121 layers. On a console with 4.5 GiB for everything, and a heap that never gives its memory back
++// (docs/TECHNICAL.md), that block is the high-water mark of the whole session.
++//
++// Decoding and compressing are done one slice at a time (a layer, or a slice of a 3D image) in both functions Eden uses
++// (ASTC::Decompress and BCN::CompressBC1/3 loop over slices, each independent of the others), and a slice is cut again into bands
++// of rows when one slice alone is bigger than the slab. A band always starts on a row that is a multiple of both the ASTC block
++// height and 4 (the BC block height), so every block sees exactly the texels it saw before: the output is the same bytes.
++//
++// This file is the master copy; patches/eden/0036-*.patch adds it to Eden as src/video_core/textures/astc_recompress.h, and
++// tests/astc_recompress_checks.h checks that the two are the same text and that the slabs give the same bytes as one piece.
++
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <numeric>
++#include <span>
++
++namespace Tegra::Texture::AstcSlabs {
++
++/// The most RGBA8 a slab holds (a slice that is bigger is cut in bands; one band is never smaller than a few block rows).
++inline constexpr std::size_t DefaultSlabBytes = 8u * 1024 * 1024;
++
++struct Plan {
++    std::uint32_t slices_per_slab = 1; // whole slices decoded together (at least 1)
++    std::uint32_t rows_per_band = 0;   // rows of one slice decoded together; the height of the image when a slice is not cut
++    std::size_t scratch_bytes = 0;     // the RGBA8 bytes one slab needs (what the caller keeps for the decode)
++};
++
++/// How a level of `width` x `height` texels and `slices` slices (layers times depth) is cut. `block_height` is the ASTC block height.
++[[nodiscard]] constexpr Plan MakePlan(std::uint32_t width, std::uint32_t height, std::uint32_t slices, std::uint32_t block_height,
++                                      std::size_t slab_bytes = DefaultSlabBytes) {
++    Plan plan;
++    plan.rows_per_band = height;
++    if (width == 0 || height == 0 || slices == 0) {
++        plan.scratch_bytes = 0;
++        return plan;
++    }
++    const std::size_t row_bytes = static_cast<std::size_t>(width) * 4;
++    const std::size_t slice_bytes = row_bytes * height;
++    if (slice_bytes > slab_bytes) {
++        // One slice alone is too big: one slice at a time, in bands of whole block rows (of the ASTC block and of the BC block).
++        const std::uint32_t unit = std::lcm(block_height == 0 ? 4u : block_height, 4u);
++        const std::size_t rows_that_fit = slab_bytes / row_bytes;
++        std::size_t rows = rows_that_fit / unit * unit;
++        if (rows < unit) {
++            rows = unit;
++        }
++        plan.slices_per_slab = 1;
++        plan.rows_per_band = rows >= height ? height : static_cast<std::uint32_t>(rows);
++    } else {
++        const std::size_t fit = std::max<std::size_t>(1, slab_bytes / slice_bytes);
++        plan.slices_per_slab = static_cast<std::uint32_t>(std::min<std::size_t>(fit, slices));
++    }
++    plan.scratch_bytes = static_cast<std::size_t>(plan.slices_per_slab) * plan.rows_per_band * row_bytes;
++    return plan;
++}
++
++/// Decodes and compresses a level slab by slab. `decode(input, width, height, slices, scratch)` fills `scratch` with RGBA8 (slice after
++/// slice, rows packed) from the ASTC blocks at the start of `input`; `compress(scratch, width, height, slices, output)` writes BC blocks
++/// (`bc_block_bytes` each: 8 for BC1, 16 for BC3; rows of 4-texel blocks packed, slice after slice) at the start of `output`. These are
++/// the signatures of ASTC::Decompress (the block size is the decode's own) and of BCN::CompressBC1/3. `scratch` has at least
++/// plan.scratch_bytes bytes.
++template <typename Decode, typename Compress>
++void Recompress(std::span<const std::uint8_t> input, std::uint32_t width, std::uint32_t height, std::uint32_t slices,
++                std::uint32_t block_width, std::uint32_t block_height, std::size_t bc_block_bytes, const Plan& plan,
++                std::span<std::uint8_t> scratch, std::span<std::uint8_t> output, Decode&& decode, Compress&& compress) {
++    if (width == 0 || height == 0 || slices == 0) {
++        return;
++    }
++    const std::size_t cols = (static_cast<std::size_t>(width) + block_width - 1) / block_width;
++    const std::size_t rows = (static_cast<std::size_t>(height) + block_height - 1) / block_height;
++    const std::size_t input_slice_bytes = rows * cols * 16;
++    const std::size_t out_row_bytes = bc_block_bytes * ((static_cast<std::size_t>(width) + 3) / 4);
++    const std::size_t out_slice_bytes = out_row_bytes * ((static_cast<std::size_t>(height) + 3) / 4);
++    const std::size_t row_bytes = static_cast<std::size_t>(width) * 4;
++
++    if (plan.rows_per_band >= height) {
++        for (std::uint32_t z = 0; z < slices; z += plan.slices_per_slab) {
++            const std::uint32_t count = std::min(plan.slices_per_slab, slices - z);
++            const auto slab = scratch.first(static_cast<std::size_t>(count) * height * row_bytes);
++            decode(input.subspan(z * input_slice_bytes), width, height, count, slab);
++            compress(std::span<const std::uint8_t>{slab}, width, height, count, output.subspan(z * out_slice_bytes));
++        }
++        return;
++    }
++    for (std::uint32_t z = 0; z < slices; ++z) {
++        for (std::uint32_t y = 0; y < height; y += plan.rows_per_band) {
++            const std::uint32_t band = std::min(plan.rows_per_band, height - y);
++            const auto slab = scratch.first(static_cast<std::size_t>(band) * row_bytes);
++            decode(input.subspan(z * input_slice_bytes + (y / block_height) * cols * 16), width, band, 1, slab);
++            compress(std::span<const std::uint8_t>{slab}, width, band, 1,
++                     output.subspan(z * out_slice_bytes + (y / 4) * out_row_bytes));
++        }
++    }
++}
++
++} // namespace Tegra::Texture::AstcSlabs
+-- 
+2.43.0
+

@@ -1,0 +1,44 @@
+From c3aed0c6e08a124c985501795b623c900fba1ff2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 21:30:00 -0300
+Subject: [PATCH] PS4: a vertex stream with instancing on and frequency 0 is
+ per-vertex data
+
+0.9.8. UpdateVertexInput (the VK_EXT_vertex_input_dynamic_state path, on by default and supported by this driver) made a binding an instance-rate
+binding whenever instancing was enabled for it, with the divisor equal to the frequency. A frequency of 0 then gave an instance-rate binding with
+divisor 0: every vertex reads element 0 of the stream, so the geometry collapses (a model that vanishes for a frame, a scene drawn in one colour).
+
+The other two places that turn these registers into Vulkan or GL state agree with each other and not with this one: FixedPipelineState
+(fixed_pipeline_state.cpp: binding_divisors = enabled ? frequency : 0) and CreateGraphicsPipeline (vk_graphics_pipeline.cpp: instanced = divisor != 0)
+treat frequency 0 as "not instanced", and the OpenGL renderer passes divisor 0, which in GL means per vertex. The dynamic path now does the same.
+Nothing changes for a frequency other than 0 or for a stream that is not instanced.
+
+Found in the notes of SwitchPS5 (a PS5 port of Eden, tools/prepare-vulkan-port.py), which hit it in a game; checked here against this tree's three places.
+It is not known whether Super Mario Maker 2 or any other game of this port reaches it.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PwQLQy9xSN2RjJRnq5bYjb
+---
+ src/video_core/renderer_vulkan/vk_rasterizer.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index df39f4c..452e586 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1928,7 +1928,11 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs)
+ 
+     for (u32 binding = 0; binding < max_bindings; ++binding) {
+         const auto& input_binding{regs.vertex_streams[binding]};
+-        const bool is_instanced{regs.vertex_stream_instances.IsInstancingEnabled(binding)};
++        // 0.9.8: instancing on with frequency 0 is per-vertex data, as in the static pipeline state (fixed_pipeline_state.cpp turns a
++        // frequency of 0 into "not instanced") and in the OpenGL renderer (divisor 0). Passed on as an instance-rate binding with divisor 0
++        // it makes every vertex read element 0.
++        const bool is_instanced{regs.vertex_stream_instances.IsInstancingEnabled(binding) &&
++                                input_binding.frequency != 0};
+         bindings.push_back({
+             .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
+             .pNext = nullptr,
+-- 
+2.43.0
+
